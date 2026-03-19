@@ -1,0 +1,1 @@
+"""Stream Alpha application package."""

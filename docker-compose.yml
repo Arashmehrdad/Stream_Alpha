@@ -1,0 +1,101 @@
+name: streamalpha
+
+services:
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:${REDPANDA_VERSION:-v25.3.10}
+    container_name: streamalpha-redpanda
+    restart: unless-stopped
+    command:
+      - redpanda
+      - start
+      - --mode
+      - dev-container
+      - --smp
+      - "1"
+      - --default-log-level=info
+      - --kafka-addr
+      - internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr
+      - internal://redpanda:9092,external://localhost:${REDPANDA_EXTERNAL_KAFKA_PORT:-19092}
+      - --pandaproxy-addr
+      - internal://0.0.0.0:8082,external://0.0.0.0:18082
+      - --advertise-pandaproxy-addr
+      - internal://redpanda:8082,external://localhost:${REDPANDA_EXTERNAL_PANDAPROXY_PORT:-18082}
+      - --schema-registry-addr
+      - internal://0.0.0.0:8081,external://0.0.0.0:18081
+      - --rpc-addr
+      - redpanda:33145
+      - --advertise-rpc-addr
+      - redpanda:33145
+      - --set
+      - redpanda.auto_create_topics_enabled=true
+    ports:
+      - ${REDPANDA_EXTERNAL_KAFKA_PORT:-19092}:19092
+      - ${REDPANDA_EXTERNAL_ADMIN_PORT:-19644}:9644
+      - ${REDPANDA_EXTERNAL_SCHEMA_REGISTRY_PORT:-18081}:18081
+      - ${REDPANDA_EXTERNAL_PANDAPROXY_PORT:-18082}:18082
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - rpk cluster health -X brokers=localhost:9092 >/dev/null 2>&1 || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  redpanda-console:
+    image: docker.redpanda.com/redpandadata/console:${REDPANDA_CONSOLE_VERSION:-v3.5.1}
+    container_name: streamalpha-redpanda-console
+    restart: unless-stopped
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    ports:
+      - ${REDPANDA_CONSOLE_PORT:-8080}:8080
+    environment:
+      CONFIG_FILEPATH: /etc/redpanda-console/config.yml
+    volumes:
+      - ./configs/redpanda-console-config.yml:/etc/redpanda-console/config.yml:ro
+
+  postgres:
+    image: postgres:${POSTGRES_VERSION:-16-alpine}
+    container_name: streamalpha-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-streamalpha}
+      POSTGRES_USER: ${POSTGRES_USER:-streamalpha}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-local-only}
+    ports:
+      - ${POSTGRES_EXTERNAL_PORT:-5432}:5432
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U ${POSTGRES_USER:-streamalpha} -d ${POSTGRES_DB:-streamalpha}
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  producer:
+    build:
+      context: .
+      dockerfile: docker/producer.Dockerfile
+    container_name: streamalpha-producer
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    command:
+      - python
+      - -m
+      - app.ingestion.main
+
+volumes:
+  postgres-data:
+  redpanda-data:
