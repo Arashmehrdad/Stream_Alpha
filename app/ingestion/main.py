@@ -27,3 +27,7 @@ async def _run_service() -> None:
 def main() -> None:
     """Run the producer service until shutdown."""
     asyncio.run(_run_service())
+
+
+if __name__ == "__main__":
+    main()
