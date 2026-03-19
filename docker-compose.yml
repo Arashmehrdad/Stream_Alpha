@@ -96,6 +96,24 @@ services:
       - -m
       - app.ingestion.main
 
+  features:
+    build:
+      context: .
+      dockerfile: docker/producer.Dockerfile
+    container_name: streamalpha-features
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    command:
+      - python
+      - -m
+      - app.features.main
+
 volumes:
   postgres-data:
   redpanda-data:

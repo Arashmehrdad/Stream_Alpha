@@ -1,5 +1,7 @@
 """Smoke test for Kafka publish serialization behavior."""
 
+# pylint: disable=duplicate-code
+
 import asyncio
 import json
 

@@ -84,6 +84,7 @@ class TableSettings:
 
     raw_trades: str
     raw_ohlc: str
+    feature_ohlc: str
     producer_heartbeat: str
 
 
@@ -95,6 +96,16 @@ class RetrySettings:
     max_delay_seconds: float
     multiplier: float
     jitter_seconds: float
+
+
+@dataclass(frozen=True, slots=True)
+class FeatureSettings:
+    """Feature consumer settings for M2 OHLC feature generation."""
+
+    consumer_group_id: str
+    service_name: str
+    finalization_grace_seconds: int
+    bootstrap_candles: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,6 +122,7 @@ class Settings:  # pylint: disable=too-many-instance-attributes
     topics: TopicSettings
     tables: TableSettings
     retry: RetrySettings
+    features: FeatureSettings
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -144,6 +156,7 @@ class Settings:  # pylint: disable=too-many-instance-attributes
             tables=TableSettings(
                 raw_trades=_get_required("TABLE_RAW_TRADES", "raw_trades"),
                 raw_ohlc=_get_required("TABLE_RAW_OHLC", "raw_ohlc"),
+                feature_ohlc=_get_required("TABLE_FEATURE_OHLC", "feature_ohlc"),
                 producer_heartbeat=_get_required("TABLE_PRODUCER_HEARTBEAT", "producer_heartbeat"),
             ),
             retry=RetrySettings(
@@ -151,5 +164,17 @@ class Settings:  # pylint: disable=too-many-instance-attributes
                 max_delay_seconds=_get_float("RECONNECT_MAX_DELAY_SECONDS", 30.0),
                 multiplier=_get_float("RECONNECT_BACKOFF_MULTIPLIER", 2.0),
                 jitter_seconds=_get_float("RECONNECT_JITTER_SECONDS", 0.5),
+            ),
+            features=FeatureSettings(
+                consumer_group_id=_get_required(
+                    "FEATURE_CONSUMER_GROUP_ID",
+                    "streamalpha-feature-consumer",
+                ),
+                service_name=_get_required("FEATURE_SERVICE_NAME", "features"),
+                finalization_grace_seconds=_get_int(
+                    "FEATURE_FINALIZATION_GRACE_SECONDS",
+                    30,
+                ),
+                bootstrap_candles=_get_int("FEATURE_BOOTSTRAP_CANDLES", 64),
             ),
         )

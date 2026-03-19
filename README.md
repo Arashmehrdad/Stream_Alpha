@@ -1,8 +1,10 @@
 # Stream Alpha
 
-Milestone `M1` delivers a local, Docker Compose based crypto market-data ingestion stack. It connects to Kraken public WebSocket v2, normalizes `trade` and `ohlc` messages for `BTC/USD`, `ETH/USD`, and `SOL/USD`, publishes them into Redpanda, and persists essential rows into PostgreSQL.
+Stream Alpha is a local-first crypto market data pipeline built with Docker Compose, Redpanda Community Edition, PostgreSQL, and Python services.
 
-Kraken authentication is intentionally not used in this milestone. The producer only connects to the public endpoint `wss://ws.kraken.com/v2`.
+Milestone `M1` ingests Kraken public WebSocket v2 market data for `BTC/USD`, `ETH/USD`, and `SOL/USD`, normalizes `trade` and `ohlc` events, publishes them into Redpanda, and writes raw rows into PostgreSQL.
+
+Milestone `M2` adds an OHLC-only feature consumer. It reads `raw.ohlc`, finalizes closed candles safely, computes a minimal rolling feature set using only current and past finalized candles, and upserts typed rows into PostgreSQL table `feature_ohlc`.
 
 ## Repository Tree
 
@@ -20,6 +22,15 @@ Kraken authentication is intentionally not used in this milestone. The producer 
 |   |   |-- models.py
 |   |   |-- serialization.py
 |   |   `-- time.py
+|   |-- features
+|   |   |-- __init__.py
+|   |   |-- __main__.py
+|   |   |-- db.py
+|   |   |-- engine.py
+|   |   |-- main.py
+|   |   |-- models.py
+|   |   |-- service.py
+|   |   `-- state.py
 |   `-- ingestion
 |       |-- __init__.py
 |       |-- __main__.py
@@ -42,26 +53,34 @@ Kraken authentication is intentionally not used in this milestone. The producer 
 |   |-- check-topics.ps1
 |   `-- tail-producer.ps1
 `-- tests
+    |-- test_feature_engine.py
+    |-- test_feature_state.py
     |-- test_normalizers.py
     `-- test_publish_smoke.py
 ```
 
 ## Services
 
-- `redpanda`: single-node Redpanda Community Edition broker for local development.
-- `redpanda-console`: the only UI in M1 for topic inspection and cluster visibility.
-- `postgres`: local PostgreSQL instance for essential raw persistence.
-- `producer`: Python service that ingests, normalizes, publishes, and writes heartbeats.
+- `redpanda`: local Redpanda broker for topics and consumer groups
+- `redpanda-console`: topic and cluster inspection UI
+- `postgres`: local PostgreSQL for raw and feature tables
+- `producer`: Kraken public WebSocket v2 ingestion service from M1
+- `features`: OHLC-only feature consumer from M2
 
-## Key Design Decisions
+## M2 Scope
 
-- Config is centralized in `app/common/config.py` and sourced from environment variables only.
-- Typed internal event models live in `app/common/models.py`.
-- Table names and topic names are configurable from environment variables.
-- PostgreSQL schema creation is owned by the producer so table naming can stay configurable.
-- The producer treats malformed payloads as isolated events: it logs them, emits a health event, and keeps running.
-- Reconnect logic uses exponential backoff with jitter.
-- Logging is structured JSON so container logs are machine-friendly from day one.
+M2 does:
+- consume only `raw.ohlc`
+- finalize candles on next-interval arrival or grace-based sweep
+- bootstrap rolling state from `raw_ohlc`
+- compute typed feature rows for finalized candles only
+- upsert rows into `feature_ohlc`
+
+M2 does not do:
+- consume `raw.trades`
+- publish a feature topic
+- create dashboards, APIs, training jobs, or inference services
+- add trading, signals, or paper trading logic
 
 ## Environment Variables
 
@@ -85,16 +104,21 @@ Copy `.env.example` to `.env` before running the stack.
 | `TOPIC_RAW_OHLC` | OHLC topic name | `raw.ohlc` |
 | `TOPIC_RAW_HEALTH` | Health topic name | `raw.health` |
 | `TABLE_RAW_TRADES` | Trade table name | `raw_trades` |
-| `TABLE_RAW_OHLC` | OHLC table name | `raw_ohlc` |
+| `TABLE_RAW_OHLC` | Raw OHLC table name | `raw_ohlc` |
+| `TABLE_FEATURE_OHLC` | Finalized OHLC feature table name | `feature_ohlc` |
 | `TABLE_PRODUCER_HEARTBEAT` | Heartbeat table name | `producer_heartbeat` |
-| `PRODUCER_SERVICE_NAME` | Service name for heartbeat rows | `producer` |
+| `PRODUCER_SERVICE_NAME` | Producer service name | `producer` |
 | `PRODUCER_HEARTBEAT_INTERVAL_SECONDS` | Producer heartbeat cadence | `15` |
+| `FEATURE_CONSUMER_GROUP_ID` | Kafka consumer group id for M2 | `streamalpha-feature-consumer` |
+| `FEATURE_SERVICE_NAME` | Feature service name used in logs and client id | `features` |
+| `FEATURE_FINALIZATION_GRACE_SECONDS` | Grace period before stale open-candle finalization | `30` |
+| `FEATURE_BOOTSTRAP_CANDLES` | Raw OHLC candles loaded per symbol on startup | `64` |
 | `RECONNECT_INITIAL_DELAY_SECONDS` | First reconnect delay | `1` |
 | `RECONNECT_MAX_DELAY_SECONDS` | Reconnect delay cap | `30` |
 | `RECONNECT_BACKOFF_MULTIPLIER` | Backoff multiplier | `2.0` |
 | `RECONNECT_JITTER_SECONDS` | Random jitter added to backoff | `0.5` |
 
-## Exact Commands To Run
+## Run Locally
 
 ### 1. Prepare the environment
 
@@ -108,63 +132,76 @@ Copy-Item .env.example .env
 docker compose up --build -d
 ```
 
-### 3. Follow the producer logs
+### 3. Follow the producer and feature consumer logs
 
 ```powershell
 docker compose logs -f producer
+docker compose logs -f features
 ```
 
-### 4. Run the test suite locally
+### 4. Run only the feature consumer service after the shared stack is already up
+
+```powershell
+docker compose up --build -d redpanda postgres producer
+docker compose up --build features
+```
+
+### 5. Run the feature consumer directly with Python
 
 ```powershell
 python -m pip install -r requirements.txt
-python -m pytest
+python -m app.features.main
 ```
 
-### 5. Run pylint
+## Tests And Lint
 
 ```powershell
+python -m pytest
 python -m pylint app tests
 ```
 
-## How To Inspect Topics
+## Inspect Topics
 
 Open Redpanda Console at [http://localhost:8080](http://localhost:8080).
 
-You can also inspect topics directly with `rpk` inside the broker container:
+You can also inspect the raw topics directly:
 
 ```powershell
 docker exec -it streamalpha-redpanda rpk topic list -X brokers=redpanda:9092
-docker exec -it streamalpha-redpanda rpk topic consume raw.trades -n 5 --offset start -X brokers=redpanda:9092
 docker exec -it streamalpha-redpanda rpk topic consume raw.ohlc -n 5 --offset start -X brokers=redpanda:9092
 docker exec -it streamalpha-redpanda rpk topic consume raw.health -n 5 --offset start -X brokers=redpanda:9092
 ```
 
-## How To Verify Database Rows
+## Validate Feature Rows In PostgreSQL
 
 ```powershell
-docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT COUNT(*) AS trade_rows FROM raw_trades;"
-docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT COUNT(*) AS ohlc_rows FROM raw_ohlc;"
-docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT service_name, status, last_event_at FROM producer_heartbeat;"
+docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT COUNT(*) AS feature_rows FROM feature_ohlc;"
+docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT symbol, interval_begin, as_of_time, close_price, log_return_1, rsi_14, macd_line_12_26 FROM feature_ohlc ORDER BY interval_begin DESC LIMIT 10;"
+docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT symbol, COUNT(*) AS rows_per_symbol FROM feature_ohlc GROUP BY symbol ORDER BY symbol;"
 ```
 
-## Milestone Acceptance Checklist
+You can still validate the raw OHLC source table if needed:
 
-- [ ] `docker compose up --build -d` starts `redpanda`, `redpanda-console`, `postgres`, and `producer`
-- [ ] producer connects to Kraken public WebSocket v2 without API keys
-- [ ] producer subscribes to `trade` and `ohlc` interval `5` for `BTC/USD`, `ETH/USD`, and `SOL/USD`
-- [ ] normalized events arrive in `raw.trades`, `raw.ohlc`, and `raw.health`
-- [ ] essential rows appear in `raw_trades`, `raw_ohlc`, and `producer_heartbeat`
-- [ ] malformed payloads do not crash the producer
-- [ ] reconnect logic resumes ingestion after a dropped websocket session
-- [ ] `python -m pytest` passes locally
+```powershell
+docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT COUNT(*) AS raw_ohlc_rows FROM raw_ohlc;"
+```
+
+## Warmup And Finalization Rules
+
+- Feature rows are emitted only for finalized candles.
+- A newer candle closes the previous candle but is not used in the previous candle's feature values.
+- A stale current candle is finalized only when `now >= interval_end + FEATURE_FINALIZATION_GRACE_SECONDS`.
+- The consumer bootstraps from the latest `FEATURE_BOOTSTRAP_CANDLES` raw OHLC rows per symbol before starting Kafka consumption.
+- The effective bootstrap minimum is clamped to the feature-engine minimum warmup length so restart behavior remains safe.
+- No row is emitted until all selected features are available. With the current feature set and standard MACD seeding, that means at least `26` finalized candles for a symbol stream.
 
 ## Known Limitations
 
-- This is a single-broker local deployment for development, not a highly available production cluster.
-- The producer writes to Redpanda and PostgreSQL separately, so cross-sink atomicity is not guaranteed.
-- `trade` snapshots are enabled to seed initial flow quickly; downstream consumers should expect both snapshot and update message types.
-- No REST backfill, feature engineering, inference, trading logic, or custom dashboard is included in M1.
+- The feature consumer is OHLC-only in M2 and intentionally ignores `raw.trades`.
+- Gaps are not forward-filled; features are computed only from the finalized candles that actually exist.
+- Rolling standard deviation and z-score calculations use population standard deviation over the fixed 12-candle window.
+- Bootstrap backfills the most recent feature rows idempotently through PostgreSQL upserts rather than relying on historical Kafka replay.
+- This is still a single-broker local stack for development, not a highly available deployment.
 
 ## References
 
@@ -172,4 +209,3 @@ docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELE
 - Kraken public WebSocket v2 OHLC: [docs.kraken.com/api/docs/websocket-v2/ohlc/](https://docs.kraken.com/api/docs/websocket-v2/ohlc/)
 - Kraken public WebSocket v2 status and heartbeat: [docs.kraken.com/api/docs/websocket-v2/status/](https://docs.kraken.com/api/docs/websocket-v2/status/) and [docs.kraken.com/api/docs/websocket-v2/heartbeat/](https://docs.kraken.com/api/docs/websocket-v2/heartbeat/)
 - Redpanda single-broker Docker example: [docs.redpanda.com/current/get-started/quick-start/](https://docs.redpanda.com/current/get-started/quick-start/)
-- Redpanda Console Docker config example: [docs.redpanda.com/25.2/console/config/configure-console/](https://docs.redpanda.com/25.2/console/config/configure-console/)
