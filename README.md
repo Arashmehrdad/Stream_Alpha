@@ -43,6 +43,7 @@ Milestone `M3` adds an offline training pipeline. It builds a labeled dataset fr
 |   `-- ingestion
 |       |-- __init__.py
 |       |-- __main__.py
+|       |-- backfill_ohlc.py
 |       |-- db.py
 |       |-- kraken.py
 |       |-- main.py
@@ -120,6 +121,7 @@ Copy `.env.example` to `.env` before running the stack.
 | `APP_NAME` | Logical app name embedded in events | `streamalpha` |
 | `LOG_LEVEL` | Python log level | `INFO` |
 | `KRAKEN_WS_URL` | Kraken public WebSocket v2 endpoint | `wss://ws.kraken.com/v2` |
+| `KRAKEN_REST_OHLC_URL` | Kraken public REST OHLC endpoint used for explicit backfills | `https://api.kraken.com/0/public/OHLC` |
 | `KRAKEN_SYMBOLS` | Comma-separated symbols | `BTC/USD,ETH/USD,SOL/USD` |
 | `KRAKEN_OHLC_INTERVAL_MINUTES` | Candle interval in minutes | `5` |
 | `KAFKA_BOOTSTRAP_SERVERS` | Redpanda bootstrap servers | `redpanda:9092` |
@@ -189,7 +191,15 @@ python -m pip install -r requirements.txt
 python -m app.training --config configs/training.m3.json
 ```
 
-### 7. Run the WSL-based M3 smoke helper with bounded PostgreSQL readiness checks
+### 7. Backfill recent Kraken REST OHLC history into the canonical raw and feature tables
+
+```powershell
+python -m app.ingestion.backfill_ohlc --symbols BTC/USD ETH/USD SOL/USD --interval 5
+```
+
+The backfill command upserts closed historical candles into `raw_ohlc` and then regenerates `feature_ohlc` directly from the existing raw/canonical flow without changing the M3 training source.
+
+### 8. Run the WSL-based M3 smoke helper with bounded PostgreSQL readiness checks
 
 ```powershell
 wsl -e bash /mnt/d/Github/Stream_Alpha/scripts/m3-smoke-run.sh

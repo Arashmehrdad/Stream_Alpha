@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 
 import asyncpg
 
@@ -87,6 +88,31 @@ class FeatureStore:
                 ORDER BY source_exchange ASC, symbol ASC, interval_minutes ASC, interval_begin ASC
                 """,
                 limit_per_symbol,
+            )
+        except (asyncpg.InvalidSchemaNameError, asyncpg.UndefinedTableError):
+            return []
+
+        return [deserialize_ohlc_event(row["payload_text"]) for row in rows]
+
+    async def load_raw_candles(
+        self,
+        *,
+        symbols: Sequence[str],
+        interval_minutes: int,
+    ) -> list[OhlcEvent]:
+        """Load ordered raw OHLC candles for explicit backfill regeneration."""
+        pool = self._require_pool()
+        raw_ohlc_table = _quote_table_name(self._tables.raw_ohlc)
+        try:
+            rows = await pool.fetch(
+                f"""
+                SELECT payload::text AS payload_text
+                FROM {raw_ohlc_table}
+                WHERE symbol = ANY($1::text[]) AND interval_minutes = $2
+                ORDER BY source_exchange ASC, symbol ASC, interval_minutes ASC, interval_begin ASC
+                """,
+                list(symbols),
+                interval_minutes,
             )
         except (asyncpg.InvalidSchemaNameError, asyncpg.UndefinedTableError):
             return []

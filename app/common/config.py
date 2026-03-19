@@ -36,6 +36,7 @@ class KrakenSettings:
     """Kraken public market-data connection settings."""
 
     ws_url: str
+    rest_ohlc_url: str
     symbols: Tuple[str, ...]
     ohlc_interval_minutes: int
 
@@ -134,6 +135,10 @@ class Settings:  # pylint: disable=too-many-instance-attributes
             heartbeat_interval_seconds=_get_int("PRODUCER_HEARTBEAT_INTERVAL_SECONDS", 15),
             kraken=KrakenSettings(
                 ws_url=_get_required("KRAKEN_WS_URL", "wss://ws.kraken.com/v2"),
+                rest_ohlc_url=_get_required(
+                    "KRAKEN_REST_OHLC_URL",
+                    "https://api.kraken.com/0/public/OHLC",
+                ),
                 symbols=_split_csv("KRAKEN_SYMBOLS", "BTC/USD,ETH/USD,SOL/USD"),
                 ohlc_interval_minutes=_get_int("KRAKEN_OHLC_INTERVAL_MINUTES", 5),
             ),
