@@ -6,6 +6,8 @@ Milestone `M1` ingests Kraken public WebSocket v2 market data for `BTC/USD`, `ET
 
 Milestone `M2` adds an OHLC-only feature consumer. It reads `raw.ohlc`, finalizes closed candles safely, computes a minimal rolling feature set using only current and past finalized candles, and upserts typed rows into PostgreSQL table `feature_ohlc`.
 
+Milestone `M3` adds an offline training pipeline. It builds a labeled dataset from `feature_ohlc`, evaluates naive and learned classifiers with purged expanding walk-forward validation, and saves model plus evaluation artifacts under `artifacts/training/m3/<run_id>/`.
+
 ## Repository Tree
 
 ```text
@@ -31,6 +33,13 @@ Milestone `M2` adds an OHLC-only feature consumer. It reads `raw.ohlc`, finalize
 |   |   |-- models.py
 |   |   |-- service.py
 |   |   `-- state.py
+|   |-- training
+|   |   |-- __init__.py
+|   |   |-- __main__.py
+|   |   |-- baselines.py
+|   |   |-- dataset.py
+|   |   |-- service.py
+|   |   `-- splits.py
 |   `-- ingestion
 |       |-- __init__.py
 |       |-- __main__.py
@@ -41,7 +50,8 @@ Milestone `M2` adds an OHLC-only feature consumer. It reads `raw.ohlc`, finalize
 |       |-- publisher.py
 |       `-- service.py
 |-- configs
-|   `-- redpanda-console-config.yml
+|   |-- redpanda-console-config.yml
+|   `-- training.m3.json
 |-- docker
 |   `-- producer.Dockerfile
 |-- docker-compose.yml
@@ -51,12 +61,15 @@ Milestone `M2` adds an OHLC-only feature consumer. It reads `raw.ohlc`, finalize
 |-- scripts
 |   |-- check-db.ps1
 |   |-- check-topics.ps1
+|   |-- m3-smoke-run.sh
 |   `-- tail-producer.ps1
 `-- tests
     |-- test_feature_engine.py
     |-- test_feature_state.py
     |-- test_normalizers.py
-    `-- test_publish_smoke.py
+    |-- test_publish_smoke.py
+    |-- test_training_labels.py
+    `-- test_training_splits.py
 ```
 
 ## Services
@@ -81,6 +94,22 @@ M2 does not do:
 - publish a feature topic
 - create dashboards, APIs, training jobs, or inference services
 - add trading, signals, or paper trading logic
+
+## M3 Scope
+
+M3 does:
+- use `feature_ohlc` as the canonical offline training source
+- construct next-3-candle binary direction labels
+- evaluate `persistence_3` and `DummyClassifier(strategy="most_frequent")` baselines
+- train `LogisticRegression` and `HistGradientBoostingClassifier`
+- use a global purged expanding walk-forward split with 5 test folds
+- save explicit run artifacts under `artifacts/training/m3/<run_id>/`
+
+M3 does not do:
+- serve inference online
+- generate signals
+- paper trade
+- add FastAPI, dashboards, MLflow, RL, or sentiment/news modules
 
 ## Environment Variables
 
@@ -153,11 +182,47 @@ python -m pip install -r requirements.txt
 python -m app.features.main
 ```
 
+### 6. Run the M3 offline training pipeline
+
+```powershell
+python -m pip install -r requirements.txt
+python -m app.training --config configs/training.m3.json
+```
+
+### 7. Run the WSL-based M3 smoke helper with bounded PostgreSQL readiness checks
+
+```powershell
+wsl -e bash /mnt/d/Github/Stream_Alpha/scripts/m3-smoke-run.sh
+```
+
 ## Tests And Lint
 
 ```powershell
 python -m pytest
 python -m pylint app tests
+```
+
+## Training Artifacts
+
+Each M3 run writes a timestamped artifact directory:
+
+```text
+artifacts/training/m3/<run_id>/
+|-- dataset_manifest.json
+|-- feature_columns.json
+|-- fold_metrics.csv
+|-- model.joblib
+|-- oof_predictions.csv
+|-- run_config.json
+`-- summary.json
+```
+
+Quick checks after a run:
+
+```powershell
+Get-ChildItem artifacts\training\m3
+Get-Content artifacts\training\m3\<run_id>\summary.json
+Get-Content artifacts\training\m3\<run_id>\dataset_manifest.json
 ```
 
 ## Inspect Topics
@@ -201,6 +266,8 @@ docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELE
 - Gaps are not forward-filled; features are computed only from the finalized candles that actually exist.
 - Rolling standard deviation and z-score calculations use population standard deviation over the fixed 12-candle window.
 - Bootstrap backfills the most recent feature rows idempotently through PostgreSQL upserts rather than relying on historical Kafka replay.
+- M3 training drops the first 3 feature rows per symbol from the eligible labeled dataset so the official persistence baseline can be computed from the canonical source without pulling a second table.
+- M3 training will stop with a clear error if `feature_ohlc` does not yet contain enough eligible labeled rows for the configured walk-forward split.
 - This is still a single-broker local stack for development, not a highly available deployment.
 
 ## References
