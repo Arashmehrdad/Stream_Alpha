@@ -110,6 +110,16 @@ class FeatureSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class InferenceSettings:
+    """Inference service settings for M4 API serving."""
+
+    model_path: str
+    service_name: str
+    signal_buy_prob_up: float
+    signal_sell_prob_up: float
+
+
+@dataclass(frozen=True, slots=True)
 class Settings:  # pylint: disable=too-many-instance-attributes
     """Application-wide settings assembled from environment variables."""
 
@@ -124,6 +134,7 @@ class Settings:  # pylint: disable=too-many-instance-attributes
     tables: TableSettings
     retry: RetrySettings
     features: FeatureSettings
+    inference: InferenceSettings
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -181,5 +192,11 @@ class Settings:  # pylint: disable=too-many-instance-attributes
                     30,
                 ),
                 bootstrap_candles=_get_int("FEATURE_BOOTSTRAP_CANDLES", 64),
+            ),
+            inference=InferenceSettings(
+                model_path=os.getenv("INFERENCE_MODEL_PATH", "").strip(),
+                service_name=_get_required("INFERENCE_SERVICE_NAME", "inference"),
+                signal_buy_prob_up=_get_float("INFERENCE_SIGNAL_BUY_PROB_UP", 0.55),
+                signal_sell_prob_up=_get_float("INFERENCE_SIGNAL_SELL_PROB_UP", 0.45),
             ),
         )

@@ -8,6 +8,8 @@ Milestone `M2` adds an OHLC-only feature consumer. It reads `raw.ohlc`, finalize
 
 Milestone `M3` adds an offline training pipeline. It builds a labeled dataset from `feature_ohlc`, evaluates naive and learned classifiers with purged expanding walk-forward validation, and saves model plus evaluation artifacts under `artifacts/training/m3/<run_id>/`.
 
+Milestone `M4` adds a minimal FastAPI inference API. It loads the accepted saved M3 artifact, reads the latest canonical feature row from `feature_ohlc`, and serves health, latest-feature, prediction, signal, and JSON metrics endpoints.
+
 ## Repository Tree
 
 ```text
@@ -33,6 +35,13 @@ Milestone `M3` adds an offline training pipeline. It builds a labeled dataset fr
 |   |   |-- models.py
 |   |   |-- service.py
 |   |   `-- state.py
+|   |-- inference
+|   |   |-- __init__.py
+|   |   |-- __main__.py
+|   |   |-- db.py
+|   |   |-- main.py
+|   |   |-- schemas.py
+|   |   `-- service.py
 |   |-- training
 |   |   |-- __init__.py
 |   |   |-- __main__.py
@@ -65,6 +74,9 @@ Milestone `M3` adds an offline training pipeline. It builds a labeled dataset fr
 |   |-- m3-smoke-run.sh
 |   `-- tail-producer.ps1
 `-- tests
+    |-- test_inference_api.py
+    |-- test_inference_db.py
+    |-- test_inference_model_loader.py
     |-- test_feature_engine.py
     |-- test_feature_state.py
     |-- test_normalizers.py
@@ -80,6 +92,7 @@ Milestone `M3` adds an offline training pipeline. It builds a labeled dataset fr
 - `postgres`: local PostgreSQL for raw and feature tables
 - `producer`: Kraken public WebSocket v2 ingestion service from M1
 - `features`: OHLC-only feature consumer from M2
+- `inference`: FastAPI prediction API from M4, run directly from the repo with the accepted M3 artifact
 
 ## M2 Scope
 
@@ -111,6 +124,21 @@ M3 does not do:
 - generate signals
 - paper trade
 - add FastAPI, dashboards, MLflow, RL, or sentiment/news modules
+
+## M4 Scope
+
+M4 does:
+- load the accepted saved M3 model artifact directly from disk
+- read the latest finalized canonical row from `feature_ohlc`
+- serve `GET /health`, `GET /latest-features`, `GET /predict`, `GET /signal`, and `GET /metrics`
+- return BUY, SELL, or HOLD using explicit probability thresholds
+- maintain simple in-memory request and latency counters since startup
+
+M4 does not do:
+- retrain models
+- accept custom feature payloads
+- add batch endpoints, dashboards, paper trading, or signal-history storage
+- introduce MLflow, Prometheus, Grafana, or deployment automation
 
 ## Environment Variables
 
@@ -144,6 +172,10 @@ Copy `.env.example` to `.env` before running the stack.
 | `FEATURE_SERVICE_NAME` | Feature service name used in logs and client id | `features` |
 | `FEATURE_FINALIZATION_GRACE_SECONDS` | Grace period before stale open-candle finalization | `30` |
 | `FEATURE_BOOTSTRAP_CANDLES` | Raw OHLC candles loaded per symbol on startup | `64` |
+| `INFERENCE_MODEL_PATH` | Path to the accepted saved M3 `model.joblib` artifact | empty |
+| `INFERENCE_SERVICE_NAME` | Inference API service name used in logs and responses | `inference` |
+| `INFERENCE_SIGNAL_BUY_PROB_UP` | BUY threshold for `prob_up` | `0.55` |
+| `INFERENCE_SIGNAL_SELL_PROB_UP` | SELL threshold for `prob_up` | `0.45` |
 | `RECONNECT_INITIAL_DELAY_SECONDS` | First reconnect delay | `1` |
 | `RECONNECT_MAX_DELAY_SECONDS` | Reconnect delay cap | `30` |
 | `RECONNECT_BACKOFF_MULTIPLIER` | Backoff multiplier | `2.0` |
@@ -203,6 +235,66 @@ The backfill command upserts closed historical candles into `raw_ohlc` and then 
 
 ```powershell
 wsl -e bash /mnt/d/Github/Stream_Alpha/scripts/m3-smoke-run.sh
+```
+
+### 9. Run the M4 inference API from the repo
+
+Set `INFERENCE_MODEL_PATH` to the accepted saved M3 artifact first. For example:
+
+```powershell
+$env:INFERENCE_MODEL_PATH = "D:\Github\Stream_Alpha\artifacts\training\m3\<run_id>\model.joblib"
+python -m app.inference
+```
+
+The API listens on `http://127.0.0.1:8000` by default.
+
+### 10. Example inference requests
+
+```powershell
+curl "http://127.0.0.1:8000/health"
+curl "http://127.0.0.1:8000/latest-features?symbol=BTC/USD"
+curl "http://127.0.0.1:8000/predict?symbol=BTC/USD"
+curl "http://127.0.0.1:8000/signal?symbol=BTC/USD"
+curl "http://127.0.0.1:8000/metrics"
+```
+
+Example `GET /predict` response:
+
+```json
+{
+  "symbol": "BTC/USD",
+  "model_name": "logistic_regression",
+  "model_trained_at": "2026-03-19T22:30:02Z",
+  "model_artifact_path": "D:/Github/Stream_Alpha/artifacts/training/m3/<run_id>/model.joblib",
+  "row_id": "BTC/USD|2026-03-19T22:00:00Z",
+  "interval_begin": "2026-03-19T22:00:00Z",
+  "as_of_time": "2026-03-19T22:05:00Z",
+  "prob_up": 0.61,
+  "prob_down": 0.39,
+  "predicted_class": "UP",
+  "confidence": 0.61
+}
+```
+
+Example `GET /signal` response:
+
+```json
+{
+  "symbol": "BTC/USD",
+  "signal": "BUY",
+  "reason": "prob_up 0.6100 >= buy threshold 0.55",
+  "prob_up": 0.61,
+  "prob_down": 0.39,
+  "confidence": 0.61,
+  "predicted_class": "UP",
+  "thresholds": {
+    "buy_prob_up": 0.55,
+    "sell_prob_up": 0.45
+  },
+  "row_id": "BTC/USD|2026-03-19T22:00:00Z",
+  "as_of_time": "2026-03-19T22:05:00Z",
+  "model_name": "logistic_regression"
+}
 ```
 
 ## Tests And Lint
