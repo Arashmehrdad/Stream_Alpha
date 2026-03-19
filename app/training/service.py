@@ -30,6 +30,7 @@ from app.training.dataset import (
     load_training_dataset,
 )
 from app.training.splits import WalkForwardFold, build_walk_forward_splits
+from app.training.splits import minimum_required_unique_timestamps
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +74,7 @@ def run_training(config_path: Path) -> Path:  # pylint: disable=too-many-locals
     """Run the full offline M3 training flow and save artifacts to disk."""
     config = load_training_config(config_path)
     dataset = load_training_dataset(config)
+    _validate_split_readiness(dataset, config)
     folds = build_walk_forward_splits(
         dataset.timestamps,
         first_train_fraction=config.first_train_fraction,
@@ -149,6 +151,24 @@ def run_training(config_path: Path) -> Path:  # pylint: disable=too-many-locals
     )
     _write_json(artifact_dir / "summary.json", summary)
     return artifact_dir
+
+
+def _validate_split_readiness(dataset: Any, config: TrainingConfig) -> None:
+    """Fail early with a clear message when live data is not yet sufficient."""
+    actual_unique_timestamps = int(dataset.manifest["unique_timestamps"])
+    required_unique_timestamps = minimum_required_unique_timestamps(
+        first_train_fraction=config.first_train_fraction,
+        test_fraction=config.test_fraction,
+        test_folds=config.test_folds,
+        purge_gap_candles=config.purge_gap_candles,
+    )
+    if actual_unique_timestamps >= required_unique_timestamps:
+        return
+    raise ValueError(
+        "Not enough unique eligible timestamps for the configured walk-forward split. "
+        f"Required at least {required_unique_timestamps}, found {actual_unique_timestamps}. "
+        f"Eligible labeled rows: {dataset.manifest['eligible_rows']}."
+    )
 
 
 def _create_artifact_dir(config: TrainingConfig) -> Path:

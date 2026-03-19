@@ -267,7 +267,7 @@ docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELE
 - Rolling standard deviation and z-score calculations use population standard deviation over the fixed 12-candle window.
 - Bootstrap backfills the most recent feature rows idempotently through PostgreSQL upserts rather than relying on historical Kafka replay.
 - M3 training drops the first 3 feature rows per symbol from the eligible labeled dataset so the official persistence baseline can be computed from the canonical source without pulling a second table.
-- M3 training will stop with a clear error if `feature_ohlc` does not yet contain enough eligible labeled rows for the configured walk-forward split.
+- M3 training will stop with a clear error if `feature_ohlc` does not yet contain enough eligible labeled rows for the configured walk-forward split. With the current checked-in split config, that means at least `9` unique eligible timestamps.
 - This is still a single-broker local stack for development, not a highly available deployment.
 
 ## References

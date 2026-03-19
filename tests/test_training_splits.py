@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from app.training.splits import build_walk_forward_splits
+from app.training.splits import build_walk_forward_splits, minimum_required_unique_timestamps
 
 
 def test_walk_forward_splits_are_time_ordered_and_purged() -> None:
@@ -40,3 +40,15 @@ def test_walk_forward_splits_are_time_ordered_and_purged() -> None:
             assert previous_test_end < fold.test_timestamps[0]
         previous_train_size = len(fold.train_timestamps)
         previous_test_end = fold.test_timestamps[-1]
+
+
+def test_minimum_required_unique_timestamps_matches_m3_defaults() -> None:
+    """The checked-in M3 split config should need 9 unique timestamps."""
+    required = minimum_required_unique_timestamps(
+        first_train_fraction=0.5,
+        test_fraction=0.1,
+        test_folds=5,
+        purge_gap_candles=3,
+    )
+
+    assert required == 9

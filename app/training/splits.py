@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,3 +57,30 @@ def build_walk_forward_splits(
         )
 
     return tuple(folds)
+
+
+def minimum_required_unique_timestamps(
+    *,
+    first_train_fraction: float,
+    test_fraction: float,
+    test_folds: int,
+    purge_gap_candles: int,
+) -> int:
+    """Return the smallest timestamp count that can satisfy the configured split."""
+    base_time = datetime(2000, 1, 1, tzinfo=timezone.utc)
+    for total_timestamps in range(1, 10_001):
+        synthetic_timestamps = tuple(
+            base_time + timedelta(minutes=index) for index in range(total_timestamps)
+        )
+        try:
+            build_walk_forward_splits(
+                synthetic_timestamps,
+                first_train_fraction=first_train_fraction,
+                test_fraction=test_fraction,
+                test_folds=test_folds,
+                purge_gap_candles=purge_gap_candles,
+            )
+            return total_timestamps
+        except ValueError:
+            continue
+    raise ValueError("Could not determine a feasible minimum timestamp count")
