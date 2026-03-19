@@ -7,8 +7,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
+from typing import Any
 
 from aiokafka import AIOKafkaConsumer
 
@@ -139,8 +141,8 @@ class FeatureConsumerService:  # pylint: disable=too-many-instance-attributes
             bootstrap_servers=self.settings.kafka.bootstrap_servers,
             client_id=f"{self.settings.features.service_name}-consumer",
             group_id=self.settings.features.consumer_group_id,
-            auto_offset_reset="latest",
-            enable_auto_commit=True,
+            auto_offset_reset="earliest",
+            enable_auto_commit=False,
             value_deserializer=lambda value: value,
         )
         await self._consumer.start()
@@ -158,13 +160,23 @@ class FeatureConsumerService:  # pylint: disable=too-many-instance-attributes
         try:
             while not self.stop_event.is_set():
                 batches = await consumer.getmany(timeout_ms=1000, max_records=100)
-                for records in batches.values():
-                    for record in records:
-                        await self._handle_record(record.value)
+                await self._process_batch(batches)
         finally:
             sweep_task.cancel()
             with suppress(asyncio.CancelledError):
                 await sweep_task
+
+    async def _process_batch(
+        self,
+        batches: Mapping[Any, Sequence[Any]],
+    ) -> None:
+        record_count = 0
+        for records in batches.values():
+            record_count += len(records)
+            for record in records:
+                await self._handle_record(record.value)
+        if record_count > 0:
+            await self._require_consumer().commit()
 
     async def _handle_record(self, value: bytes) -> None:
         try:
