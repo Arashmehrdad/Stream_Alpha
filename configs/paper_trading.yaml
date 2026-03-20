@@ -19,3 +19,19 @@ risk:
   cooldown_candles: 1
   max_open_positions: 3
   max_exposure_per_asset: 0.25
+  max_total_exposure: 0.60
+  max_daily_loss_amount: 250.0
+  max_drawdown_pct: 0.15
+  loss_streak_limit: 3
+  loss_streak_cooldown_candles: 3
+  kill_switch_enabled: false
+  min_trade_notional: 50.0
+  volatility_target_realized_vol: 0.03
+  min_volatility_size_multiplier: 0.40
+  enable_confidence_weighted_sizing: false
+  min_confidence_size_multiplier: 0.50
+  regime_position_fraction_caps:
+    TREND_UP: 0.25
+    RANGE: 0.20
+    TREND_DOWN: 0.15
+    HIGH_VOL: 0.10

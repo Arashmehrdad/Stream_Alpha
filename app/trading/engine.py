@@ -26,6 +26,8 @@ from app.trading.schemas import (
     TradeLedgerEntry,
 )
 
+_USE_SIGNAL_PENDING = object()
+
 
 def process_candle(  # pylint: disable=too-many-arguments
     *,
@@ -35,6 +37,7 @@ def process_candle(  # pylint: disable=too-many-arguments
     open_position: PaperPosition | None,
     signal: SignalDecision,
     portfolio: PortfolioContext,
+    next_pending_signal: PendingSignalState | None | object = _USE_SIGNAL_PENDING,
 ) -> EngineResult:
     """Process one newly finalized candle exactly once."""
     working_position = open_position
@@ -95,7 +98,11 @@ def process_candle(  # pylint: disable=too-many-arguments
 
     next_state = replace(
         next_state,
-        pending_signal=_build_pending_signal(signal),
+        pending_signal=(
+            _build_pending_signal(signal)
+            if next_pending_signal is _USE_SIGNAL_PENDING
+            else next_pending_signal
+        ),
     )
 
     return EngineResult(
@@ -183,9 +190,12 @@ def _open_position(
     available_cash: float,
 ) -> _OpenPositionResult:
     entry_price = calculate_entry_fill_price(candle.open_price, config.risk.slippage_bps)
-    cash_budget = capped_entry_cash(config=config, available_cash=available_cash)
     fee_rate = config.risk.fee_bps / 10_000.0
-    entry_notional = cash_budget / (1.0 + fee_rate)
+    if pending.approved_notional is None:
+        cash_budget = capped_entry_cash(config=config, available_cash=available_cash)
+        entry_notional = cash_budget / (1.0 + fee_rate)
+    else:
+        entry_notional = pending.approved_notional
     quantity = 0.0 if entry_price <= 0 else entry_notional / entry_price
     entry_fee = calculate_fee(entry_notional, config.risk.fee_bps)
     opened_at = utc_now()
@@ -209,6 +219,9 @@ def _open_position(
         stop_loss_price=entry_price * (1.0 - config.risk.stop_loss_pct),
         take_profit_price=entry_price * (1.0 + config.risk.take_profit_pct),
         entry_regime_label=pending.regime_label,
+        entry_approved_notional=pending.approved_notional,
+        entry_risk_outcome=pending.risk_outcome,
+        entry_risk_reason_codes=pending.risk_reason_codes,
         opened_at=opened_at,
         updated_at=opened_at,
     )
@@ -233,6 +246,9 @@ def _open_position(
         prob_down=pending.prob_down,
         confidence=pending.confidence,
         regime_label=pending.regime_label,
+        approved_notional=pending.approved_notional,
+        risk_outcome=pending.risk_outcome,
+        risk_reason_codes=pending.risk_reason_codes,
     )
     return _OpenPositionResult(position, ledger_entry, ledger_entry.cash_flow)
 
@@ -306,6 +322,15 @@ def _close_position(  # pylint: disable=too-many-arguments
         prob_down=None if signal_state is None else signal_state.prob_down,
         confidence=None if signal_state is None else signal_state.confidence,
         regime_label=regime_label if signal_state is None else signal_state.regime_label,
+        approved_notional=(
+            None if signal_state is None else signal_state.approved_notional
+        ),
+        risk_outcome=(
+            None if signal_state is None else signal_state.risk_outcome
+        ),
+        risk_reason_codes=(
+            () if signal_state is None else signal_state.risk_reason_codes
+        ),
         realized_pnl=realized_pnl,
     )
     return _ClosePositionResult(closed_position, ledger_entry, ledger_entry.cash_flow)
@@ -327,6 +352,9 @@ def _build_pending_signal(signal: SignalDecision) -> PendingSignalState | None:
         model_name=signal.model_name,
         regime_label=signal.regime_label,
         regime_run_id=signal.regime_run_id,
+        approved_notional=signal.approved_notional,
+        risk_outcome=signal.risk_outcome,
+        risk_reason_codes=signal.risk_reason_codes,
     )
 
 

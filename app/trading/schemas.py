@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 
 from app.common.time import to_rfc3339
@@ -15,6 +15,7 @@ SignalAction = Literal["BUY", "SELL", "HOLD"]
 PositionStatus = Literal["OPEN", "CLOSED"]
 ExitReason = Literal["SELL_SIGNAL", "STOP_LOSS", "TAKE_PROFIT"]
 TradeAction = Literal["BUY", "SELL"]
+RiskOutcome = Literal["APPROVED", "MODIFIED", "BLOCKED"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +34,7 @@ class FeatureCandle:  # pylint: disable=too-many-instance-attributes
     high_price: float
     low_price: float
     close_price: float
+    realized_vol_12: float = 0.0
 
     @property
     def row_id(self) -> str:
@@ -57,6 +59,9 @@ class SignalDecision:
     regime_label: str | None = None
     regime_run_id: str | None = None
     trade_allowed: bool | None = None
+    approved_notional: float | None = None
+    risk_outcome: RiskOutcome | None = None
+    risk_reason_codes: tuple[str, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +80,9 @@ class PendingSignalState:
     model_name: str
     regime_label: str | None = None
     regime_run_id: str | None = None
+    approved_notional: float | None = None
+    risk_outcome: RiskOutcome | None = None
+    risk_reason_codes: tuple[str, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,6 +119,9 @@ class PaperPosition:  # pylint: disable=too-many-instance-attributes
     stop_loss_price: float
     take_profit_price: float
     entry_regime_label: str | None = None
+    entry_approved_notional: float | None = None
+    entry_risk_outcome: RiskOutcome | None = None
+    entry_risk_reason_codes: tuple[str, ...] = field(default_factory=tuple)
     position_id: int | None = None
     exit_reason: ExitReason | None = None
     exit_signal_interval_begin: datetime | None = None
@@ -157,6 +168,9 @@ class TradeLedgerEntry:  # pylint: disable=too-many-instance-attributes
     prob_down: float | None = None
     confidence: float | None = None
     regime_label: str | None = None
+    approved_notional: float | None = None
+    risk_outcome: RiskOutcome | None = None
+    risk_reason_codes: tuple[str, ...] = field(default_factory=tuple)
     realized_pnl: float | None = None
     created_at: datetime | None = None
 
@@ -167,6 +181,66 @@ class PortfolioContext:
 
     available_cash: float
     open_position_count: int
+    current_equity: float = 0.0
+    total_open_exposure_notional: float = 0.0
+    current_symbol_exposure_notional: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class RiskDecision:
+    """Pure risk-engine output for one fetched signal."""
+
+    service_name: str
+    symbol: str
+    signal: SignalAction
+    outcome: RiskOutcome
+    approved_notional: float
+    requested_notional: float
+    reason_codes: tuple[str, ...] = field(default_factory=tuple)
+    regime_label: str | None = None
+    regime_run_id: str | None = None
+    trade_allowed: bool | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ServiceRiskState:
+    """Restart-safe service-level risk state used for M10 guards."""
+
+    service_name: str
+    trading_day: date
+    realized_pnl_today: float
+    equity_high_watermark: float
+    current_equity: float
+    loss_streak_count: int
+    loss_streak_cooldown_until_interval_begin: datetime | None = None
+    kill_switch_enabled: bool = False
+    updated_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RiskDecisionLogEntry:
+    """Persisted audit row for one evaluated M4 signal."""
+
+    service_name: str
+    symbol: str
+    signal: SignalAction
+    signal_interval_begin: datetime
+    signal_as_of_time: datetime
+    signal_row_id: str
+    outcome: RiskOutcome
+    reason_codes: tuple[str, ...]
+    requested_notional: float
+    approved_notional: float
+    available_cash: float
+    current_equity: float
+    current_symbol_exposure_notional: float
+    total_open_exposure_notional: float
+    realized_vol_12: float
+    confidence: float
+    regime_label: str | None = None
+    regime_run_id: str | None = None
+    trade_allowed: bool | None = None
+    created_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)

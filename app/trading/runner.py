@@ -13,12 +13,20 @@ from pathlib import Path
 from typing import Any
 
 from app.common.serialization import make_json_safe
-from app.common.time import to_rfc3339
+from app.common.time import to_rfc3339, utc_now
 from app.trading.config import PaperTradingConfig
 from app.trading.engine import process_candle
 from app.trading.metrics import build_summary
 from app.trading.repository import TradingRepository
-from app.trading.schemas import FeatureCandle, PaperPosition, PortfolioContext
+from app.trading.risk_engine import (
+    advance_service_risk_state,
+    build_pending_signal_state,
+    build_risk_decision_log_entry,
+    default_service_risk_state,
+    evaluate_risk,
+    mark_to_market_portfolio_context,
+)
+from app.trading.schemas import FeatureCandle, PaperPosition
 from app.trading.signal_client import SignalClient
 
 
@@ -63,7 +71,21 @@ class PaperTradingRunner:
             service_name=self.config.service_name,
             initial_cash=self.config.risk.initial_cash,
         )
+        latest_mark_prices = {
+            symbol: position.entry_price
+            for symbol, position in open_positions.items()
+        }
+        service_risk_state = await self.repository.load_service_risk_state(
+            service_name=self.config.service_name,
+        )
         candles = await self._load_pending_candles(states)
+        if service_risk_state is None:
+            service_risk_state = default_service_risk_state(
+                service_name=self.config.service_name,
+                trading_day=(candles[0].as_of_time.date() if candles else utc_now().date()),
+                initial_cash=self.config.risk.initial_cash,
+                kill_switch_enabled=self.config.risk.kill_switch_enabled,
+            )
 
         for candle in candles:
             signal = await self.signal_client.fetch_signal(
@@ -72,9 +94,12 @@ class PaperTradingRunner:
             )
             state = states[candle.symbol]
             open_position = open_positions.get(candle.symbol)
-            portfolio = PortfolioContext(
+            pre_execution_portfolio = mark_to_market_portfolio_context(
+                symbol=candle.symbol,
                 available_cash=available_cash,
-                open_position_count=len(open_positions),
+                open_positions=open_positions,
+                latest_mark_prices=latest_mark_prices,
+                fee_bps=self.config.risk.fee_bps,
             )
             result = process_candle(
                 config=self.config,
@@ -82,7 +107,8 @@ class PaperTradingRunner:
                 state=state,
                 open_position=open_position,
                 signal=signal,
-                portfolio=portfolio,
+                portfolio=pre_execution_portfolio,
+                next_pending_signal=None,
             )
             persisted_open, persisted_closed, ledger_entries = await self._persist_result(result)
             available_cash += result.cash_delta
@@ -92,14 +118,56 @@ class PaperTradingRunner:
                 open_positions[candle.symbol] = persisted_open
             if persisted_closed is not None:
                 open_positions.pop(candle.symbol, None)
-            states[candle.symbol] = result.state
-            await self.repository.save_engine_state(result.state)
+            latest_mark_prices[candle.symbol] = candle.close_price
+            post_execution_portfolio = mark_to_market_portfolio_context(
+                symbol=candle.symbol,
+                available_cash=available_cash,
+                open_positions=open_positions,
+                latest_mark_prices=latest_mark_prices,
+                fee_bps=self.config.risk.fee_bps,
+            )
+            service_risk_state = advance_service_risk_state(
+                config=self.config,
+                state=service_risk_state,
+                candle=candle,
+                portfolio=post_execution_portfolio,
+                closed_position=persisted_closed,
+            )
+            risk_decision = evaluate_risk(
+                config=self.config,
+                candle=candle,
+                signal=signal,
+                open_position=open_positions.get(candle.symbol),
+                portfolio=post_execution_portfolio,
+                service_risk_state=service_risk_state,
+            )
+            next_state = replace(
+                result.state,
+                pending_signal=build_pending_signal_state(
+                    signal=signal,
+                    decision=risk_decision,
+                ),
+            )
+            states[candle.symbol] = next_state
+            await self.repository.save_engine_state(next_state)
+            await self.repository.save_service_risk_state(service_risk_state)
+            await self.repository.insert_risk_decision(
+                build_risk_decision_log_entry(
+                    service_name=self.config.service_name,
+                    candle=candle,
+                    signal=signal,
+                    decision=risk_decision,
+                    portfolio=post_execution_portfolio,
+                )
+            )
             self.logger.info(
                 "Processed paper-trading candle",
                 extra={
                     "symbol": candle.symbol,
                     "interval_begin": to_rfc3339(candle.interval_begin),
                     "signal": signal.signal,
+                    "risk_outcome": risk_decision.outcome,
+                    "risk_reason_codes": list(risk_decision.reason_codes),
                     "ledger_entries": len(ledger_entries),
                     "cash_balance": round(available_cash, 6),
                 },

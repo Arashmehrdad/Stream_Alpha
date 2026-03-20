@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import date, datetime
 
 import asyncpg
 
@@ -16,6 +16,8 @@ from app.trading.schemas import (
     PaperEngineState,
     PaperPosition,
     PendingSignalState,
+    RiskDecisionLogEntry,
+    ServiceRiskState,
     TradeLedgerEntry,
 )
 
@@ -23,6 +25,8 @@ from app.trading.schemas import (
 POSITIONS_TABLE = "paper_positions"
 LEDGER_TABLE = "paper_trade_ledger"
 STATE_TABLE = "paper_engine_state"
+RISK_STATE_TABLE = "paper_risk_state"
+RISK_DECISIONS_TABLE = "paper_risk_decisions"
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -53,6 +57,8 @@ class TradingRepository:
         self._positions_table = _quote_table_name(POSITIONS_TABLE)
         self._ledger_table = _quote_table_name(LEDGER_TABLE)
         self._state_table = _quote_table_name(STATE_TABLE)
+        self._risk_state_table = _quote_table_name(RISK_STATE_TABLE)
+        self._risk_decisions_table = _quote_table_name(RISK_DECISIONS_TABLE)
         self._pool: asyncpg.Pool | None = None
 
     async def connect(self) -> None:
@@ -119,9 +125,13 @@ class TradingRepository:
                 pending_predicted_class,
                 pending_model_name,
                 pending_regime_label,
+                pending_approved_notional,
+                pending_risk_outcome,
+                pending_risk_reason_codes,
                 updated_at
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW()
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+                $16, $17, $18::text[], NOW()
             )
             ON CONFLICT (service_name, symbol)
             DO UPDATE SET
@@ -138,6 +148,9 @@ class TradingRepository:
                 pending_predicted_class = EXCLUDED.pending_predicted_class,
                 pending_model_name = EXCLUDED.pending_model_name,
                 pending_regime_label = EXCLUDED.pending_regime_label,
+                pending_approved_notional = EXCLUDED.pending_approved_notional,
+                pending_risk_outcome = EXCLUDED.pending_risk_outcome,
+                pending_risk_reason_codes = EXCLUDED.pending_risk_reason_codes,
                 updated_at = NOW()
             """,
             state.service_name,
@@ -155,6 +168,119 @@ class TradingRepository:
             None if pending is None else pending.predicted_class,
             None if pending is None else pending.model_name,
             None if pending is None else pending.regime_label,
+            None if pending is None else pending.approved_notional,
+            None if pending is None else pending.risk_outcome,
+            None if pending is None else list(pending.risk_reason_codes),
+        )
+
+    async def load_service_risk_state(
+        self,
+        *,
+        service_name: str,
+    ) -> ServiceRiskState | None:
+        """Load the persisted M10 service-level risk state, if present."""
+        pool = self._require_pool()
+        row = await pool.fetchrow(
+            f"""
+            SELECT *
+            FROM {self._risk_state_table}
+            WHERE service_name = $1
+            """,
+            service_name,
+        )
+        if row is None:
+            return None
+        return _service_risk_state_from_row(row)
+
+    async def save_service_risk_state(self, state: ServiceRiskState) -> None:
+        """Upsert the service-level M10 risk state."""
+        pool = self._require_pool()
+        await pool.execute(
+            f"""
+            INSERT INTO {self._risk_state_table} (
+                service_name,
+                trading_day,
+                realized_pnl_today,
+                equity_high_watermark,
+                current_equity,
+                loss_streak_count,
+                loss_streak_cooldown_until_interval_begin,
+                kill_switch_enabled,
+                updated_at
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, NOW()
+            )
+            ON CONFLICT (service_name)
+            DO UPDATE SET
+                trading_day = EXCLUDED.trading_day,
+                realized_pnl_today = EXCLUDED.realized_pnl_today,
+                equity_high_watermark = EXCLUDED.equity_high_watermark,
+                current_equity = EXCLUDED.current_equity,
+                loss_streak_count = EXCLUDED.loss_streak_count,
+                loss_streak_cooldown_until_interval_begin =
+                    EXCLUDED.loss_streak_cooldown_until_interval_begin,
+                kill_switch_enabled = EXCLUDED.kill_switch_enabled,
+                updated_at = NOW()
+            """,
+            state.service_name,
+            state.trading_day,
+            state.realized_pnl_today,
+            state.equity_high_watermark,
+            state.current_equity,
+            state.loss_streak_count,
+            state.loss_streak_cooldown_until_interval_begin,
+            state.kill_switch_enabled,
+        )
+
+    async def insert_risk_decision(self, entry: RiskDecisionLogEntry) -> None:
+        """Persist one M10 risk-decision audit row."""
+        pool = self._require_pool()
+        await pool.execute(
+            f"""
+            INSERT INTO {self._risk_decisions_table} (
+                service_name,
+                symbol,
+                signal,
+                signal_interval_begin,
+                signal_as_of_time,
+                signal_row_id,
+                outcome,
+                reason_codes,
+                requested_notional,
+                approved_notional,
+                available_cash,
+                current_equity,
+                current_symbol_exposure_notional,
+                total_open_exposure_notional,
+                realized_vol_12,
+                confidence,
+                regime_label,
+                regime_run_id,
+                trade_allowed
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8::text[], $9, $10, $11, $12, $13, $14,
+                $15, $16, $17, $18, $19
+            )
+            """,
+            entry.service_name,
+            entry.symbol,
+            entry.signal,
+            entry.signal_interval_begin,
+            entry.signal_as_of_time,
+            entry.signal_row_id,
+            entry.outcome,
+            list(entry.reason_codes),
+            entry.requested_notional,
+            entry.approved_notional,
+            entry.available_cash,
+            entry.current_equity,
+            entry.current_symbol_exposure_notional,
+            entry.total_open_exposure_notional,
+            entry.realized_vol_12,
+            entry.confidence,
+            entry.regime_label,
+            entry.regime_run_id,
+            entry.trade_allowed,
         )
 
     async def fetch_new_feature_rows(
@@ -172,7 +298,7 @@ class TradingRepository:
                 f"""
                 SELECT id, source_exchange, symbol, interval_minutes, interval_begin,
                        interval_end, as_of_time, raw_event_id, open_price,
-                       high_price, low_price, close_price
+                       high_price, low_price, close_price, realized_vol_12
                 FROM {self._source_table}
                 WHERE source_exchange = $1
                   AND symbol = $2
@@ -188,7 +314,7 @@ class TradingRepository:
                 f"""
                 SELECT id, source_exchange, symbol, interval_minutes, interval_begin,
                        interval_end, as_of_time, raw_event_id, open_price,
-                       high_price, low_price, close_price
+                       high_price, low_price, close_price, realized_vol_12
                 FROM {self._source_table}
                 WHERE source_exchange = $1
                   AND symbol = $2
@@ -243,12 +369,15 @@ class TradingRepository:
                     stop_loss_price,
                     take_profit_price,
                     entry_regime_label,
+                    entry_approved_notional,
+                    entry_risk_outcome,
+                    entry_risk_reason_codes,
                     opened_at,
                     updated_at
                 ) VALUES (
                     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
                     $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
-                    $21
+                    $21, $22, $23::text[], $24, $25
                 )
                 RETURNING id
                 """,
@@ -271,6 +400,9 @@ class TradingRepository:
                 position.stop_loss_price,
                 position.take_profit_price,
                 position.entry_regime_label,
+                position.entry_approved_notional,
+                position.entry_risk_outcome,
+                list(position.entry_risk_reason_codes),
                 position.opened_at,
                 position.updated_at,
             )
@@ -301,9 +433,12 @@ class TradingRepository:
                 realized_pnl = $15,
                 realized_return = $16,
                 entry_regime_label = $17,
-                exit_regime_label = $18,
-                closed_at = $19,
-                updated_at = $20
+                entry_approved_notional = $18,
+                entry_risk_outcome = $19,
+                entry_risk_reason_codes = $20::text[],
+                exit_regime_label = $21,
+                closed_at = $22,
+                updated_at = $23
             WHERE id = $1
             """,
             position.position_id,
@@ -323,6 +458,9 @@ class TradingRepository:
             position.realized_pnl,
             position.realized_return,
             position.entry_regime_label,
+            position.entry_approved_notional,
+            position.entry_risk_outcome,
+            list(position.entry_risk_reason_codes),
             position.exit_regime_label,
             position.closed_at,
             position.updated_at,
@@ -347,6 +485,9 @@ class TradingRepository:
                 prob_down,
                 confidence,
                 regime_label,
+                approved_notional,
+                risk_outcome,
+                risk_reason_codes,
                 fill_interval_begin,
                 fill_time,
                 fill_price,
@@ -358,7 +499,8 @@ class TradingRepository:
                 realized_pnl
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-                $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22
+                $11, $12, $13, $14, $15, $16, $17::text[], $18, $19, $20, $21,
+                $22, $23, $24, $25
             )
             """,
             entry.service_name,
@@ -374,6 +516,9 @@ class TradingRepository:
             entry.prob_down,
             entry.confidence,
             entry.regime_label,
+            entry.approved_notional,
+            entry.risk_outcome,
+            list(entry.risk_reason_codes),
             entry.fill_interval_begin,
             entry.fill_time,
             entry.fill_price,
@@ -470,6 +615,10 @@ class TradingRepository:
         )
         state_index = _build_index_name("paper_engine_state", "service_symbol_idx")
         ledger_index = _build_index_name("paper_trade_ledger", "service_fill_time_idx")
+        risk_decisions_index = _build_index_name(
+            "paper_risk_decisions",
+            "service_signal_time_idx",
+        )
         async with pool.acquire() as connection:
             await connection.execute(
                 f"""
@@ -494,6 +643,9 @@ class TradingRepository:
                     stop_loss_price DOUBLE PRECISION NOT NULL,
                     take_profit_price DOUBLE PRECISION NOT NULL,
                     entry_regime_label TEXT NULL,
+                    entry_approved_notional DOUBLE PRECISION NULL,
+                    entry_risk_outcome TEXT NULL,
+                    entry_risk_reason_codes TEXT[] NULL,
                     exit_reason TEXT NULL,
                     exit_signal_interval_begin TIMESTAMPTZ NULL,
                     exit_signal_as_of_time TIMESTAMPTZ NULL,
@@ -519,6 +671,24 @@ class TradingRepository:
                 f"""
                 ALTER TABLE {self._positions_table}
                 ADD COLUMN IF NOT EXISTS entry_regime_label TEXT NULL
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._positions_table}
+                ADD COLUMN IF NOT EXISTS entry_approved_notional DOUBLE PRECISION NULL
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._positions_table}
+                ADD COLUMN IF NOT EXISTS entry_risk_outcome TEXT NULL
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._positions_table}
+                ADD COLUMN IF NOT EXISTS entry_risk_reason_codes TEXT[] NULL
                 """
             )
             await connection.execute(
@@ -551,6 +721,9 @@ class TradingRepository:
                     prob_down DOUBLE PRECISION NULL,
                     confidence DOUBLE PRECISION NULL,
                     regime_label TEXT NULL,
+                    approved_notional DOUBLE PRECISION NULL,
+                    risk_outcome TEXT NULL,
+                    risk_reason_codes TEXT[] NULL,
                     fill_interval_begin TIMESTAMPTZ NOT NULL,
                     fill_time TIMESTAMPTZ NOT NULL,
                     fill_price DOUBLE PRECISION NOT NULL,
@@ -568,6 +741,24 @@ class TradingRepository:
                 f"""
                 ALTER TABLE {self._ledger_table}
                 ADD COLUMN IF NOT EXISTS regime_label TEXT NULL
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._ledger_table}
+                ADD COLUMN IF NOT EXISTS approved_notional DOUBLE PRECISION NULL
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._ledger_table}
+                ADD COLUMN IF NOT EXISTS risk_outcome TEXT NULL
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._ledger_table}
+                ADD COLUMN IF NOT EXISTS risk_reason_codes TEXT[] NULL
                 """
             )
             await connection.execute(
@@ -594,6 +785,9 @@ class TradingRepository:
                     pending_predicted_class TEXT NULL,
                     pending_model_name TEXT NULL,
                     pending_regime_label TEXT NULL,
+                    pending_approved_notional DOUBLE PRECISION NULL,
+                    pending_risk_outcome TEXT NULL,
+                    pending_risk_reason_codes TEXT[] NULL,
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     PRIMARY KEY (service_name, symbol)
                 )
@@ -607,8 +801,74 @@ class TradingRepository:
             )
             await connection.execute(
                 f"""
+                ALTER TABLE {self._state_table}
+                ADD COLUMN IF NOT EXISTS pending_approved_notional DOUBLE PRECISION NULL
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._state_table}
+                ADD COLUMN IF NOT EXISTS pending_risk_outcome TEXT NULL
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._state_table}
+                ADD COLUMN IF NOT EXISTS pending_risk_reason_codes TEXT[] NULL
+                """
+            )
+            await connection.execute(
+                f"""
                 CREATE INDEX IF NOT EXISTS {state_index}
                 ON {self._state_table} (service_name, symbol)
+                """
+            )
+            await connection.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {self._risk_state_table} (
+                    service_name TEXT PRIMARY KEY,
+                    trading_day DATE NOT NULL,
+                    realized_pnl_today DOUBLE PRECISION NOT NULL,
+                    equity_high_watermark DOUBLE PRECISION NOT NULL,
+                    current_equity DOUBLE PRECISION NOT NULL,
+                    loss_streak_count INTEGER NOT NULL,
+                    loss_streak_cooldown_until_interval_begin TIMESTAMPTZ NULL,
+                    kill_switch_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            await connection.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {self._risk_decisions_table} (
+                    id BIGSERIAL PRIMARY KEY,
+                    service_name TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    signal TEXT NOT NULL,
+                    signal_interval_begin TIMESTAMPTZ NOT NULL,
+                    signal_as_of_time TIMESTAMPTZ NOT NULL,
+                    signal_row_id TEXT NOT NULL,
+                    outcome TEXT NOT NULL,
+                    reason_codes TEXT[] NOT NULL,
+                    requested_notional DOUBLE PRECISION NOT NULL,
+                    approved_notional DOUBLE PRECISION NOT NULL,
+                    available_cash DOUBLE PRECISION NOT NULL,
+                    current_equity DOUBLE PRECISION NOT NULL,
+                    current_symbol_exposure_notional DOUBLE PRECISION NOT NULL,
+                    total_open_exposure_notional DOUBLE PRECISION NOT NULL,
+                    realized_vol_12 DOUBLE PRECISION NOT NULL,
+                    confidence DOUBLE PRECISION NOT NULL,
+                    regime_label TEXT NULL,
+                    regime_run_id TEXT NULL,
+                    trade_allowed BOOLEAN NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            await connection.execute(
+                f"""
+                CREATE INDEX IF NOT EXISTS {risk_decisions_index}
+                ON {self._risk_decisions_table} (service_name, signal_as_of_time DESC, id DESC)
                 """
             )
 
@@ -632,6 +892,7 @@ def _candle_from_row(row: asyncpg.Record) -> FeatureCandle:
         high_price=float(row["high_price"]),
         low_price=float(row["low_price"]),
         close_price=float(row["close_price"]),
+        realized_vol_12=float(row["realized_vol_12"]),
     )
 
 
@@ -654,6 +915,17 @@ def _state_from_row(row: asyncpg.Record) -> PaperEngineState:
                 if row["pending_regime_label"] is None
                 else str(row["pending_regime_label"])
             ),
+            approved_notional=(
+                None
+                if row["pending_approved_notional"] is None
+                else float(row["pending_approved_notional"])
+            ),
+            risk_outcome=(
+                None
+                if row["pending_risk_outcome"] is None
+                else str(row["pending_risk_outcome"])
+            ),
+            risk_reason_codes=_text_array_to_tuple(row["pending_risk_reason_codes"]),
         )
     return PaperEngineState(
         service_name=str(row["service_name"]),
@@ -687,6 +959,17 @@ def _position_from_row(row: asyncpg.Record) -> PaperPosition:
         entry_regime_label=(
             None if row["entry_regime_label"] is None else str(row["entry_regime_label"])
         ),
+        entry_approved_notional=(
+            None
+            if row["entry_approved_notional"] is None
+            else float(row["entry_approved_notional"])
+        ),
+        entry_risk_outcome=(
+            None
+            if row["entry_risk_outcome"] is None
+            else str(row["entry_risk_outcome"])
+        ),
+        entry_risk_reason_codes=_text_array_to_tuple(row["entry_risk_reason_codes"]),
         position_id=int(row["id"]),
         exit_reason=None if row["exit_reason"] is None else str(row["exit_reason"]),
         exit_signal_interval_begin=row["exit_signal_interval_begin"],
@@ -713,6 +996,20 @@ def _position_from_row(row: asyncpg.Record) -> PaperPosition:
         ),
         opened_at=row["opened_at"],
         closed_at=row["closed_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _service_risk_state_from_row(row: asyncpg.Record) -> ServiceRiskState:
+    return ServiceRiskState(
+        service_name=str(row["service_name"]),
+        trading_day=_coerce_date(row["trading_day"]),
+        realized_pnl_today=float(row["realized_pnl_today"]),
+        equity_high_watermark=float(row["equity_high_watermark"]),
+        current_equity=float(row["current_equity"]),
+        loss_streak_count=int(row["loss_streak_count"]),
+        loss_streak_cooldown_until_interval_begin=row["loss_streak_cooldown_until_interval_begin"],
+        kill_switch_enabled=bool(row["kill_switch_enabled"]),
         updated_at=row["updated_at"],
     )
 
@@ -744,6 +1041,9 @@ def ledger_rows_to_csv(entries: Sequence[TradeLedgerEntry]) -> list[dict[str, ob
                 "prob_down": entry.prob_down,
                 "confidence": entry.confidence,
                 "regime_label": entry.regime_label,
+                "approved_notional": entry.approved_notional,
+                "risk_outcome": entry.risk_outcome,
+                "risk_reason_codes": list(entry.risk_reason_codes),
                 "fill_interval_begin": to_rfc3339(entry.fill_interval_begin),
                 "fill_time": to_rfc3339(entry.fill_time),
                 "fill_price": entry.fill_price,
@@ -756,3 +1056,15 @@ def ledger_rows_to_csv(entries: Sequence[TradeLedgerEntry]) -> list[dict[str, ob
             }
         )
     return rows
+
+
+def _text_array_to_tuple(value: Sequence[str] | None) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    return tuple(str(item) for item in value)
+
+
+def _coerce_date(value: date | datetime) -> date:
+    if isinstance(value, datetime):
+        return value.date()
+    return value

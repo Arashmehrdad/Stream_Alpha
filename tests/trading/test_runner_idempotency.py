@@ -12,7 +12,7 @@ from pathlib import Path
 
 from app.trading.config import PaperTradingConfig, RiskConfig
 from app.trading.runner import PaperTradingRunner
-from app.trading.schemas import FeatureCandle, PaperEngineState, SignalDecision
+from app.trading.schemas import FeatureCandle, PaperEngineState, ServiceRiskState, SignalDecision
 
 
 def _config(tmp_path: Path) -> PaperTradingConfig:
@@ -64,6 +64,8 @@ class FakeRepository:
         self.open_positions = {}
         self.positions = []
         self.ledger = []
+        self.risk_state = None
+        self.risk_decisions = []
         self.position_id = 0
 
     async def connect(self) -> None:
@@ -114,6 +116,16 @@ class FakeRepository:
 
     async def save_engine_state(self, state) -> None:
         self.states[state.symbol] = state
+
+    async def load_service_risk_state(self, *, service_name: str):
+        del service_name
+        return self.risk_state
+
+    async def save_service_risk_state(self, state: ServiceRiskState) -> None:
+        self.risk_state = state
+
+    async def insert_risk_decision(self, entry) -> None:
+        self.risk_decisions.append(entry)
 
     async def load_positions(self, *, service_name: str):
         del service_name
