@@ -1,0 +1,520 @@
+"""Read-only HTTP and PostgreSQL data sources for the Stream Alpha M6 dashboard."""
+
+# pylint: disable=duplicate-code,too-few-public-methods,too-many-instance-attributes
+# pylint: disable=too-many-lines
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime
+import re
+from typing import Any, Mapping, Sequence
+
+import asyncpg
+import httpx
+
+from app.common.config import Settings
+from app.common.time import parse_rfc3339, utc_now
+from app.trading.config import PaperTradingConfig
+from app.trading.repository import LEDGER_TABLE, POSITIONS_TABLE, STATE_TABLE
+from app.trading.schemas import PaperPosition
+
+
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_HTTP_TIMEOUT_SECONDS = 5.0
+
+
+def _quote_identifier(identifier: str) -> str:
+    if not _IDENTIFIER_RE.match(identifier):
+        raise ValueError(f"Unsafe SQL identifier: {identifier}")
+    return f'"{identifier}"'
+
+
+def _quote_table_name(name: str) -> str:
+    parts = name.split(".")
+    if not 1 <= len(parts) <= 2:
+        raise ValueError(f"Unsupported table name format: {name}")
+    return ".".join(_quote_identifier(part) for part in parts)
+
+
+@dataclass(frozen=True, slots=True)
+class ApiHealthSnapshot:
+    """Current availability snapshot for the accepted M4 inference API."""
+
+    available: bool
+    checked_at: datetime
+    status: str
+    service: str | None = None
+    model_loaded: bool = False
+    model_name: str | None = None
+    model_artifact_path: str | None = None
+    database: str | None = None
+    started_at: datetime | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SignalSnapshot:
+    """Current M4 signal payload or degraded state for one configured symbol."""
+
+    symbol: str
+    checked_at: datetime
+    available: bool
+    signal: str | None = None
+    reason: str | None = None
+    prob_up: float | None = None
+    prob_down: float | None = None
+    confidence: float | None = None
+    predicted_class: str | None = None
+    row_id: str | None = None
+    as_of_time: datetime | None = None
+    model_name: str | None = None
+    buy_threshold: float | None = None
+    sell_threshold: float | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class LatestFeatureSnapshot:  # pylint: disable=too-many-instance-attributes
+    """Stable feature whitelist shown in the M6 dashboard."""
+
+    symbol: str
+    interval_begin: datetime
+    as_of_time: datetime
+    open_price: float
+    high_price: float
+    low_price: float
+    close_price: float
+    volume: float
+    log_return_1: float
+    log_return_3: float
+    rsi_14: float
+    macd_line_12_26: float
+    close_zscore_12: float
+    volume_zscore_12: float
+
+
+@dataclass(frozen=True, slots=True)
+class LedgerEntrySnapshot:
+    """Read-only recent ledger row for the trading tab."""
+
+    ledger_id: int
+    symbol: str
+    action: str
+    reason: str
+    fill_interval_begin: datetime
+    fill_time: datetime
+    fill_price: float
+    quantity: float
+    notional: float
+    fee: float
+    cash_flow: float
+    realized_pnl: float | None
+    signal_row_id: str | None
+    model_name: str | None
+    confidence: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class EngineStateSnapshot:
+    """Persisted per-symbol paper-trading engine state."""
+
+    service_name: str
+    symbol: str
+    last_processed_interval_begin: datetime | None
+    cooldown_until_interval_begin: datetime | None
+    pending_signal_action: str | None
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class DatabaseSnapshot:
+    """Read-only PostgreSQL snapshot for the dashboard."""
+
+    available: bool
+    checked_at: datetime
+    latest_features: tuple[LatestFeatureSnapshot, ...] = field(default_factory=tuple)
+    positions: tuple[PaperPosition, ...] = field(default_factory=tuple)
+    recent_closed_positions: tuple[PaperPosition, ...] = field(default_factory=tuple)
+    recent_ledger_entries: tuple[LedgerEntrySnapshot, ...] = field(default_factory=tuple)
+    engine_states: tuple[EngineStateSnapshot, ...] = field(default_factory=tuple)
+    latest_prices: dict[str, float] = field(default_factory=dict)
+    cash_balance: float | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DashboardSnapshot:
+    """Combined API and database state used by the Streamlit app."""
+
+    api_health: ApiHealthSnapshot
+    signals: tuple[SignalSnapshot, ...]
+    database: DatabaseSnapshot
+
+
+class DashboardDataSources:
+    """Read-only loaders for the accepted M4 and M5 data contracts."""
+
+    def __init__(
+        self,
+        *,
+        settings: Settings,
+        trading_config: PaperTradingConfig,
+        http_client: Any | None = None,
+        db_connect: Any = asyncpg.connect,
+    ) -> None:
+        self._settings = settings
+        self._trading_config = trading_config
+        self._http_client = http_client
+        self._db_connect = db_connect
+        self._feature_table = _quote_table_name(settings.tables.feature_ohlc)
+        self._positions_table = _quote_table_name(POSITIONS_TABLE)
+        self._ledger_table = _quote_table_name(LEDGER_TABLE)
+        self._state_table = _quote_table_name(STATE_TABLE)
+
+    async def load_snapshot(self) -> DashboardSnapshot:
+        """Load one point-in-time dashboard snapshot from API and PostgreSQL."""
+        if self._http_client is None:
+            async with httpx.AsyncClient(
+                base_url=self._settings.dashboard.inference_api_base_url,
+                timeout=_HTTP_TIMEOUT_SECONDS,
+            ) as http_client:
+                return await self._load_with_http_client(http_client)
+        return await self._load_with_http_client(self._http_client)
+
+    async def _load_with_http_client(self, http_client: Any) -> DashboardSnapshot:
+        api_health = await self._load_api_health(http_client)
+        signals = await self._load_signals(http_client)
+        database = await self._load_database_snapshot()
+        return DashboardSnapshot(
+            api_health=api_health,
+            signals=signals,
+            database=database,
+        )
+
+    async def _load_api_health(self, http_client: Any) -> ApiHealthSnapshot:
+        checked_at = utc_now()
+        try:
+            response = await http_client.get("/health")
+            payload = response.json()
+        except Exception as error:  # pylint: disable=broad-exception-caught
+            return ApiHealthSnapshot(
+                available=False,
+                checked_at=checked_at,
+                status="unavailable",
+                error=str(error),
+            )
+
+        started_at = None
+        if isinstance(payload.get("started_at"), str):
+            started_at = parse_rfc3339(str(payload["started_at"]))
+        return ApiHealthSnapshot(
+            available=(
+                response.status_code == 200
+                and bool(payload.get("model_loaded"))
+                and payload.get("database") == "healthy"
+            ),
+            checked_at=checked_at,
+            status=str(payload.get("status", "unknown")),
+            service=None if payload.get("service") is None else str(payload["service"]),
+            model_loaded=bool(payload.get("model_loaded")),
+            model_name=None if payload.get("model_name") is None else str(payload["model_name"]),
+            model_artifact_path=(
+                None
+                if payload.get("model_artifact_path") is None
+                else str(payload["model_artifact_path"])
+            ),
+            database=None if payload.get("database") is None else str(payload["database"]),
+            started_at=started_at,
+            error=None if response.status_code == 200 else f"HTTP {response.status_code}",
+        )
+
+    async def _load_signals(self, http_client: Any) -> tuple[SignalSnapshot, ...]:
+        signals: list[SignalSnapshot] = []
+        for symbol in self._trading_config.symbols:
+            checked_at = utc_now()
+            try:
+                response = await http_client.get("/signal", params={"symbol": symbol})
+                if response.status_code != 200:
+                    raise RuntimeError(f"HTTP {response.status_code}")
+                payload = response.json()
+                signals.append(
+                    _signal_from_payload(
+                        symbol=symbol,
+                        payload=payload,
+                        checked_at=checked_at,
+                    )
+                )
+            except Exception as error:  # pylint: disable=broad-exception-caught
+                signals.append(
+                    SignalSnapshot(
+                        symbol=symbol,
+                        checked_at=checked_at,
+                        available=False,
+                        error=str(error),
+                    )
+                )
+        return tuple(signals)
+
+    async def _load_database_snapshot(self) -> DatabaseSnapshot:  # pylint: disable=too-many-locals
+        # One read-only snapshot is easier to reason about than interleaved queries
+        # across multiple transient connections inside a Streamlit rerun.
+        checked_at = utc_now()
+        connection = None
+        try:
+            connection = await self._db_connect(self._settings.postgres.dsn)
+            await connection.fetchval("SELECT 1")
+            latest_feature_rows = await connection.fetch(
+                f"""
+                SELECT DISTINCT ON (symbol)
+                       symbol, interval_begin, as_of_time, open_price, high_price,
+                       low_price, close_price, volume, log_return_1, log_return_3,
+                       rsi_14, macd_line_12_26, close_zscore_12, volume_zscore_12
+                FROM {self._feature_table}
+                WHERE source_exchange = 'kraken'
+                  AND interval_minutes = $1
+                  AND symbol = ANY($2::text[])
+                ORDER BY symbol ASC, as_of_time DESC, interval_begin DESC
+                """,
+                self._trading_config.interval_minutes,
+                list(self._trading_config.symbols),
+            )
+            position_rows = await connection.fetch(
+                f"""
+                SELECT *
+                FROM {self._positions_table}
+                WHERE service_name = $1
+                ORDER BY entry_fill_interval_begin ASC, id ASC
+                """,
+                self._trading_config.service_name,
+            )
+            recent_closed_rows = await connection.fetch(
+                f"""
+                SELECT *
+                FROM {self._positions_table}
+                WHERE service_name = $1 AND status = 'CLOSED'
+                ORDER BY closed_at DESC NULLS LAST, id DESC
+                LIMIT $2
+                """,
+                self._trading_config.service_name,
+                self._settings.dashboard.recent_trades_limit,
+            )
+            recent_ledger_rows = await connection.fetch(
+                f"""
+                SELECT id, symbol, action, reason, fill_interval_begin, fill_time,
+                       fill_price, quantity, notional, fee, cash_flow,
+                       realized_pnl, signal_row_id, model_name, confidence
+                FROM {self._ledger_table}
+                WHERE service_name = $1
+                ORDER BY fill_time DESC, id DESC
+                LIMIT $2
+                """,
+                self._trading_config.service_name,
+                self._settings.dashboard.recent_ledger_limit,
+            )
+            engine_state_rows = await connection.fetch(
+                f"""
+                SELECT service_name, symbol, last_processed_interval_begin,
+                       cooldown_until_interval_begin, pending_signal_action,
+                       updated_at
+                FROM {self._state_table}
+                WHERE service_name = $1
+                ORDER BY symbol ASC
+                """,
+                self._trading_config.service_name,
+            )
+            cash_delta = float(
+                await connection.fetchval(
+                    f"""
+                    SELECT COALESCE(SUM(cash_flow), 0.0)
+                    FROM {self._ledger_table}
+                    WHERE service_name = $1
+                    """,
+                    self._trading_config.service_name,
+                )
+            )
+        except Exception as error:  # pylint: disable=broad-exception-caught
+            return DatabaseSnapshot(
+                available=False,
+                checked_at=checked_at,
+                error=str(error),
+            )
+        finally:
+            if connection is not None:
+                await connection.close()
+
+        latest_features = shape_latest_feature_rows(
+            symbols=self._trading_config.symbols,
+            rows=[dict(row) for row in latest_feature_rows],
+        )
+        positions = tuple(_position_from_row(row) for row in position_rows)
+        recent_closed_positions = tuple(_position_from_row(row) for row in recent_closed_rows)
+        recent_ledger_entries = tuple(
+            _ledger_entry_from_row(row) for row in recent_ledger_rows
+        )
+        engine_states = tuple(_engine_state_from_row(row) for row in engine_state_rows)
+        latest_prices = {row.symbol: row.close_price for row in latest_features}
+        return DatabaseSnapshot(
+            available=True,
+            checked_at=checked_at,
+            latest_features=latest_features,
+            positions=positions,
+            recent_closed_positions=recent_closed_positions,
+            recent_ledger_entries=recent_ledger_entries,
+            engine_states=engine_states,
+            latest_prices=latest_prices,
+            cash_balance=self._trading_config.risk.initial_cash + cash_delta,
+        )
+
+
+def shape_latest_feature_rows(
+    *,
+    symbols: Sequence[str],
+    rows: Sequence[Mapping[str, Any]],
+) -> tuple[LatestFeatureSnapshot, ...]:
+    """Pick the newest canonical feature row per asset and return symbol-ordered rows."""
+    latest_by_symbol: dict[str, LatestFeatureSnapshot] = {}
+    for row in rows:
+        snapshot = _feature_row_from_mapping(row)
+        existing = latest_by_symbol.get(snapshot.symbol)
+        if existing is None or (
+            snapshot.as_of_time,
+            snapshot.interval_begin,
+        ) > (
+            existing.as_of_time,
+            existing.interval_begin,
+        ):
+            latest_by_symbol[snapshot.symbol] = snapshot
+
+    return tuple(
+        latest_by_symbol[symbol]
+        for symbol in symbols
+        if symbol in latest_by_symbol
+    )
+
+
+def _signal_from_payload(
+    *,
+    symbol: str,
+    payload: Mapping[str, Any],
+    checked_at: datetime,
+) -> SignalSnapshot:
+    thresholds = payload.get("thresholds", {})
+    as_of_time = None
+    if isinstance(payload.get("as_of_time"), str):
+        as_of_time = parse_rfc3339(str(payload["as_of_time"]))
+    return SignalSnapshot(
+        symbol=symbol,
+        checked_at=checked_at,
+        available=True,
+        signal=str(payload["signal"]),
+        reason=str(payload["reason"]),
+        prob_up=float(payload["prob_up"]),
+        prob_down=float(payload["prob_down"]),
+        confidence=float(payload["confidence"]),
+        predicted_class=str(payload["predicted_class"]),
+        row_id=str(payload["row_id"]),
+        as_of_time=as_of_time,
+        model_name=str(payload["model_name"]),
+        buy_threshold=float(thresholds["buy_prob_up"]),
+        sell_threshold=float(thresholds["sell_prob_up"]),
+    )
+
+
+def _feature_row_from_mapping(row: Mapping[str, Any]) -> LatestFeatureSnapshot:
+    return LatestFeatureSnapshot(
+        symbol=str(row["symbol"]),
+        interval_begin=row["interval_begin"],
+        as_of_time=row["as_of_time"],
+        open_price=float(row["open_price"]),
+        high_price=float(row["high_price"]),
+        low_price=float(row["low_price"]),
+        close_price=float(row["close_price"]),
+        volume=float(row["volume"]),
+        log_return_1=float(row["log_return_1"]),
+        log_return_3=float(row["log_return_3"]),
+        rsi_14=float(row["rsi_14"]),
+        macd_line_12_26=float(row["macd_line_12_26"]),
+        close_zscore_12=float(row["close_zscore_12"]),
+        volume_zscore_12=float(row["volume_zscore_12"]),
+    )
+
+
+def _position_from_row(row: Mapping[str, Any]) -> PaperPosition:
+    return PaperPosition(
+        service_name=str(row["service_name"]),
+        symbol=str(row["symbol"]),
+        status=str(row["status"]),
+        entry_signal_interval_begin=row["entry_signal_interval_begin"],
+        entry_signal_as_of_time=row["entry_signal_as_of_time"],
+        entry_signal_row_id=str(row["entry_signal_row_id"]),
+        entry_reason=str(row["entry_reason"]),
+        entry_model_name=str(row["entry_model_name"]),
+        entry_prob_up=float(row["entry_prob_up"]),
+        entry_confidence=float(row["entry_confidence"]),
+        entry_fill_interval_begin=row["entry_fill_interval_begin"],
+        entry_fill_time=row["entry_fill_time"],
+        entry_price=float(row["entry_price"]),
+        quantity=float(row["quantity"]),
+        entry_notional=float(row["entry_notional"]),
+        entry_fee=float(row["entry_fee"]),
+        stop_loss_price=float(row["stop_loss_price"]),
+        take_profit_price=float(row["take_profit_price"]),
+        position_id=int(row["id"]),
+        exit_reason=None if row["exit_reason"] is None else str(row["exit_reason"]),
+        exit_signal_interval_begin=row["exit_signal_interval_begin"],
+        exit_signal_as_of_time=row["exit_signal_as_of_time"],
+        exit_signal_row_id=None
+        if row["exit_signal_row_id"] is None
+        else str(row["exit_signal_row_id"]),
+        exit_model_name=None if row["exit_model_name"] is None else str(row["exit_model_name"]),
+        exit_prob_up=None if row["exit_prob_up"] is None else float(row["exit_prob_up"]),
+        exit_confidence=None
+        if row["exit_confidence"] is None
+        else float(row["exit_confidence"]),
+        exit_fill_interval_begin=row["exit_fill_interval_begin"],
+        exit_fill_time=row["exit_fill_time"],
+        exit_price=None if row["exit_price"] is None else float(row["exit_price"]),
+        exit_notional=None if row["exit_notional"] is None else float(row["exit_notional"]),
+        exit_fee=None if row["exit_fee"] is None else float(row["exit_fee"]),
+        realized_pnl=None if row["realized_pnl"] is None else float(row["realized_pnl"]),
+        realized_return=None
+        if row["realized_return"] is None
+        else float(row["realized_return"]),
+        opened_at=row["opened_at"],
+        closed_at=row["closed_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _ledger_entry_from_row(row: Mapping[str, Any]) -> LedgerEntrySnapshot:
+    return LedgerEntrySnapshot(
+        ledger_id=int(row["id"]),
+        symbol=str(row["symbol"]),
+        action=str(row["action"]),
+        reason=str(row["reason"]),
+        fill_interval_begin=row["fill_interval_begin"],
+        fill_time=row["fill_time"],
+        fill_price=float(row["fill_price"]),
+        quantity=float(row["quantity"]),
+        notional=float(row["notional"]),
+        fee=float(row["fee"]),
+        cash_flow=float(row["cash_flow"]),
+        realized_pnl=None if row["realized_pnl"] is None else float(row["realized_pnl"]),
+        signal_row_id=None if row["signal_row_id"] is None else str(row["signal_row_id"]),
+        model_name=None if row["model_name"] is None else str(row["model_name"]),
+        confidence=None if row["confidence"] is None else float(row["confidence"]),
+    )
+
+
+def _engine_state_from_row(row: Mapping[str, Any]) -> EngineStateSnapshot:
+    return EngineStateSnapshot(
+        service_name=str(row["service_name"]),
+        symbol=str(row["symbol"]),
+        last_processed_interval_begin=row["last_processed_interval_begin"],
+        cooldown_until_interval_begin=row["cooldown_until_interval_begin"],
+        pending_signal_action=(
+            None if row["pending_signal_action"] is None else str(row["pending_signal_action"])
+        ),
+        updated_at=row["updated_at"],
+    )

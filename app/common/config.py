@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Tuple
 from urllib.parse import quote_plus
 
@@ -120,6 +120,16 @@ class InferenceSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class DashboardSettings:
+    """Dashboard settings for the Stream Alpha M6 Streamlit app."""
+
+    inference_api_base_url: str
+    refresh_seconds: int
+    recent_trades_limit: int
+    recent_ledger_limit: int
+
+
+@dataclass(frozen=True, slots=True)
 class Settings:  # pylint: disable=too-many-instance-attributes
     """Application-wide settings assembled from environment variables."""
 
@@ -135,6 +145,14 @@ class Settings:  # pylint: disable=too-many-instance-attributes
     retry: RetrySettings
     features: FeatureSettings
     inference: InferenceSettings
+    dashboard: DashboardSettings = field(
+        default_factory=lambda: DashboardSettings(
+            inference_api_base_url="http://127.0.0.1:8000",
+            refresh_seconds=15,
+            recent_trades_limit=20,
+            recent_ledger_limit=20,
+        )
+    )
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -198,5 +216,14 @@ class Settings:  # pylint: disable=too-many-instance-attributes
                 service_name=_get_required("INFERENCE_SERVICE_NAME", "inference"),
                 signal_buy_prob_up=_get_float("INFERENCE_SIGNAL_BUY_PROB_UP", 0.55),
                 signal_sell_prob_up=_get_float("INFERENCE_SIGNAL_SELL_PROB_UP", 0.45),
+            ),
+            dashboard=DashboardSettings(
+                inference_api_base_url=_get_required(
+                    "INFERENCE_API_BASE_URL",
+                    "http://127.0.0.1:8000",
+                ).rstrip("/"),
+                refresh_seconds=_get_int("DASHBOARD_REFRESH_SECONDS", 15),
+                recent_trades_limit=_get_int("DASHBOARD_RECENT_TRADES_LIMIT", 20),
+                recent_ledger_limit=_get_int("DASHBOARD_RECENT_LEDGER_LIMIT", 20),
             ),
         )

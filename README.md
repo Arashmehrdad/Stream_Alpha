@@ -12,6 +12,8 @@ Milestone `M4` adds a minimal FastAPI inference API. It loads the accepted saved
 
 Milestone `M5` adds a minimum correct paper-trading engine. It polls finalized canonical candles from `feature_ohlc`, asks the existing M4 `/signal` endpoint for the authoritative BUY/SELL/HOLD decision for each exact candle, simulates long-only spot fills, persists positions and trade ledger rows in PostgreSQL, and writes rolling paper-trading summaries under `artifacts/paper_trading/`.
 
+Milestone `M6` adds a read-only Streamlit operator dashboard. It reads only from the accepted M4 inference API and PostgreSQL tables, then shows health, latest signals, canonical feature snapshots, open positions, recent trades, ledger activity, and paper-trading PnL/drawdown.
+
 ## Repository Tree
 
 ```text
@@ -75,11 +77,19 @@ Milestone `M5` adds a minimum correct paper-trading engine. It polls finalized c
 |   |-- paper_trading.yaml
 |   |-- redpanda-console-config.yml
 |   `-- training.m3.json
+|-- dashboards
+|   |-- __init__.py
+|   |-- data_sources.py
+|   |-- streamlit_app.py
+|   |-- view_models.py
+|   `-- widgets.py
 |-- docker
 |   `-- producer.Dockerfile
 |-- docker-compose.yml
 |-- docs
-|   `-- m1-overview.md
+|   |-- m1-overview.md
+|   `-- screenshots
+|       `-- README.md
 |-- requirements.txt
 |-- scripts
 |   |-- check-db.ps1
@@ -88,6 +98,8 @@ Milestone `M5` adds a minimum correct paper-trading engine. It polls finalized c
 |   |-- run_paper_trader.py
 |   `-- tail-producer.ps1
 `-- tests
+    |-- test_dashboard_data_sources.py
+    |-- test_dashboard_view_models.py
     |-- test_inference_api.py
     |-- test_inference_db.py
     |-- test_inference_model_loader.py
@@ -113,6 +125,7 @@ Milestone `M5` adds a minimum correct paper-trading engine. It polls finalized c
 - `features`: OHLC-only feature consumer from M2
 - `inference`: FastAPI prediction API from M4, run directly from the repo with the accepted M3 artifact
 - `paper-trader`: long-only spot paper-trading engine from M5, run directly from the repo against canonical features plus M4 signals
+- `dashboard`: read-only Streamlit UI from M6, run directly from the repo against the accepted API and PostgreSQL sources
 
 ## M2 Scope
 
@@ -175,6 +188,21 @@ M5 does not do:
 - short, pyramid, or use leverage
 - add broker integrations, dashboards, monitoring stacks, or retraining hooks
 
+## M6 Scope
+
+M6 does:
+- run one read-only Streamlit dashboard locally from the repo
+- call the accepted M4 `GET /health` and `GET /signal` endpoints
+- read canonical `feature_ohlc` rows plus M5 trading tables from PostgreSQL
+- show health, latest signals, latest canonical feature snapshots, open positions, recent trades, recent ledger activity, and paper-trading PnL/drawdown
+- surface degraded states clearly when the inference API or PostgreSQL is unavailable
+
+M6 does not do:
+- retrain or reload models from any new workflow
+- add a new backend service for the dashboard
+- write dashboard state back into PostgreSQL
+- add dashboards beyond Streamlit, live trading, RL, sentiment/news, MLflow, Grafana, Prometheus, or alerting
+
 ## Environment Variables
 
 Copy `.env.example` to `.env` before running the stack.
@@ -211,6 +239,10 @@ Copy `.env.example` to `.env` before running the stack.
 | `INFERENCE_SERVICE_NAME` | Inference API service name used in logs and responses | `inference` |
 | `INFERENCE_SIGNAL_BUY_PROB_UP` | BUY threshold for `prob_up` | `0.55` |
 | `INFERENCE_SIGNAL_SELL_PROB_UP` | SELL threshold for `prob_up` | `0.45` |
+| `INFERENCE_API_BASE_URL` | Base URL for the accepted local M4 inference API | `http://127.0.0.1:8000` |
+| `DASHBOARD_REFRESH_SECONDS` | Browser refresh cadence for the M6 Streamlit UI | `15` |
+| `DASHBOARD_RECENT_TRADES_LIMIT` | Recent closed trades shown in the dashboard | `20` |
+| `DASHBOARD_RECENT_LEDGER_LIMIT` | Recent ledger rows shown in the dashboard | `20` |
 | `RECONNECT_INITIAL_DELAY_SECONDS` | First reconnect delay | `1` |
 | `RECONNECT_MAX_DELAY_SECONDS` | Reconnect delay cap | `30` |
 | `RECONNECT_BACKOFF_MULTIPLIER` | Backoff multiplier | `2.0` |
@@ -326,6 +358,28 @@ python scripts\run_paper_trader.py --config configs\paper_trading.yaml
 ```
 
 The paper trader is intentionally local-first and long-only. It consumes the existing M4 `/signal` endpoint as authoritative and never reimplements signal logic.
+
+### 13. Run the M6 Streamlit dashboard
+
+Make sure PostgreSQL is reachable and the M4 inference API is running first.
+
+```powershell
+$env:POSTGRES_HOST = "127.0.0.1"
+$env:INFERENCE_API_BASE_URL = "http://127.0.0.1:8000"
+streamlit run dashboards/streamlit_app.py
+```
+
+The dashboard defaults to [http://localhost:8501](http://localhost:8501).
+
+### 14. Example dashboard validation requests
+
+```powershell
+curl "http://127.0.0.1:8000/health"
+curl "http://127.0.0.1:8000/signal?symbol=BTC/USD"
+docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT COUNT(*) AS feature_rows FROM feature_ohlc;"
+docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT COUNT(*) AS open_positions FROM paper_positions WHERE status = 'OPEN';"
+docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT COUNT(*) AS ledger_rows FROM paper_trade_ledger;"
+```
 
 Example `GET /signal` response:
 

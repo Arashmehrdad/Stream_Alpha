@@ -5,6 +5,7 @@ httpx>=0.28,<1
 scikit-learn>=1.6,<1.8
 pytest>=8,<9
 PyYAML>=6,<7
+streamlit>=1.43,<2
 uvicorn>=0.32,<1
 websockets>=13,<17
 pylint>=4,<5
