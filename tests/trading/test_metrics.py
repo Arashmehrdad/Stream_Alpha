@@ -35,7 +35,13 @@ def _config() -> PaperTradingConfig:
     )
 
 
-def _closed_position(symbol: str, pnl: float, trade_return: float) -> PaperPosition:
+def _closed_position(
+    symbol: str,
+    pnl: float,
+    trade_return: float,
+    *,
+    entry_regime_label: str,
+) -> PaperPosition:
     return PaperPosition(
         service_name="paper-trader",
         symbol=symbol,
@@ -55,6 +61,7 @@ def _closed_position(symbol: str, pnl: float, trade_return: float) -> PaperPosit
         entry_fee=0.2,
         stop_loss_price=98.0,
         take_profit_price=104.0,
+        entry_regime_label=entry_regime_label,
         position_id=1,
         exit_reason="SELL_SIGNAL",
         exit_fill_interval_begin=datetime(2026, 3, 20, 9, 10, tzinfo=timezone.utc),
@@ -67,7 +74,7 @@ def _closed_position(symbol: str, pnl: float, trade_return: float) -> PaperPosit
     )
 
 
-def _open_position(symbol: str) -> PaperPosition:
+def _open_position(symbol: str, *, entry_regime_label: str) -> PaperPosition:
     return PaperPosition(
         service_name="paper-trader",
         symbol=symbol,
@@ -87,6 +94,7 @@ def _open_position(symbol: str) -> PaperPosition:
         entry_fee=0.4,
         stop_loss_price=98.0,
         take_profit_price=104.0,
+        entry_regime_label=entry_regime_label,
         position_id=2,
     )
 
@@ -96,9 +104,19 @@ def test_metrics_math_is_deterministic() -> None:
     summary = build_summary(
         config=_config(),
         positions=[
-            _closed_position("BTC/USD", pnl=5.0, trade_return=0.05),
-            _closed_position("ETH/USD", pnl=-2.0, trade_return=-0.02),
-            _open_position("BTC/USD"),
+            _closed_position(
+                "BTC/USD",
+                pnl=5.0,
+                trade_return=0.05,
+                entry_regime_label="TREND_UP",
+            ),
+            _closed_position(
+                "ETH/USD",
+                pnl=-2.0,
+                trade_return=-0.02,
+                entry_regime_label="HIGH_VOL",
+            ),
+            _open_position("BTC/USD", entry_regime_label="TREND_UP"),
         ],
         latest_prices={"BTC/USD": 110.0, "ETH/USD": 98.0},
         cash_balance=9_700.0,
@@ -110,3 +128,11 @@ def test_metrics_math_is_deterministic() -> None:
     assert round(overall["turnover"], 6) > 0.0
     assert "BTC/USD" in overall["hit_rate_by_asset"]
     assert "ETH/USD" in overall["hit_rate_by_asset"]
+    assert overall["hit_rate_by_regime"]["TREND_UP"] == 1.0
+    assert overall["hit_rate_by_regime"]["HIGH_VOL"] == 0.0
+    assert overall["realized_pnl_by_regime"]["TREND_UP"] == 5.0
+    assert overall["closed_position_count_by_regime"]["HIGH_VOL"] == 1
+    by_regime = {row["regime_label"]: row for row in summary["by_regime"]}
+    assert round(by_regime["TREND_UP"]["realized_pnl"], 6) == 5.0
+    assert by_regime["TREND_UP"]["open_positions"] == 1
+    assert by_regime["HIGH_VOL"]["closed_positions"] == 1

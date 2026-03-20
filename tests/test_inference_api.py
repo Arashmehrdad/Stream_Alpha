@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+import json
 
 import joblib
 from fastapi.testclient import TestClient
@@ -24,6 +25,7 @@ from app.common.config import (
 from app.inference.db import DatabaseUnavailableError
 from app.inference.main import create_app
 from app.inference.service import InferenceService, load_model_artifact
+from app.regime.live import load_live_regime_runtime
 
 
 class SerializableProbabilityModel:
@@ -134,6 +136,96 @@ def _build_settings(model_path: str) -> Settings:
     )
 
 
+def _write_thresholds_artifact(tmp_path: Path) -> Path:
+    artifact_path = tmp_path / "thresholds.json"
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "m8_thresholds_v1",
+                "run_id": "20260320T120000Z",
+                "source_table": "feature_ohlc",
+                "source_exchange": "kraken",
+                "interval_minutes": 5,
+                "required_inputs": [
+                    "realized_vol_12",
+                    "momentum_3",
+                    "macd_line_12_26",
+                ],
+                "regime_labels": [
+                    "TREND_UP",
+                    "TREND_DOWN",
+                    "RANGE",
+                    "HIGH_VOL",
+                ],
+                "thresholds_by_symbol": {
+                    "BTC/USD": {
+                        "symbol": "BTC/USD",
+                        "fitted_row_count": 100,
+                        "high_vol_threshold": 0.05,
+                        "trend_abs_threshold": 0.02,
+                    },
+                    "ETH/USD": {
+                        "symbol": "ETH/USD",
+                        "fitted_row_count": 100,
+                        "high_vol_threshold": 0.06,
+                        "trend_abs_threshold": 0.03,
+                    },
+                    "SOL/USD": {
+                        "symbol": "SOL/USD",
+                        "fitted_row_count": 100,
+                        "high_vol_threshold": 0.07,
+                        "trend_abs_threshold": 0.04,
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    return artifact_path
+
+
+def _write_signal_policy(tmp_path: Path) -> Path:
+    policy_path = tmp_path / "regime_signal_policy.json"
+    policy_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "m9_regime_signal_policy_v1",
+                "policies": {
+                    "TREND_UP": {
+                        "buy_prob_up": 0.54,
+                        "sell_prob_up": 0.44,
+                        "allow_new_long_entries": True,
+                    },
+                    "RANGE": {
+                        "buy_prob_up": 0.58,
+                        "sell_prob_up": 0.42,
+                        "allow_new_long_entries": True,
+                    },
+                    "TREND_DOWN": {
+                        "buy_prob_up": 0.60,
+                        "sell_prob_up": 0.46,
+                        "allow_new_long_entries": False,
+                    },
+                    "HIGH_VOL": {
+                        "buy_prob_up": 0.62,
+                        "sell_prob_up": 0.48,
+                        "allow_new_long_entries": False,
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    return policy_path
+
+
+def _build_regime_runtime(tmp_path: Path):
+    return load_live_regime_runtime(
+        thresholds_path=str(_write_thresholds_artifact(tmp_path)),
+        signal_policy_path=str(_write_signal_policy(tmp_path)),
+    )
+
+
 def _write_artifact(tmp_path: Path, *, prob_up: float) -> Path:
     artifact_path = tmp_path / f"model-{prob_up:.2f}.joblib"
     joblib.dump(
@@ -149,7 +241,13 @@ def _write_artifact(tmp_path: Path, *, prob_up: float) -> Path:
     return artifact_path
 
 
-def _feature_row(symbol: str = "BTC/USD") -> dict:
+def _feature_row(
+    symbol: str = "BTC/USD",
+    *,
+    realized_vol_12: float = 0.03,
+    momentum_3: float = 0.03,
+    macd_line_12_26: float = 1.2,
+) -> dict:
     base_time = datetime(2026, 3, 19, 22, 0, tzinfo=timezone.utc)
     return {
         "id": 1,
@@ -170,12 +268,12 @@ def _feature_row(symbol: str = "BTC/USD") -> dict:
         "volume": 12.5,
         "log_return_1": 0.01,
         "log_return_3": 0.02,
-        "momentum_3": 0.03,
+        "momentum_3": momentum_3,
         "return_mean_12": 0.01,
         "return_std_12": 0.02,
-        "realized_vol_12": 0.03,
+        "realized_vol_12": realized_vol_12,
         "rsi_14": 55.0,
-        "macd_line_12_26": 1.2,
+        "macd_line_12_26": macd_line_12_26,
         "volume_mean_12": 10.0,
         "volume_std_12": 2.0,
         "volume_zscore_12": 1.25,
@@ -194,6 +292,7 @@ def _build_client(tmp_path: Path, *, prob_up: float, database: FakeDatabase) -> 
         _build_settings(str(_write_artifact(tmp_path, prob_up=prob_up))),
         database=database,
         model_artifact=artifact,
+        regime_runtime=_build_regime_runtime(tmp_path),
     )
     return TestClient(create_app(service))
 
@@ -205,6 +304,8 @@ def test_health_reports_success_and_dependency_failure(tmp_path: Path) -> None:
 
     assert healthy_response.status_code == 200
     assert healthy_response.json()["status"] == "ok"
+    assert healthy_response.json()["regime_loaded"] is True
+    assert healthy_response.json()["regime_run_id"] == "20260320T120000Z"
 
     unhealthy_client = _build_client(
         tmp_path,
@@ -228,6 +329,8 @@ def test_predict_happy_path(tmp_path: Path) -> None:
     assert payload["predicted_class"] == "UP"
     assert payload["prob_up"] == 0.7
     assert payload["row_id"].startswith("BTC/USD|")
+    assert payload["regime_label"] == "TREND_UP"
+    assert payload["regime_run_id"] == "20260320T120000Z"
 
 
 def test_signal_accepts_exact_interval_begin_selector(tmp_path: Path) -> None:
@@ -254,8 +357,72 @@ def test_signal_buy_sell_and_hold(tmp_path: Path) -> None:
     hold_client = _build_client(tmp_path, prob_up=0.5, database=FakeDatabase(row=_feature_row()))
 
     assert buy_client.get("/signal", params={"symbol": "BTC/USD"}).json()["signal"] == "BUY"
+    assert buy_client.get("/signal", params={"symbol": "BTC/USD"}).json()["trade_allowed"] is True
     assert sell_client.get("/signal", params={"symbol": "BTC/USD"}).json()["signal"] == "SELL"
+    assert sell_client.get("/signal", params={"symbol": "BTC/USD"}).json()["trade_allowed"] is True
     assert hold_client.get("/signal", params={"symbol": "BTC/USD"}).json()["signal"] == "HOLD"
+    assert hold_client.get("/signal", params={"symbol": "BTC/USD"}).json()["trade_allowed"] is False
+
+
+def test_regime_endpoint_returns_exact_row_regime_and_policy(tmp_path: Path) -> None:
+    """`/regime` should expose the exact-row M8 regime plus the active M9 policy."""
+    client = _build_client(tmp_path, prob_up=0.7, database=FakeDatabase(row=_feature_row()))
+
+    response = client.get("/regime", params={"symbol": "BTC/USD"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["regime_label"] == "TREND_UP"
+    assert payload["regime_run_id"] == "20260320T120000Z"
+    assert payload["trade_allowed"] is True
+    assert payload["buy_prob_up"] == 0.54
+    assert payload["sell_prob_up"] == 0.44
+
+
+def test_signal_blocks_new_buy_entries_in_high_vol_regime(tmp_path: Path) -> None:
+    """High-volatility rows should block new BUY entries while preserving the regime label."""
+    client = _build_client(
+        tmp_path,
+        prob_up=0.7,
+        database=FakeDatabase(
+            row=_feature_row(
+                realized_vol_12=0.08,
+                momentum_3=0.03,
+                macd_line_12_26=1.2,
+            )
+        ),
+    )
+
+    response = client.get("/signal", params={"symbol": "BTC/USD"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["signal"] == "HOLD"
+    assert payload["regime_label"] == "HIGH_VOL"
+    assert payload["trade_allowed"] is False
+
+
+def test_signal_sell_remains_allowed_in_high_vol_regime(tmp_path: Path) -> None:
+    """No-trade regimes must still allow SELL because SELL reduces long-only risk."""
+    client = _build_client(
+        tmp_path,
+        prob_up=0.3,
+        database=FakeDatabase(
+            row=_feature_row(
+                realized_vol_12=0.08,
+                momentum_3=0.03,
+                macd_line_12_26=1.2,
+            )
+        ),
+    )
+
+    response = client.get("/signal", params={"symbol": "BTC/USD"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["signal"] == "SELL"
+    assert payload["regime_label"] == "HIGH_VOL"
+    assert payload["trade_allowed"] is True
 
 
 def test_invalid_symbol_and_missing_row_behaviour(tmp_path: Path) -> None:

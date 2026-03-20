@@ -13,8 +13,10 @@ import joblib
 from app.common.config import Settings
 from app.common.time import to_rfc3339, utc_now
 from app.inference.db import InferenceDatabase
-from app.inference.schemas import HealthResponse, MetricsResponse, ThresholdsResponse
+from app.inference.schemas import HealthResponse, MetricsResponse, RegimeResponse
+from app.inference.schemas import ThresholdsResponse
 from app.inference.schemas import LatencyStatsResponse, PredictionResponse, SignalResponse
+from app.regime.live import LiveRegimeRuntime, load_live_regime_runtime
 from app.training.registry import resolve_inference_model_path
 
 
@@ -125,6 +127,7 @@ class InferenceService:
         *,
         database: InferenceDatabase | None = None,
         model_artifact: LoadedModelArtifact | None = None,
+        regime_runtime: LiveRegimeRuntime | None = None,
     ) -> None:
         self.settings = settings
         self.started_at = utc_now()
@@ -136,8 +139,18 @@ class InferenceService:
         self.model_artifact = model_artifact or load_model_artifact(
             settings.inference.model_path,
         )
+        self.regime_runtime = regime_runtime or load_live_regime_runtime(
+            thresholds_path=settings.inference.regime_thresholds_path,
+            signal_policy_path=settings.inference.regime_signal_policy_path,
+        )
         self._symbols = set(settings.kraken.symbols)
         self._validate_thresholds()
+        self.regime_runtime.validate_runtime_compatibility(
+            source_table=settings.tables.feature_ohlc,
+            source_exchange="kraken",
+            interval_minutes=settings.kraken.ohlc_interval_minutes,
+            symbols=settings.kraken.symbols,
+        )
 
     async def startup(self) -> None:
         """Open the read-only database pool for serving."""
@@ -170,6 +183,9 @@ class InferenceService:
                 model_artifact_path=(
                     self.model_artifact.model_artifact_path if model_loaded else None
                 ),
+                regime_loaded=self.regime_runtime is not None,
+                regime_run_id=self.regime_runtime.run_id,
+                regime_artifact_path=self.regime_runtime.artifact_path,
                 database="healthy" if database_healthy else "unavailable",
                 started_at=self.started_at,
             ),
@@ -196,6 +212,7 @@ class InferenceService:
     def predict_from_row(self, row: dict[str, Any]) -> PredictionResponse:
         """Run predict_proba against one canonical feature row."""
         feature_input = self._build_feature_input(row)
+        resolved_regime = self._resolve_regime(row)
         probabilities = self.model_artifact.model.predict_proba([feature_input])
         if len(probabilities) != 1 or len(probabilities[0]) != 2:
             raise ArtifactSchemaMismatchError(
@@ -217,15 +234,29 @@ class InferenceService:
             prob_down=prob_down,
             predicted_class=predicted_class,
             confidence=max(prob_up, prob_down),
+            regime_label=resolved_regime.regime_label,
+            regime_run_id=resolved_regime.regime_run_id,
         )
 
     def signal_from_prediction(self, prediction: PredictionResponse) -> SignalResponse:
         """Convert one prediction into BUY, SELL, or HOLD."""
-        buy_threshold = self.settings.inference.signal_buy_prob_up
-        sell_threshold = self.settings.inference.signal_sell_prob_up
+        policy = self.regime_runtime.policy_for(prediction.regime_label)
+        buy_threshold = policy.buy_prob_up
+        sell_threshold = policy.sell_prob_up
         if prediction.prob_up >= buy_threshold:
-            signal = "BUY"
-            reason = f"prob_up {prediction.prob_up:.4f} >= buy threshold {buy_threshold:.2f}"
+            if policy.allow_new_long_entries:
+                signal = "BUY"
+                reason = (
+                    f"prob_up {prediction.prob_up:.4f} >= buy threshold "
+                    f"{buy_threshold:.2f}"
+                )
+            else:
+                signal = "HOLD"
+                reason = (
+                    f"prob_up {prediction.prob_up:.4f} >= buy threshold "
+                    f"{buy_threshold:.2f} but new long entries are disabled in "
+                    f"{prediction.regime_label}"
+                )
         elif prediction.prob_up <= sell_threshold:
             signal = "SELL"
             reason = f"prob_up {prediction.prob_up:.4f} <= sell threshold {sell_threshold:.2f}"
@@ -235,6 +266,7 @@ class InferenceService:
                 f"prob_up {prediction.prob_up:.4f} is between "
                 f"{sell_threshold:.2f} and {buy_threshold:.2f}"
             )
+        trade_allowed = signal in {"BUY", "SELL"}
 
         return SignalResponse(
             symbol=prediction.symbol,
@@ -251,6 +283,31 @@ class InferenceService:
             row_id=prediction.row_id,
             as_of_time=prediction.as_of_time,
             model_name=prediction.model_name,
+            regime_label=prediction.regime_label,
+            regime_run_id=prediction.regime_run_id,
+            trade_allowed=trade_allowed,
+        )
+
+    def regime_from_row(self, row: dict[str, Any]) -> RegimeResponse:
+        """Resolve the exact-row regime payload used by M4."""
+        resolved_regime = self._resolve_regime(row)
+        policy = self.regime_runtime.policy_for(resolved_regime.regime_label)
+        return RegimeResponse(
+            symbol=resolved_regime.symbol,
+            row_id=resolved_regime.row_id,
+            interval_begin=resolved_regime.interval_begin,
+            as_of_time=resolved_regime.as_of_time,
+            regime_label=resolved_regime.regime_label,
+            regime_run_id=resolved_regime.regime_run_id,
+            regime_artifact_path=resolved_regime.regime_artifact_path,
+            realized_vol_12=resolved_regime.realized_vol_12,
+            momentum_3=resolved_regime.momentum_3,
+            macd_line_12_26=resolved_regime.macd_line_12_26,
+            high_vol_threshold=resolved_regime.high_vol_threshold,
+            trend_abs_threshold=resolved_regime.trend_abs_threshold,
+            trade_allowed=policy.allow_new_long_entries,
+            buy_prob_up=policy.buy_prob_up,
+            sell_prob_up=policy.sell_prob_up,
         )
 
     def metrics_snapshot(self) -> MetricsResponse:
@@ -291,6 +348,12 @@ class InferenceService:
             raise ValueError("INFERENCE_SIGNAL_BUY_PROB_UP must be between 0 and 1")
         if sell_threshold > buy_threshold:
             raise ValueError("SELL threshold cannot be greater than BUY threshold")
+
+    def _resolve_regime(self, row: dict[str, Any]):
+        try:
+            return self.regime_runtime.resolve_feature_row_regime(row)
+        except ValueError as error:
+            raise ArtifactSchemaMismatchError(str(error)) from error
 
 
 def request_latency_ms(started_at: float) -> float:

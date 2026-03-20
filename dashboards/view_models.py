@@ -38,6 +38,9 @@ class TradingOverview:
     sharpe_like: float
     cash_balance: float
     hit_rate_by_asset: dict[str, float]
+    hit_rate_by_regime: dict[str, float]
+    realized_pnl_by_regime: dict[str, float]
+    closed_position_count_by_regime: dict[str, int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +86,9 @@ def build_overview_metrics(
         sharpe_like=float(overall["sharpe_like"]),
         cash_balance=float(overall["cash_balance"]),
         hit_rate_by_asset=dict(overall["hit_rate_by_asset"]),
+        hit_rate_by_regime=dict(overall["hit_rate_by_regime"]),
+        realized_pnl_by_regime=dict(overall["realized_pnl_by_regime"]),
+        closed_position_count_by_regime=dict(overall["closed_position_count_by_regime"]),
     )
 
 
@@ -110,6 +116,9 @@ def build_latest_signal_rows(
                     "age": None,
                     "reason": None if signal is None else signal.error,
                     "model_name": None if signal is None else signal.model_name,
+                    "regime_label": None if signal is None else signal.regime_label,
+                    "regime_run_id": None if signal is None else signal.regime_run_id,
+                    "trade_allowed": None if signal is None else signal.trade_allowed,
                 }
             )
             continue
@@ -126,6 +135,9 @@ def build_latest_signal_rows(
                 "age": age_text(signal.as_of_time, reference_time),
                 "reason": signal.reason,
                 "model_name": signal.model_name,
+                "regime_label": signal.regime_label,
+                "regime_run_id": signal.regime_run_id,
+                "trade_allowed": signal.trade_allowed,
             }
         )
     return rows
@@ -221,6 +233,7 @@ def build_open_position_rows(
                 "unrealized_pnl": round_or_none(unrealized_pnl, 6),
                 "stop_loss_price": round(position.stop_loss_price, 6),
                 "take_profit_price": round(position.take_profit_price, 6),
+                "entry_regime_label": position.entry_regime_label,
                 "entry_model_name": position.entry_model_name,
                 "entry_signal_row_id": position.entry_signal_row_id,
             }
@@ -246,6 +259,8 @@ def build_recent_closed_trade_rows(
                 "realized_pnl": round_or_none(position.realized_pnl, 6),
                 "realized_return": round_or_none(position.realized_return, 6),
                 "exit_reason": position.exit_reason,
+                "entry_regime_label": position.entry_regime_label,
+                "exit_regime_label": position.exit_regime_label,
                 "entry_model_name": position.entry_model_name,
                 "exit_model_name": position.exit_model_name,
             }
@@ -273,8 +288,37 @@ def build_recent_ledger_rows(
             "confidence": round_or_none(entry.confidence, 4),
             "model_name": entry.model_name,
             "signal_row_id": entry.signal_row_id,
+            "regime_label": entry.regime_label,
         }
         for entry in entries
+    ]
+
+
+def build_performance_by_regime_rows(
+    *,
+    snapshot: DashboardSnapshot,
+    trading_config: PaperTradingConfig,
+) -> list[dict[str, Any]]:
+    """Build a compact by-regime performance table from persisted M5 state."""
+    if not snapshot.database.available or snapshot.database.cash_balance is None:
+        return []
+
+    summary = build_summary(
+        config=trading_config,
+        positions=list(snapshot.database.positions),
+        latest_prices=snapshot.database.latest_prices,
+        cash_balance=snapshot.database.cash_balance,
+    )
+    return [
+        {
+            "regime_label": row["regime_label"],
+            "open_positions": int(row["open_positions"]),
+            "closed_positions": int(row["closed_positions"]),
+            "realized_pnl": round(float(row["realized_pnl"]), 6),
+            "total_pnl": round(float(row["total_pnl"]), 6),
+            "win_rate": round(float(row["win_rate"]), 4),
+        }
+        for row in summary["by_regime"]
     ]
 
 

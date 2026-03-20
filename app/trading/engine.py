@@ -79,6 +79,7 @@ def process_candle(  # pylint: disable=too-many-arguments
             ),
             reason=barrier_reason,
             signal_state=None,
+            regime_label=signal.regime_label,
         )
         working_position = None
         closed_position = barrier_exit.position
@@ -207,6 +208,7 @@ def _open_position(
         entry_fee=entry_fee,
         stop_loss_price=entry_price * (1.0 - config.risk.stop_loss_pct),
         take_profit_price=entry_price * (1.0 + config.risk.take_profit_pct),
+        entry_regime_label=pending.regime_label,
         opened_at=opened_at,
         updated_at=opened_at,
     )
@@ -230,6 +232,7 @@ def _open_position(
         prob_up=pending.prob_up,
         prob_down=pending.prob_down,
         confidence=pending.confidence,
+        regime_label=pending.regime_label,
     )
     return _OpenPositionResult(position, ledger_entry, ledger_entry.cash_flow)
 
@@ -249,6 +252,7 @@ def _close_position(  # pylint: disable=too-many-arguments
     fill_price: float,
     reason: str,
     signal_state: PendingSignalState | None,
+    regime_label: str | None = None,
 ) -> _ClosePositionResult:
     exit_notional = fill_price * position.quantity
     exit_fee = calculate_fee(exit_notional, config.risk.fee_bps)
@@ -275,6 +279,9 @@ def _close_position(  # pylint: disable=too-many-arguments
         exit_fee=exit_fee,
         realized_pnl=realized_pnl,
         realized_return=realized_return,
+        exit_regime_label=(
+            regime_label if signal_state is None else signal_state.regime_label
+        ),
         closed_at=closed_at,
         updated_at=closed_at,
     )
@@ -298,6 +305,7 @@ def _close_position(  # pylint: disable=too-many-arguments
         prob_up=None if signal_state is None else signal_state.prob_up,
         prob_down=None if signal_state is None else signal_state.prob_down,
         confidence=None if signal_state is None else signal_state.confidence,
+        regime_label=regime_label if signal_state is None else signal_state.regime_label,
         realized_pnl=realized_pnl,
     )
     return _ClosePositionResult(closed_position, ledger_entry, ledger_entry.cash_flow)
@@ -317,6 +325,8 @@ def _build_pending_signal(signal: SignalDecision) -> PendingSignalState | None:
         confidence=signal.confidence,
         predicted_class=signal.predicted_class,
         model_name=signal.model_name,
+        regime_label=signal.regime_label,
+        regime_run_id=signal.regime_run_id,
     )
 
 

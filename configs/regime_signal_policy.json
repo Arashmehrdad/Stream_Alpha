@@ -1,0 +1,25 @@
+{
+  "schema_version": "m9_regime_signal_policy_v1",
+  "policies": {
+    "TREND_UP": {
+      "buy_prob_up": 0.54,
+      "sell_prob_up": 0.44,
+      "allow_new_long_entries": true
+    },
+    "RANGE": {
+      "buy_prob_up": 0.58,
+      "sell_prob_up": 0.42,
+      "allow_new_long_entries": true
+    },
+    "TREND_DOWN": {
+      "buy_prob_up": 0.60,
+      "sell_prob_up": 0.46,
+      "allow_new_long_entries": false
+    },
+    "HIGH_VOL": {
+      "buy_prob_up": 0.62,
+      "sell_prob_up": 0.48,
+      "allow_new_long_entries": false
+    }
+  }
+}

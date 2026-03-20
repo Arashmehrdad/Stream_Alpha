@@ -48,6 +48,9 @@ class ApiHealthSnapshot:
     model_loaded: bool = False
     model_name: str | None = None
     model_artifact_path: str | None = None
+    regime_loaded: bool = False
+    regime_run_id: str | None = None
+    regime_artifact_path: str | None = None
     database: str | None = None
     started_at: datetime | None = None
     error: str | None = None
@@ -69,6 +72,9 @@ class SignalSnapshot:
     row_id: str | None = None
     as_of_time: datetime | None = None
     model_name: str | None = None
+    regime_label: str | None = None
+    regime_run_id: str | None = None
+    trade_allowed: bool | None = None
     buy_threshold: float | None = None
     sell_threshold: float | None = None
     error: str | None = None
@@ -113,6 +119,7 @@ class LedgerEntrySnapshot:
     signal_row_id: str | None
     model_name: str | None
     confidence: float | None
+    regime_label: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +131,7 @@ class EngineStateSnapshot:
     last_processed_interval_begin: datetime | None
     cooldown_until_interval_begin: datetime | None
     pending_signal_action: str | None
+    pending_regime_label: str | None
     updated_at: datetime
 
 
@@ -224,6 +232,15 @@ class DashboardDataSources:
                 if payload.get("model_artifact_path") is None
                 else str(payload["model_artifact_path"])
             ),
+            regime_loaded=bool(payload.get("regime_loaded")),
+            regime_run_id=(
+                None if payload.get("regime_run_id") is None else str(payload["regime_run_id"])
+            ),
+            regime_artifact_path=(
+                None
+                if payload.get("regime_artifact_path") is None
+                else str(payload["regime_artifact_path"])
+            ),
             database=None if payload.get("database") is None else str(payload["database"]),
             started_at=started_at,
             error=None if response.status_code == 200 else f"HTTP {response.status_code}",
@@ -303,7 +320,7 @@ class DashboardDataSources:
                 f"""
                 SELECT id, symbol, action, reason, fill_interval_begin, fill_time,
                        fill_price, quantity, notional, fee, cash_flow,
-                       realized_pnl, signal_row_id, model_name, confidence
+                       realized_pnl, signal_row_id, model_name, confidence, regime_label
                 FROM {self._ledger_table}
                 WHERE service_name = $1
                 ORDER BY fill_time DESC, id DESC
@@ -316,6 +333,7 @@ class DashboardDataSources:
                 f"""
                 SELECT service_name, symbol, last_processed_interval_begin,
                        cooldown_until_interval_begin, pending_signal_action,
+                       pending_regime_label,
                        updated_at
                 FROM {self._state_table}
                 WHERE service_name = $1
@@ -416,6 +434,17 @@ def _signal_from_payload(
         row_id=str(payload["row_id"]),
         as_of_time=as_of_time,
         model_name=str(payload["model_name"]),
+        regime_label=(
+            None if payload.get("regime_label") is None else str(payload["regime_label"])
+        ),
+        regime_run_id=(
+            None if payload.get("regime_run_id") is None else str(payload["regime_run_id"])
+        ),
+        trade_allowed=(
+            None
+            if payload.get("trade_allowed") is None
+            else bool(payload["trade_allowed"])
+        ),
         buy_threshold=float(thresholds["buy_prob_up"]),
         sell_threshold=float(thresholds["sell_prob_up"]),
     )
@@ -460,6 +489,9 @@ def _position_from_row(row: Mapping[str, Any]) -> PaperPosition:
         entry_fee=float(row["entry_fee"]),
         stop_loss_price=float(row["stop_loss_price"]),
         take_profit_price=float(row["take_profit_price"]),
+        entry_regime_label=(
+            None if row["entry_regime_label"] is None else str(row["entry_regime_label"])
+        ),
         position_id=int(row["id"]),
         exit_reason=None if row["exit_reason"] is None else str(row["exit_reason"]),
         exit_signal_interval_begin=row["exit_signal_interval_begin"],
@@ -481,6 +513,9 @@ def _position_from_row(row: Mapping[str, Any]) -> PaperPosition:
         realized_return=None
         if row["realized_return"] is None
         else float(row["realized_return"]),
+        exit_regime_label=(
+            None if row["exit_regime_label"] is None else str(row["exit_regime_label"])
+        ),
         opened_at=row["opened_at"],
         closed_at=row["closed_at"],
         updated_at=row["updated_at"],
@@ -504,6 +539,7 @@ def _ledger_entry_from_row(row: Mapping[str, Any]) -> LedgerEntrySnapshot:
         signal_row_id=None if row["signal_row_id"] is None else str(row["signal_row_id"]),
         model_name=None if row["model_name"] is None else str(row["model_name"]),
         confidence=None if row["confidence"] is None else float(row["confidence"]),
+        regime_label=None if row["regime_label"] is None else str(row["regime_label"]),
     )
 
 
@@ -515,6 +551,9 @@ def _engine_state_from_row(row: Mapping[str, Any]) -> EngineStateSnapshot:
         cooldown_until_interval_begin=row["cooldown_until_interval_begin"],
         pending_signal_action=(
             None if row["pending_signal_action"] is None else str(row["pending_signal_action"])
+        ),
+        pending_regime_label=(
+            None if row["pending_regime_label"] is None else str(row["pending_regime_label"])
         ),
         updated_at=row["updated_at"],
     )

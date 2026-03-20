@@ -19,6 +19,7 @@ from dashboards.view_models import (
     build_latest_signal_rows,
     build_open_position_rows,
     build_overview_metrics,
+    build_performance_by_regime_rows,
     build_recent_closed_trade_rows,
     build_recent_ledger_rows,
     build_trader_freshness,
@@ -161,6 +162,11 @@ def _render_overview(*, trading_config, snapshot, latest_signals) -> None:
         secondary_columns[3].metric("Sharpe-Like", f"{overview_metrics.sharpe_like:.2f}")
 
     render_table("Latest Signals", latest_signals)
+    if api_health.regime_loaded:
+        st.caption(
+            "Regime runtime: "
+            f"`{api_health.regime_run_id}` from `{api_health.regime_artifact_path}`"
+        )
 
     if snapshot.database.available:
         chart_rows = build_equity_curve_rows(
@@ -245,10 +251,15 @@ def _render_trading(*, settings: Settings, trading_config, snapshot) -> None:
         snapshot.database.recent_closed_positions
     )
     recent_ledger_rows = build_recent_ledger_rows(snapshot.database.recent_ledger_entries)
+    by_regime_rows = build_performance_by_regime_rows(
+        snapshot=snapshot,
+        trading_config=trading_config,
+    )
 
     render_table("Open Positions", open_position_rows)
     render_table("Recent Closed Trades", recent_closed_rows)
     render_table("Recent Ledger Activity", recent_ledger_rows)
+    render_table("Performance By Regime", by_regime_rows)
 
     st.caption(
         "Recent closed trades limit: "

@@ -18,6 +18,8 @@ Milestone `M7` adds a local-first retraining and model-comparison workflow. It r
 
 Milestone `M8` foundation adds an explicit offline regime workflow. It reads canonical `feature_ohlc`, fits deterministic per-symbol volatility and trend thresholds, classifies rows into `TREND_UP`, `TREND_DOWN`, `RANGE`, or `HIGH_VOL`, and writes explicit artifacts under `artifacts/regime/m8/<run_id>/`.
 
+Milestone `M9` adds a minimum regime-aware live signal foundation. It loads the saved M8 `thresholds.json`, resolves regime labels for the exact canonical feature row used by M4, extends the accepted inference and paper-trading contracts additively, and surfaces by-regime performance in the existing dashboard and trading artifacts.
+
 ## Repository Tree
 
 ```text
@@ -49,6 +51,14 @@ Milestone `M8` foundation adds an explicit offline regime workflow. It reads can
 |   |   |-- db.py
 |   |   |-- main.py
 |   |   |-- schemas.py
+|   |   `-- service.py
+|   |-- regime
+|   |   |-- __init__.py
+|   |   |-- __main__.py
+|   |   |-- artifacts.py
+|   |   |-- config.py
+|   |   |-- dataset.py
+|   |   |-- live.py
 |   |   `-- service.py
 |   |-- trading
 |   |   |-- __init__.py
@@ -84,6 +94,8 @@ Milestone `M8` foundation adds an explicit offline regime workflow. It reads can
 |       `-- service.py
 |-- configs
 |   |-- paper_trading.yaml
+|   |-- regime.m8.json
+|   |-- regime_signal_policy.json
 |   |-- redpanda-console-config.yml
 |   |-- training.m3.json
 |   `-- training.m7.json
@@ -138,8 +150,8 @@ Milestone `M8` foundation adds an explicit offline regime workflow. It reads can
 - `producer`: Kraken public WebSocket v2 ingestion service from M1
 - `features`: OHLC-only feature consumer from M2
 - `inference`: FastAPI prediction API from M4, run directly from the repo with the accepted M3 artifact
-- `paper-trader`: long-only spot paper-trading engine from M5, run directly from the repo against canonical features plus M4 signals
-- `dashboard`: read-only Streamlit UI from M6, run directly from the repo against the accepted API and PostgreSQL sources
+- `paper-trader`: long-only spot paper-trading engine from M5, run directly from the repo against canonical features plus authoritative M4/M9 signals
+- `dashboard`: read-only Streamlit UI from M6, run directly from the repo against the accepted API and PostgreSQL sources, including additive M9 regime fields
 
 ## M2 Scope
 
@@ -247,6 +259,25 @@ M8 foundation does not do:
 - add a `/regime` endpoint, schedulers, background workers, or new PostgreSQL tables
 - add clustering, RL, sentiment, anomaly detection, MLflow, or notebooks
 
+## M9 Scope
+
+M9 does:
+- load the latest saved M8 `thresholds.json` by default, or an explicit threshold artifact path when configured
+- resolve the regime for the exact canonical `feature_ohlc` row used by `GET /predict`, `GET /signal`, and `GET /regime`
+- extend `GET /predict` with `regime_label` and `regime_run_id`
+- extend `GET /signal` with `regime_label`, `regime_run_id`, and `trade_allowed`
+- add a read-only `GET /regime` endpoint
+- apply regime-dependent BUY/SELL thresholds and BUY no-trade rules in M4 only
+- persist additive regime labels in `paper_engine_state`, `paper_positions`, and `paper_trade_ledger`
+- extend paper-trading summaries with by-regime hit rate and PnL outputs
+- surface regime fields and a compact by-regime performance table in the existing M6 dashboard
+
+M9 does not do:
+- add live trading, shorting, portfolio allocation, or position-sizing changes
+- add a new PostgreSQL table, orchestration stack, scheduler, control plane, or background daemon
+- duplicate regime logic in M5 or change M7 registry model resolution
+- add RL, sentiment/news, anomaly detection, MLflow, or adaptive threshold tuning
+
 ## Environment Variables
 
 Copy `.env.example` to `.env` before running the stack.
@@ -283,6 +314,8 @@ Copy `.env.example` to `.env` before running the stack.
 | `INFERENCE_SERVICE_NAME` | Inference API service name used in logs and responses | `inference` |
 | `INFERENCE_SIGNAL_BUY_PROB_UP` | BUY threshold for `prob_up` | `0.55` |
 | `INFERENCE_SIGNAL_SELL_PROB_UP` | SELL threshold for `prob_up` | `0.45` |
+| `INFERENCE_REGIME_THRESHOLDS_PATH` | Optional explicit M8 `thresholds.json`; when empty M9 uses the latest run under `artifacts/regime/m8/` | empty |
+| `INFERENCE_REGIME_SIGNAL_POLICY_PATH` | Optional explicit M9 regime signal policy path | `configs/regime_signal_policy.json` |
 | `INFERENCE_API_BASE_URL` | Base URL for the accepted local M4 inference API | `http://127.0.0.1:8000` |
 | `DASHBOARD_REFRESH_SECONDS` | Browser refresh cadence for the M6 Streamlit UI | `15` |
 | `DASHBOARD_RECENT_TRADES_LIMIT` | Recent closed trades shown in the dashboard | `20` |
@@ -348,12 +381,13 @@ The backfill command upserts closed historical candles into `raw_ohlc` and then 
 wsl -e bash /mnt/d/Github/Stream_Alpha/scripts/m3-smoke-run.sh
 ```
 
-### 9. Run the M4 inference API from the repo
+### 9. Run the M4 and M9 inference API from the repo
 
 Set `INFERENCE_MODEL_PATH` to the accepted saved M3 artifact if you want a direct override. For example:
 
 ```powershell
 $env:INFERENCE_MODEL_PATH = "D:\Github\Stream_Alpha\artifacts\training\m3\<run_id>\model.joblib"
+$env:INFERENCE_REGIME_THRESHOLDS_PATH = "D:\Github\Stream_Alpha\artifacts\regime\m8\<run_id>\thresholds.json"
 python -m app.inference
 ```
 
@@ -361,12 +395,15 @@ The API listens on `http://127.0.0.1:8000` by default.
 
 When `INFERENCE_MODEL_PATH` is empty, M4 resolves the current champion from `artifacts/registry/current.json` instead.
 
+When `INFERENCE_REGIME_THRESHOLDS_PATH` is empty, M9 resolves the latest saved `thresholds.json` under `artifacts/regime/m8/`.
+
 ### 10. Example inference requests
 
 ```powershell
 curl "http://127.0.0.1:8000/health"
 curl "http://127.0.0.1:8000/latest-features?symbol=BTC/USD"
 curl "http://127.0.0.1:8000/predict?symbol=BTC/USD"
+curl "http://127.0.0.1:8000/regime?symbol=BTC/USD"
 curl "http://127.0.0.1:8000/signal?symbol=BTC/USD"
 curl "http://127.0.0.1:8000/metrics"
 ```
@@ -385,7 +422,9 @@ Example `GET /predict` response:
   "prob_up": 0.61,
   "prob_down": 0.39,
   "predicted_class": "UP",
-  "confidence": 0.61
+  "confidence": 0.61,
+  "regime_label": "TREND_UP",
+  "regime_run_id": "20260320T165813Z"
 }
 ```
 
@@ -403,7 +442,7 @@ python scripts\run_paper_trader.py --config configs\paper_trading.yaml --once
 python scripts\run_paper_trader.py --config configs\paper_trading.yaml
 ```
 
-The paper trader is intentionally local-first and long-only. It consumes the existing M4 `/signal` endpoint as authoritative and never reimplements signal logic.
+The paper trader is intentionally local-first and long-only. It consumes the existing M4 `/signal` endpoint as authoritative, including M9 regime-aware decisions, and never reimplements signal logic.
 
 ### 13. Run the M6 Streamlit dashboard
 
@@ -433,18 +472,43 @@ Example `GET /signal` response:
 {
   "symbol": "BTC/USD",
   "signal": "BUY",
-  "reason": "prob_up 0.6100 >= buy threshold 0.55",
+  "reason": "prob_up 0.6100 >= buy threshold 0.54",
   "prob_up": 0.61,
   "prob_down": 0.39,
   "confidence": 0.61,
   "predicted_class": "UP",
   "thresholds": {
-    "buy_prob_up": 0.55,
-    "sell_prob_up": 0.45
+    "buy_prob_up": 0.54,
+    "sell_prob_up": 0.44
   },
   "row_id": "BTC/USD|2026-03-19T22:00:00Z",
   "as_of_time": "2026-03-19T22:05:00Z",
-  "model_name": "logistic_regression"
+  "model_name": "logistic_regression",
+  "regime_label": "TREND_UP",
+  "regime_run_id": "20260320T165813Z",
+  "trade_allowed": true
+}
+```
+
+Example `GET /regime` response:
+
+```json
+{
+  "symbol": "BTC/USD",
+  "row_id": "BTC/USD|2026-03-19T22:00:00Z",
+  "interval_begin": "2026-03-19T22:00:00Z",
+  "as_of_time": "2026-03-19T22:05:00Z",
+  "regime_label": "TREND_UP",
+  "regime_run_id": "20260320T165813Z",
+  "regime_artifact_path": "D:/Github/Stream_Alpha/artifacts/regime/m8/20260320T165813Z/thresholds.json",
+  "realized_vol_12": 0.03,
+  "momentum_3": 0.03,
+  "macd_line_12_26": 1.2,
+  "high_vol_threshold": 0.05,
+  "trend_abs_threshold": 0.02,
+  "trade_allowed": true,
+  "buy_prob_up": 0.54,
+  "sell_prob_up": 0.44
 }
 ```
 
@@ -582,6 +646,7 @@ Each M5 run updates a rolling artifact directory:
 ```text
 artifacts/paper_trading/
 |-- by_asset_summary.csv
+|-- by_regime_summary.csv
 |-- closed_positions.csv
 |-- latest_summary.json
 `-- open_positions.csv
@@ -592,6 +657,7 @@ Quick checks after a run:
 ```powershell
 Get-Content artifacts\paper_trading\latest_summary.json
 Get-Content artifacts\paper_trading\by_asset_summary.csv
+Get-Content artifacts\paper_trading\by_regime_summary.csv
 Get-Content artifacts\paper_trading\open_positions.csv
 Get-Content artifacts\paper_trading\closed_positions.csv
 ```
@@ -653,6 +719,7 @@ docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c \"SEL
 - M5 is long-only spot simulation with simple next-open fills plus barrier exits; it is intentionally not a live broker or advanced execution model.
 - M7 promotion is fully file-based and explicit; there is no scheduler daemon or automatic retraining loop.
 - M7 rollback only switches the promoted champion pointer and does not mutate old promoted snapshots.
+- M9 resolves regimes from the latest saved M8 thresholds artifact by default; there is no online threshold fitting or adaptive retuning.
 - This is still a single-broker local stack for development, not a highly available deployment.
 
 ## References

@@ -118,9 +118,10 @@ class TradingRepository:
                 pending_confidence,
                 pending_predicted_class,
                 pending_model_name,
+                pending_regime_label,
                 updated_at
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW()
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW()
             )
             ON CONFLICT (service_name, symbol)
             DO UPDATE SET
@@ -136,6 +137,7 @@ class TradingRepository:
                 pending_confidence = EXCLUDED.pending_confidence,
                 pending_predicted_class = EXCLUDED.pending_predicted_class,
                 pending_model_name = EXCLUDED.pending_model_name,
+                pending_regime_label = EXCLUDED.pending_regime_label,
                 updated_at = NOW()
             """,
             state.service_name,
@@ -152,6 +154,7 @@ class TradingRepository:
             None if pending is None else pending.confidence,
             None if pending is None else pending.predicted_class,
             None if pending is None else pending.model_name,
+            None if pending is None else pending.regime_label,
         )
 
     async def fetch_new_feature_rows(
@@ -239,11 +242,13 @@ class TradingRepository:
                     entry_fee,
                     stop_loss_price,
                     take_profit_price,
+                    entry_regime_label,
                     opened_at,
                     updated_at
                 ) VALUES (
                     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-                    $11, $12, $13, $14, $15, $16, $17, $18, $19, $20
+                    $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
+                    $21
                 )
                 RETURNING id
                 """,
@@ -265,6 +270,7 @@ class TradingRepository:
                 position.entry_fee,
                 position.stop_loss_price,
                 position.take_profit_price,
+                position.entry_regime_label,
                 position.opened_at,
                 position.updated_at,
             )
@@ -294,8 +300,10 @@ class TradingRepository:
                 exit_fee = $14,
                 realized_pnl = $15,
                 realized_return = $16,
-                closed_at = $17,
-                updated_at = $18
+                entry_regime_label = $17,
+                exit_regime_label = $18,
+                closed_at = $19,
+                updated_at = $20
             WHERE id = $1
             """,
             position.position_id,
@@ -314,6 +322,8 @@ class TradingRepository:
             position.exit_fee,
             position.realized_pnl,
             position.realized_return,
+            position.entry_regime_label,
+            position.exit_regime_label,
             position.closed_at,
             position.updated_at,
         )
@@ -336,6 +346,7 @@ class TradingRepository:
                 prob_up,
                 prob_down,
                 confidence,
+                regime_label,
                 fill_interval_begin,
                 fill_time,
                 fill_price,
@@ -347,7 +358,7 @@ class TradingRepository:
                 realized_pnl
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-                $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
+                $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22
             )
             """,
             entry.service_name,
@@ -362,6 +373,7 @@ class TradingRepository:
             entry.prob_up,
             entry.prob_down,
             entry.confidence,
+            entry.regime_label,
             entry.fill_interval_begin,
             entry.fill_time,
             entry.fill_price,
@@ -481,6 +493,7 @@ class TradingRepository:
                     entry_fee DOUBLE PRECISION NOT NULL,
                     stop_loss_price DOUBLE PRECISION NOT NULL,
                     take_profit_price DOUBLE PRECISION NOT NULL,
+                    entry_regime_label TEXT NULL,
                     exit_reason TEXT NULL,
                     exit_signal_interval_begin TIMESTAMPTZ NULL,
                     exit_signal_as_of_time TIMESTAMPTZ NULL,
@@ -495,10 +508,23 @@ class TradingRepository:
                     exit_fee DOUBLE PRECISION NULL,
                     realized_pnl DOUBLE PRECISION NULL,
                     realized_return DOUBLE PRECISION NULL,
+                    exit_regime_label TEXT NULL,
                     opened_at TIMESTAMPTZ NOT NULL,
                     closed_at TIMESTAMPTZ NULL,
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._positions_table}
+                ADD COLUMN IF NOT EXISTS entry_regime_label TEXT NULL
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._positions_table}
+                ADD COLUMN IF NOT EXISTS exit_regime_label TEXT NULL
                 """
             )
             await connection.execute(
@@ -524,6 +550,7 @@ class TradingRepository:
                     prob_up DOUBLE PRECISION NULL,
                     prob_down DOUBLE PRECISION NULL,
                     confidence DOUBLE PRECISION NULL,
+                    regime_label TEXT NULL,
                     fill_interval_begin TIMESTAMPTZ NOT NULL,
                     fill_time TIMESTAMPTZ NOT NULL,
                     fill_price DOUBLE PRECISION NOT NULL,
@@ -535,6 +562,12 @@ class TradingRepository:
                     realized_pnl DOUBLE PRECISION NULL,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._ledger_table}
+                ADD COLUMN IF NOT EXISTS regime_label TEXT NULL
                 """
             )
             await connection.execute(
@@ -560,9 +593,16 @@ class TradingRepository:
                     pending_confidence DOUBLE PRECISION NULL,
                     pending_predicted_class TEXT NULL,
                     pending_model_name TEXT NULL,
+                    pending_regime_label TEXT NULL,
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     PRIMARY KEY (service_name, symbol)
                 )
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._state_table}
+                ADD COLUMN IF NOT EXISTS pending_regime_label TEXT NULL
                 """
             )
             await connection.execute(
@@ -609,6 +649,11 @@ def _state_from_row(row: asyncpg.Record) -> PaperEngineState:
             confidence=float(row["pending_confidence"]),
             predicted_class=str(row["pending_predicted_class"]),
             model_name=str(row["pending_model_name"]),
+            regime_label=(
+                None
+                if row["pending_regime_label"] is None
+                else str(row["pending_regime_label"])
+            ),
         )
     return PaperEngineState(
         service_name=str(row["service_name"]),
@@ -639,6 +684,9 @@ def _position_from_row(row: asyncpg.Record) -> PaperPosition:
         entry_fee=float(row["entry_fee"]),
         stop_loss_price=float(row["stop_loss_price"]),
         take_profit_price=float(row["take_profit_price"]),
+        entry_regime_label=(
+            None if row["entry_regime_label"] is None else str(row["entry_regime_label"])
+        ),
         position_id=int(row["id"]),
         exit_reason=None if row["exit_reason"] is None else str(row["exit_reason"]),
         exit_signal_interval_begin=row["exit_signal_interval_begin"],
@@ -660,6 +708,9 @@ def _position_from_row(row: asyncpg.Record) -> PaperPosition:
         realized_return=None
         if row["realized_return"] is None
         else float(row["realized_return"]),
+        exit_regime_label=(
+            None if row["exit_regime_label"] is None else str(row["exit_regime_label"])
+        ),
         opened_at=row["opened_at"],
         closed_at=row["closed_at"],
         updated_at=row["updated_at"],
@@ -692,6 +743,7 @@ def ledger_rows_to_csv(entries: Sequence[TradeLedgerEntry]) -> list[dict[str, ob
                 "prob_up": entry.prob_up,
                 "prob_down": entry.prob_down,
                 "confidence": entry.confidence,
+                "regime_label": entry.regime_label,
                 "fill_interval_begin": to_rfc3339(entry.fill_interval_begin),
                 "fill_time": to_rfc3339(entry.fill_time),
                 "fill_price": entry.fill_price,

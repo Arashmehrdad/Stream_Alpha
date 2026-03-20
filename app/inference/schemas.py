@@ -17,6 +17,9 @@ class HealthResponse(BaseModel):
     model_loaded: bool
     model_name: str | None
     model_artifact_path: str | None
+    regime_loaded: bool
+    regime_run_id: str | None
+    regime_artifact_path: str | None
     database: str
     started_at: datetime
 
@@ -75,6 +78,8 @@ class PredictionResponse(BaseModel):
     prob_down: float
     predicted_class: str
     confidence: float
+    regime_label: str
+    regime_run_id: str
 
 
 class ThresholdsResponse(BaseModel):
@@ -98,6 +103,29 @@ class SignalResponse(BaseModel):
     row_id: str
     as_of_time: str
     model_name: str
+    regime_label: str
+    regime_run_id: str
+    trade_allowed: bool
+
+
+class RegimeResponse(BaseModel):
+    """Regime payload returned by `/regime`."""
+
+    symbol: str
+    row_id: str
+    interval_begin: str
+    as_of_time: str
+    regime_label: str
+    regime_run_id: str
+    regime_artifact_path: str
+    realized_vol_12: float
+    momentum_3: float
+    macd_line_12_26: float
+    high_vol_threshold: float
+    trend_abs_threshold: float
+    trade_allowed: bool
+    buy_prob_up: float
+    sell_prob_up: float
 
 
 class LatencyStatsResponse(BaseModel):

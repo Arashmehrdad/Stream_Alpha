@@ -54,6 +54,9 @@ class SignalDecision:
     row_id: str
     as_of_time: datetime
     model_name: str
+    regime_label: str | None = None
+    regime_run_id: str | None = None
+    trade_allowed: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +73,8 @@ class PendingSignalState:
     confidence: float
     predicted_class: str
     model_name: str
+    regime_label: str | None = None
+    regime_run_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +110,7 @@ class PaperPosition:  # pylint: disable=too-many-instance-attributes
     entry_fee: float
     stop_loss_price: float
     take_profit_price: float
+    entry_regime_label: str | None = None
     position_id: int | None = None
     exit_reason: ExitReason | None = None
     exit_signal_interval_begin: datetime | None = None
@@ -120,6 +126,7 @@ class PaperPosition:  # pylint: disable=too-many-instance-attributes
     exit_fee: float | None = None
     realized_pnl: float | None = None
     realized_return: float | None = None
+    exit_regime_label: str | None = None
     opened_at: datetime | None = None
     closed_at: datetime | None = None
     updated_at: datetime | None = None
@@ -149,6 +156,7 @@ class TradeLedgerEntry:  # pylint: disable=too-many-instance-attributes
     prob_up: float | None = None
     prob_down: float | None = None
     confidence: float | None = None
+    regime_label: str | None = None
     realized_pnl: float | None = None
     created_at: datetime | None = None
 

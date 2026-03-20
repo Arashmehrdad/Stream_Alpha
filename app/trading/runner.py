@@ -173,6 +173,7 @@ class PaperTradingRunner:
         artifact_dir.mkdir(parents=True, exist_ok=True)
         _write_json(artifact_dir / "latest_summary.json", summary["overall"])
         _write_csv(artifact_dir / "by_asset_summary.csv", summary["by_asset"])
+        _write_csv(artifact_dir / "by_regime_summary.csv", summary["by_regime"])
         _write_csv(
             artifact_dir / "open_positions.csv",
             _positions_to_rows([row for row in positions if row.status == "OPEN"]),
@@ -207,6 +208,7 @@ def _positions_to_rows(positions: list[PaperPosition]) -> list[dict[str, Any]]:
                 "entry_fee": position.entry_fee,
                 "stop_loss_price": position.stop_loss_price,
                 "take_profit_price": position.take_profit_price,
+                "entry_regime_label": position.entry_regime_label,
                 "exit_reason": position.exit_reason,
                 "exit_signal_interval_begin": None
                 if position.exit_signal_interval_begin is None
@@ -229,6 +231,7 @@ def _positions_to_rows(positions: list[PaperPosition]) -> list[dict[str, Any]]:
                 "exit_fee": position.exit_fee,
                 "realized_pnl": position.realized_pnl,
                 "realized_return": position.realized_return,
+                "exit_regime_label": position.exit_regime_label,
                 "opened_at": None if position.opened_at is None else to_rfc3339(position.opened_at),
                 "closed_at": None if position.closed_at is None else to_rfc3339(position.closed_at),
             }

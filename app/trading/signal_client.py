@@ -55,4 +55,19 @@ class SignalClient:
             row_id=row_id,
             as_of_time=parse_rfc3339(str(payload["as_of_time"])),
             model_name=str(payload["model_name"]),
+            regime_label=(
+                None
+                if payload.get("regime_label") is None
+                else str(payload["regime_label"])
+            ),
+            regime_run_id=(
+                None
+                if payload.get("regime_run_id") is None
+                else str(payload["regime_run_id"])
+            ),
+            trade_allowed=(
+                None
+                if payload.get("trade_allowed") is None
+                else bool(payload["trade_allowed"])
+            ),
         )

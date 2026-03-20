@@ -64,7 +64,12 @@ def _candle(
     )
 
 
-def _pending(signal: str, *, interval_begin: datetime) -> PendingSignalState:
+def _pending(
+    signal: str,
+    *,
+    interval_begin: datetime,
+    regime_label: str | None = None,
+) -> PendingSignalState:
     return PendingSignalState(
         signal=signal,
         signal_interval_begin=interval_begin,
@@ -76,10 +81,16 @@ def _pending(signal: str, *, interval_begin: datetime) -> PendingSignalState:
         confidence=0.7,
         predicted_class="UP" if signal == "BUY" else "DOWN",
         model_name="logistic_regression",
+        regime_label=regime_label,
     )
 
 
-def _signal(signal: str, *, interval_begin: datetime) -> SignalDecision:
+def _signal(
+    signal: str,
+    *,
+    interval_begin: datetime,
+    regime_label: str | None = None,
+) -> SignalDecision:
     return SignalDecision(
         symbol="BTC/USD",
         signal=signal,
@@ -91,6 +102,7 @@ def _signal(signal: str, *, interval_begin: datetime) -> SignalDecision:
         row_id=f"BTC/USD|{interval_begin.isoformat().replace('+00:00', 'Z')}",
         as_of_time=interval_begin + timedelta(minutes=5),
         model_name="logistic_regression",
+        regime_label=regime_label,
     )
 
 
@@ -102,7 +114,7 @@ def test_buy_entry_uses_next_open_fill_math() -> None:
     state = PaperEngineState(
         service_name="paper-trader",
         symbol="BTC/USD",
-        pending_signal=_pending("BUY", interval_begin=signal_candle),
+        pending_signal=_pending("BUY", interval_begin=signal_candle, regime_label="TREND_UP"),
     )
 
     result = process_candle(
@@ -117,7 +129,12 @@ def test_buy_entry_uses_next_open_fill_math() -> None:
     assert result.created_position is not None
     assert round(result.created_position.entry_price, 6) == 100.05
     assert round(result.created_position.entry_notional, 6) == round(2500.0 / 1.002, 6)
-    assert round(result.ledger_entries[0].fee, 6) == round(result.created_position.entry_notional * 0.002, 6)
+    assert result.created_position.entry_regime_label == "TREND_UP"
+    assert round(result.ledger_entries[0].fee, 6) == round(
+        result.created_position.entry_notional * 0.002,
+        6,
+    )
+    assert result.ledger_entries[0].regime_label == "TREND_UP"
 
 
 def test_sell_exit_uses_next_open_fill_math() -> None:
@@ -131,7 +148,7 @@ def test_sell_exit_uses_next_open_fill_math() -> None:
         state=PaperEngineState(
             service_name="paper-trader",
             symbol="BTC/USD",
-            pending_signal=_pending("BUY", interval_begin=signal_candle),
+            pending_signal=_pending("BUY", interval_begin=signal_candle, regime_label="RANGE"),
         ),
         open_position=None,
         signal=_signal("HOLD", interval_begin=fill_candle.interval_begin),
@@ -149,7 +166,11 @@ def test_sell_exit_uses_next_open_fill_math() -> None:
         state=PaperEngineState(
             service_name="paper-trader",
             symbol="BTC/USD",
-            pending_signal=_pending("SELL", interval_begin=fill_candle.interval_begin),
+            pending_signal=_pending(
+                "SELL",
+                interval_begin=fill_candle.interval_begin,
+                regime_label="TREND_DOWN",
+            ),
         ),
         open_position=open_position,
         signal=_signal("HOLD", interval_begin=datetime(2026, 3, 20, 10, 10, tzinfo=timezone.utc)),
@@ -158,7 +179,10 @@ def test_sell_exit_uses_next_open_fill_math() -> None:
 
     assert exit_result.closed_position is not None
     assert round(exit_result.closed_position.exit_price or 0.0, 6) == 109.945
+    assert exit_result.closed_position.entry_regime_label == "RANGE"
+    assert exit_result.closed_position.exit_regime_label == "TREND_DOWN"
     assert exit_result.ledger_entries[0].action == "SELL"
+    assert exit_result.ledger_entries[0].regime_label == "TREND_DOWN"
 
 
 def test_sell_while_flat_does_not_short() -> None:
@@ -192,7 +216,11 @@ def test_stop_loss_and_take_profit_respect_conservative_ordering() -> None:
         state=PaperEngineState(
             service_name="paper-trader",
             symbol="BTC/USD",
-            pending_signal=_pending("BUY", interval_begin=datetime(2026, 3, 20, 11, 55, tzinfo=timezone.utc)),
+            pending_signal=_pending(
+                "BUY",
+                interval_begin=datetime(2026, 3, 20, 11, 55, tzinfo=timezone.utc),
+                regime_label="TREND_UP",
+            ),
         ),
         open_position=None,
         signal=_signal("HOLD", interval_begin=buy_fill_candle.interval_begin),
@@ -212,12 +240,18 @@ def test_stop_loss_and_take_profit_respect_conservative_ordering() -> None:
         ),
         state=PaperEngineState(service_name="paper-trader", symbol="BTC/USD"),
         open_position=open_position,
-        signal=_signal("HOLD", interval_begin=datetime(2026, 3, 20, 12, 5, tzinfo=timezone.utc)),
+        signal=_signal(
+            "HOLD",
+            interval_begin=datetime(2026, 3, 20, 12, 5, tzinfo=timezone.utc),
+            regime_label="HIGH_VOL",
+        ),
         portfolio=PortfolioContext(available_cash=7_495.0, open_position_count=1),
     )
 
     assert barrier_result.closed_position is not None
     assert barrier_result.closed_position.exit_reason == "STOP_LOSS"
+    assert barrier_result.closed_position.exit_regime_label == "HIGH_VOL"
+    assert barrier_result.ledger_entries[0].regime_label == "HIGH_VOL"
 
 
 def test_cooldown_and_max_open_positions_block_new_entries() -> None:

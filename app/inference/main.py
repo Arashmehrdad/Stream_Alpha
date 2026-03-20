@@ -14,7 +14,7 @@ from app.common.logging import configure_logging
 from app.common.time import parse_rfc3339
 from app.inference.db import DatabaseUnavailableError
 from app.inference.schemas import FeatureRowResponse, HealthResponse, MetricsResponse
-from app.inference.schemas import PredictionResponse, SignalResponse
+from app.inference.schemas import PredictionResponse, RegimeResponse, SignalResponse
 from app.inference.service import (
     ArtifactSchemaMismatchError,
     InferenceService,
@@ -31,7 +31,7 @@ def create_app(service: InferenceService | None = None) -> FastAPI:
         service = InferenceService(settings)
 
     logger = logging.getLogger(f"{service.settings.app_name}.inference")
-    app = FastAPI(title="Stream Alpha Inference API", version="m4")
+    app = FastAPI(title="Stream Alpha Inference API", version="m9")
     app.state.service = service
 
     @app.on_event("startup")
@@ -112,6 +112,21 @@ def create_app(service: InferenceService | None = None) -> FastAPI:
         )
         try:
             return service.predict_from_row(row)
+        except ArtifactSchemaMismatchError as error:
+            raise HTTPException(status_code=500, detail=str(error)) from error
+
+    @app.get("/regime", response_model=RegimeResponse)
+    async def regime(
+        symbol: str,
+        interval_begin: str | None = None,
+    ) -> RegimeResponse:
+        row = await _latest_row_or_error(
+            service,
+            symbol,
+            interval_begin=_parse_interval_begin(interval_begin),
+        )
+        try:
+            return service.regime_from_row(row)
         except ArtifactSchemaMismatchError as error:
             raise HTTPException(status_code=500, detail=str(error)) from error
 

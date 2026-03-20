@@ -13,11 +13,14 @@ from dashboards.data_sources import (
     DashboardSnapshot,
     DatabaseSnapshot,
     EngineStateSnapshot,
+    SignalSnapshot,
 )
 from dashboards.view_models import (
     build_drawdown_curve_rows,
     build_equity_curve_rows,
+    build_latest_signal_rows,
     build_overview_metrics,
+    build_performance_by_regime_rows,
     build_trader_freshness,
 )
 
@@ -67,6 +70,7 @@ def _closed_position() -> PaperPosition:
         entry_fee=2.0,
         stop_loss_price=98.0,
         take_profit_price=104.0,
+        entry_regime_label="TREND_UP",
         position_id=1,
         exit_reason="SELL_SIGNAL",
         exit_signal_interval_begin=interval_begin + timedelta(minutes=10),
@@ -82,6 +86,7 @@ def _closed_position() -> PaperPosition:
         exit_fee=2.1,
         realized_pnl=45.9,
         realized_return=0.0459,
+        exit_regime_label="RANGE",
         opened_at=interval_begin + timedelta(minutes=5),
         closed_at=interval_begin + timedelta(minutes=15),
         updated_at=interval_begin + timedelta(minutes=15),
@@ -109,6 +114,7 @@ def _open_position() -> PaperPosition:
         entry_fee=1.1,
         stop_loss_price=107.8,
         take_profit_price=114.4,
+        entry_regime_label="HIGH_VOL",
         position_id=2,
         opened_at=interval_begin + timedelta(minutes=5),
         updated_at=interval_begin + timedelta(minutes=5),
@@ -149,6 +155,9 @@ def test_overview_metrics_and_drawdown_are_computed_from_positions() -> None:
     assert round(overview.unrealized_pnl, 4) == 47.7
     assert round(overview.total_pnl, 4) == 93.6
     assert overview.open_position_count == 1
+    assert overview.hit_rate_by_regime["TREND_UP"] == 1.0
+    assert overview.realized_pnl_by_regime["TREND_UP"] == 45.9
+    assert overview.closed_position_count_by_regime["TREND_UP"] == 1
     assert len(equity_rows) == 3
     assert drawdown_rows[-1]["drawdown"] == 0.0
 
@@ -164,6 +173,7 @@ def test_trader_freshness_uses_persisted_engine_state() -> None:
                 last_processed_interval_begin=base_time,
                 cooldown_until_interval_begin=None,
                 pending_signal_action=None,
+                pending_regime_label=None,
                 updated_at=base_time + timedelta(seconds=10),
             ),
             EngineStateSnapshot(
@@ -172,6 +182,7 @@ def test_trader_freshness_uses_persisted_engine_state() -> None:
                 last_processed_interval_begin=base_time - timedelta(minutes=5),
                 cooldown_until_interval_begin=base_time,
                 pending_signal_action="BUY",
+                pending_regime_label="TREND_UP",
                 updated_at=base_time + timedelta(seconds=15),
             ),
         )
@@ -182,3 +193,62 @@ def test_trader_freshness_uses_persisted_engine_state() -> None:
     assert freshness.pending_signal_count == 1
     assert freshness.latest_processed_interval_begin == base_time
     assert freshness.slowest_processed_interval_begin == base_time - timedelta(minutes=5)
+
+
+def test_latest_signal_rows_and_regime_performance_are_surfaced() -> None:
+    """The dashboard tables should include regime fields and by-regime performance rows."""
+    checked_at = datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc)
+    snapshot = DashboardSnapshot(
+        api_health=ApiHealthSnapshot(
+            available=True,
+            checked_at=checked_at,
+            status="ok",
+            regime_loaded=True,
+            regime_run_id="20260320T120000Z",
+            regime_artifact_path="artifacts/regime/m8/20260320T120000Z/thresholds.json",
+        ),
+        signals=(
+            SignalSnapshot(
+                symbol="BTC/USD",
+                checked_at=checked_at,
+                available=True,
+                signal="BUY",
+                reason="test",
+                prob_up=0.7,
+                prob_down=0.3,
+                confidence=0.7,
+                predicted_class="UP",
+                row_id="BTC/USD|2026-03-20T11:55:00Z",
+                as_of_time=checked_at,
+                model_name="logistic_regression",
+                regime_label="TREND_UP",
+                regime_run_id="20260320T120000Z",
+                trade_allowed=True,
+                buy_threshold=0.54,
+                sell_threshold=0.44,
+            ),
+        ),
+        database=DatabaseSnapshot(
+            available=True,
+            checked_at=checked_at,
+            positions=(_closed_position(), _open_position()),
+            latest_prices={"BTC/USD": 120.0},
+            cash_balance=9492.8,
+        ),
+    )
+
+    signal_rows = build_latest_signal_rows(
+        symbols=("BTC/USD",),
+        signals=snapshot.signals,
+        now=checked_at,
+    )
+    by_regime_rows = build_performance_by_regime_rows(
+        snapshot=snapshot,
+        trading_config=_config(),
+    )
+
+    assert signal_rows[0]["regime_label"] == "TREND_UP"
+    assert signal_rows[0]["trade_allowed"] is True
+    by_regime = {row["regime_label"]: row for row in by_regime_rows}
+    assert round(by_regime["TREND_UP"]["realized_pnl"], 4) == 45.9
+    assert by_regime["HIGH_VOL"]["open_positions"] == 1

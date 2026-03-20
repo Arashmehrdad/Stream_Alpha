@@ -6,6 +6,7 @@ import math
 from statistics import mean, pstdev
 from typing import Any
 
+from app.regime.service import REGIME_LABELS
 from app.trading.config import PaperTradingConfig
 from app.trading.risk import calculate_fee
 from app.trading.schemas import PaperPosition
@@ -43,6 +44,9 @@ def build_summary(
         "average_trade_return": 0.0 if not realized_returns else mean(realized_returns),
         "turnover": _turnover(config.risk.initial_cash, positions),
         "hit_rate_by_asset": _hit_rate_by_asset(closed_positions),
+        "hit_rate_by_regime": _hit_rate_by_regime(closed_positions),
+        "realized_pnl_by_regime": _realized_pnl_by_regime(closed_positions),
+        "closed_position_count_by_regime": _closed_position_count_by_regime(closed_positions),
         "sharpe_like": _sharpe_like(realized_returns),
         "open_position_count": len(open_positions),
         "closed_position_count": len(closed_positions),
@@ -51,6 +55,11 @@ def build_summary(
         "overall": overall,
         "by_asset": _by_asset_summary(
             symbols=config.symbols,
+            positions=positions,
+            latest_prices=latest_prices,
+            fee_bps=config.risk.fee_bps,
+        ),
+        "by_regime": _by_regime_summary(
             positions=positions,
             latest_prices=latest_prices,
             fee_bps=config.risk.fee_bps,
@@ -114,6 +123,36 @@ def _hit_rate_by_asset(closed_positions: list[PaperPosition]) -> dict[str, float
     }
 
 
+def _hit_rate_by_regime(closed_positions: list[PaperPosition]) -> dict[str, float]:
+    by_regime: dict[str, list[PaperPosition]] = {}
+    for position in closed_positions:
+        by_regime.setdefault(_regime_key(position.entry_regime_label), []).append(position)
+    return {
+        regime_label: (
+            0.0
+            if not rows
+            else sum(int((row.realized_pnl or 0.0) > 0.0) for row in rows) / len(rows)
+        )
+        for regime_label, rows in by_regime.items()
+    }
+
+
+def _realized_pnl_by_regime(closed_positions: list[PaperPosition]) -> dict[str, float]:
+    totals: dict[str, float] = {}
+    for position in closed_positions:
+        regime_label = _regime_key(position.entry_regime_label)
+        totals[regime_label] = totals.get(regime_label, 0.0) + (position.realized_pnl or 0.0)
+    return totals
+
+
+def _closed_position_count_by_regime(closed_positions: list[PaperPosition]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for position in closed_positions:
+        regime_label = _regime_key(position.entry_regime_label)
+        counts[regime_label] = counts.get(regime_label, 0) + 1
+    return counts
+
+
 def _sharpe_like(realized_returns: list[float]) -> float:
     if len(realized_returns) < 2:
         return 0.0
@@ -165,3 +204,70 @@ def _by_asset_summary(
             }
         )
     return rows
+
+
+def _by_regime_summary(
+    *,
+    positions: list[PaperPosition],
+    latest_prices: dict[str, float],
+    fee_bps: float,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for regime_label in _ordered_regime_labels(positions):
+        regime_positions = [
+            position
+            for position in positions
+            if _regime_key(position.entry_regime_label) == regime_label
+        ]
+        open_positions = [
+            position for position in regime_positions if position.status == "OPEN"
+        ]
+        closed_positions = [
+            position for position in regime_positions if position.status == "CLOSED"
+        ]
+        realized_pnl = sum((position.realized_pnl or 0.0) for position in closed_positions)
+        unrealized_pnl = sum(
+            _unrealized_pnl(position, latest_prices.get(position.symbol), fee_bps)
+            for position in open_positions
+        )
+        rows.append(
+            {
+                "regime_label": regime_label,
+                "open_positions": len(open_positions),
+                "closed_positions": len(closed_positions),
+                "realized_pnl": realized_pnl,
+                "total_pnl": realized_pnl + unrealized_pnl,
+                "win_rate": (
+                    0.0
+                    if not closed_positions
+                    else (
+                        sum(
+                            int((position.realized_pnl or 0.0) > 0.0)
+                            for position in closed_positions
+                        )
+                        / len(closed_positions)
+                    )
+                ),
+            }
+        )
+    return rows
+
+
+def _ordered_regime_labels(positions: list[PaperPosition]) -> list[str]:
+    encountered = {
+        _regime_key(position.entry_regime_label)
+        for position in positions
+    }
+    ordered = list(REGIME_LABELS)
+    if "UNKNOWN" in encountered or not encountered:
+        ordered.append("UNKNOWN")
+    else:
+        extras = sorted(encountered - set(REGIME_LABELS))
+        ordered.extend(extras)
+    return ordered
+
+
+def _regime_key(value: str | None) -> str:
+    if value is None or not value.strip():
+        return "UNKNOWN"
+    return value

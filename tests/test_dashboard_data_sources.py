@@ -110,6 +110,54 @@ class _FailingHttpClient:
         raise RuntimeError("api down")
 
 
+class _Response:
+    def __init__(self, status_code: int, payload: dict) -> None:
+        self.status_code = status_code
+        self._payload = payload
+
+    def json(self) -> dict:
+        return self._payload
+
+
+class _HealthyHttpClient:
+    async def get(self, path: str, *_args, **_kwargs):
+        if path == "/health":
+            return _Response(
+                200,
+                {
+                    "status": "ok",
+                    "service": "inference",
+                    "model_loaded": True,
+                    "model_name": "logistic_regression",
+                    "model_artifact_path": "artifacts/training/m3/model.joblib",
+                    "regime_loaded": True,
+                    "regime_run_id": "20260320T120000Z",
+                    "regime_artifact_path": "artifacts/regime/m8/20260320T120000Z/thresholds.json",
+                    "database": "healthy",
+                    "started_at": "2026-03-20T12:00:00Z",
+                },
+            )
+        return _Response(
+            200,
+            {
+                "symbol": "BTC/USD",
+                "signal": "BUY",
+                "reason": "test",
+                "prob_up": 0.7,
+                "prob_down": 0.3,
+                "confidence": 0.7,
+                "predicted_class": "UP",
+                "thresholds": {"buy_prob_up": 0.54, "sell_prob_up": 0.44},
+                "row_id": "BTC/USD|2026-03-20T11:55:00Z",
+                "as_of_time": "2026-03-20T12:00:00Z",
+                "model_name": "logistic_regression",
+                "regime_label": "TREND_UP",
+                "regime_run_id": "20260320T120000Z",
+                "trade_allowed": True,
+            },
+        )
+
+
 async def _failing_db_connect(_dsn: str):
     raise RuntimeError("db down")
 
@@ -129,3 +177,20 @@ def test_dashboard_snapshot_reports_api_and_db_failures() -> None:
     assert "api down" in (snapshot.api_health.error or "")
     assert snapshot.database.available is False
     assert "db down" in (snapshot.database.error or "")
+
+
+def test_dashboard_snapshot_parses_regime_fields_from_api_payloads() -> None:
+    """The dashboard should keep the additive M9 regime fields from `/health` and `/signal`."""
+    data_sources = DashboardDataSources(
+        settings=_settings(),
+        trading_config=_paper_config(),
+        http_client=_HealthyHttpClient(),
+        db_connect=_failing_db_connect,
+    )
+
+    snapshot = asyncio.run(data_sources.load_snapshot())
+
+    assert snapshot.api_health.regime_loaded is True
+    assert snapshot.api_health.regime_run_id == "20260320T120000Z"
+    assert snapshot.signals[0].regime_label == "TREND_UP"
+    assert snapshot.signals[0].trade_allowed is True

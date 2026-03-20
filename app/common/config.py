@@ -117,6 +117,8 @@ class InferenceSettings:
     service_name: str
     signal_buy_prob_up: float
     signal_sell_prob_up: float
+    regime_thresholds_path: str = ""
+    regime_signal_policy_path: str = "configs/regime_signal_policy.json"
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,6 +218,14 @@ class Settings:  # pylint: disable=too-many-instance-attributes
                 service_name=_get_required("INFERENCE_SERVICE_NAME", "inference"),
                 signal_buy_prob_up=_get_float("INFERENCE_SIGNAL_BUY_PROB_UP", 0.55),
                 signal_sell_prob_up=_get_float("INFERENCE_SIGNAL_SELL_PROB_UP", 0.45),
+                regime_thresholds_path=os.getenv(
+                    "INFERENCE_REGIME_THRESHOLDS_PATH",
+                    "",
+                ).strip(),
+                regime_signal_policy_path=_get_required(
+                    "INFERENCE_REGIME_SIGNAL_POLICY_PATH",
+                    "configs/regime_signal_policy.json",
+                ).strip(),
             ),
             dashboard=DashboardSettings(
                 inference_api_base_url=_get_required(
