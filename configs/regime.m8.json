@@ -1,0 +1,16 @@
+{
+  "artifact_dir": "artifacts/regime/m8",
+  "interval_minutes": 5,
+  "min_rows_per_symbol": 30,
+  "source_exchange": "kraken",
+  "source_table": "feature_ohlc",
+  "symbols": [
+    "BTC/USD",
+    "ETH/USD",
+    "SOL/USD"
+  ],
+  "thresholds": {
+    "high_vol_percentile": 75,
+    "trend_abs_momentum_percentile": 60
+  }
+}

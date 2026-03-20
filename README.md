@@ -16,6 +16,8 @@ Milestone `M6` adds a read-only Streamlit operator dashboard. It reads only from
 
 Milestone `M7` adds a local-first retraining and model-comparison workflow. It retrains challengers from canonical `feature_ohlc`, compares them to the current promoted champion with explicit file-based policy checks, promotes only passing models into a local registry, and supports rollback without retraining.
 
+Milestone `M8` foundation adds an explicit offline regime workflow. It reads canonical `feature_ohlc`, fits deterministic per-symbol volatility and trend thresholds, classifies rows into `TREND_UP`, `TREND_DOWN`, `RANGE`, or `HIGH_VOL`, and writes explicit artifacts under `artifacts/regime/m8/<run_id>/`.
+
 ## Repository Tree
 
 ```text
@@ -230,6 +232,20 @@ M7 does not do:
 - add dashboard controls for retraining or promotion
 - change M3 labels, models, splits, or artifact schema
 - change M4 response contracts, add champion/challenger online serving, or retrain during rollback
+
+## M8 Scope
+
+M8 foundation does:
+- read only from canonical `feature_ohlc`
+- fit per-symbol `high_vol_threshold` from the 75th percentile of `realized_vol_12`
+- fit per-symbol `trend_abs_threshold` from the 60th percentile of `abs(momentum_3)`
+- classify rows with explicit deterministic rules into `TREND_UP`, `TREND_DOWN`, `RANGE`, or `HIGH_VOL`
+- write explicit offline artifacts under `artifacts/regime/m8/<run_id>/`
+
+M8 foundation does not do:
+- change M4, M5, M6, or M7 behavior
+- add a `/regime` endpoint, schedulers, background workers, or new PostgreSQL tables
+- add clustering, RL, sentiment, anomaly detection, MLflow, or notebooks
 
 ## Environment Variables
 
@@ -464,6 +480,24 @@ Bootstrap the registry from the current accepted artifact when you want registry
 
 ```powershell
 python -m app.training.promote --run-dir artifacts/training/m3/<run_id> --model-version m3-<run_id>
+```
+
+### 16. Run the M8 offline regime workflow
+
+```powershell
+python -m app.regime --config configs/regime.m8.json
+```
+
+Each run writes:
+
+```text
+artifacts/regime/m8/<run_id>/
+|-- by_symbol_summary.csv
+|-- overall_summary.json
+|-- regime_predictions.csv
+|-- run_config.json
+|-- run_manifest.json
+`-- thresholds.json
 ```
 
 ## Tests And Lint
