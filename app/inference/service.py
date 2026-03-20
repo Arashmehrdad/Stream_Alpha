@@ -15,6 +15,7 @@ from app.common.time import to_rfc3339, utc_now
 from app.inference.db import InferenceDatabase
 from app.inference.schemas import HealthResponse, MetricsResponse, ThresholdsResponse
 from app.inference.schemas import LatencyStatsResponse, PredictionResponse, SignalResponse
+from app.training.registry import resolve_inference_model_path
 
 
 class InvalidSymbolError(ValueError):
@@ -82,12 +83,7 @@ class MetricsState:
 
 def load_model_artifact(model_path: str) -> LoadedModelArtifact:
     """Load and validate the saved M3 model artifact."""
-    if not model_path.strip():
-        raise ValueError("INFERENCE_MODEL_PATH is required for the inference service")
-
-    artifact_path = Path(model_path).expanduser().resolve()
-    if not artifact_path.is_file():
-        raise ValueError(f"INFERENCE_MODEL_PATH does not exist: {artifact_path}")
+    artifact_path = Path(resolve_inference_model_path(model_path)).resolve()
 
     payload = joblib.load(artifact_path)
     if not isinstance(payload, dict):

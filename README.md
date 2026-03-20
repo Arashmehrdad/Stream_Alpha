@@ -14,6 +14,8 @@ Milestone `M5` adds a minimum correct paper-trading engine. It polls finalized c
 
 Milestone `M6` adds a read-only Streamlit operator dashboard. It reads only from the accepted M4 inference API and PostgreSQL tables, then shows health, latest signals, canonical feature snapshots, open positions, recent trades, ledger activity, and paper-trading PnL/drawdown.
 
+Milestone `M7` adds a local-first retraining and model-comparison workflow. It retrains challengers from canonical `feature_ohlc`, compares them to the current promoted champion with explicit file-based policy checks, promotes only passing models into a local registry, and supports rollback without retraining.
+
 ## Repository Tree
 
 ```text
@@ -60,7 +62,12 @@ Milestone `M6` adds a read-only Streamlit operator dashboard. It reads only from
 |   |   |-- __init__.py
 |   |   |-- __main__.py
 |   |   |-- baselines.py
+|   |   |-- compare.py
 |   |   |-- dataset.py
+|   |   |-- promote.py
+|   |   |-- registry.py
+|   |   |-- retrain.py
+|   |   |-- rollback.py
 |   |   |-- service.py
 |   |   `-- splits.py
 |   `-- ingestion
@@ -76,7 +83,8 @@ Milestone `M6` adds a read-only Streamlit operator dashboard. It reads only from
 |-- configs
 |   |-- paper_trading.yaml
 |   |-- redpanda-console-config.yml
-|   `-- training.m3.json
+|   |-- training.m3.json
+|   `-- training.m7.json
 |-- dashboards
 |   |-- __init__.py
 |   |-- data_sources.py
@@ -98,6 +106,7 @@ Milestone `M6` adds a read-only Streamlit operator dashboard. It reads only from
 |   |-- run_paper_trader.py
 |   `-- tail-producer.ps1
 `-- tests
+    |-- __init__.py
     |-- test_dashboard_data_sources.py
     |-- test_dashboard_view_models.py
     |-- test_inference_api.py
@@ -107,8 +116,11 @@ Milestone `M6` adds a read-only Streamlit operator dashboard. It reads only from
     |-- test_feature_state.py
     |-- test_normalizers.py
     |-- test_publish_smoke.py
+    |-- test_training_compare.py
     |-- test_training_labels.py
+    |-- test_training_registry.py
     |-- test_training_splits.py
+    |-- training_workflow_helpers.py
     `-- trading
         |-- test_engine.py
         |-- test_metrics.py
@@ -203,6 +215,22 @@ M6 does not do:
 - write dashboard state back into PostgreSQL
 - add dashboards beyond Streamlit, live trading, RL, sentiment/news, MLflow, Grafana, Prometheus, or alerting
 
+## M7 Scope
+
+M7 does:
+- retrain challengers from canonical `feature_ohlc` using the accepted M3 evaluation flow
+- compare challengers to the current champion with explicit file-based policy checks
+- store challenger artifacts under `artifacts/training/m7/<run_id>/`
+- maintain a local immutable registry under `artifacts/registry/`
+- support explicit rollback by `model_version`
+- let M4 inference resolve the current champion from the registry when `INFERENCE_MODEL_PATH` is empty
+
+M7 does not do:
+- add MLflow, schedulers, or background retraining daemons
+- add dashboard controls for retraining or promotion
+- change M3 labels, models, splits, or artifact schema
+- change M4 response contracts, add champion/challenger online serving, or retrain during rollback
+
 ## Environment Variables
 
 Copy `.env.example` to `.env` before running the stack.
@@ -235,7 +263,7 @@ Copy `.env.example` to `.env` before running the stack.
 | `FEATURE_SERVICE_NAME` | Feature service name used in logs and client id | `features` |
 | `FEATURE_FINALIZATION_GRACE_SECONDS` | Grace period before stale open-candle finalization | `30` |
 | `FEATURE_BOOTSTRAP_CANDLES` | Raw OHLC candles loaded per symbol on startup | `64` |
-| `INFERENCE_MODEL_PATH` | Path to the accepted saved M3 `model.joblib` artifact | empty |
+| `INFERENCE_MODEL_PATH` | Optional explicit `model.joblib` override; when empty M4 resolves the current promoted champion from the local registry | empty |
 | `INFERENCE_SERVICE_NAME` | Inference API service name used in logs and responses | `inference` |
 | `INFERENCE_SIGNAL_BUY_PROB_UP` | BUY threshold for `prob_up` | `0.55` |
 | `INFERENCE_SIGNAL_SELL_PROB_UP` | SELL threshold for `prob_up` | `0.45` |
@@ -306,7 +334,7 @@ wsl -e bash /mnt/d/Github/Stream_Alpha/scripts/m3-smoke-run.sh
 
 ### 9. Run the M4 inference API from the repo
 
-Set `INFERENCE_MODEL_PATH` to the accepted saved M3 artifact first. For example:
+Set `INFERENCE_MODEL_PATH` to the accepted saved M3 artifact if you want a direct override. For example:
 
 ```powershell
 $env:INFERENCE_MODEL_PATH = "D:\Github\Stream_Alpha\artifacts\training\m3\<run_id>\model.joblib"
@@ -314,6 +342,8 @@ python -m app.inference
 ```
 
 The API listens on `http://127.0.0.1:8000` by default.
+
+When `INFERENCE_MODEL_PATH` is empty, M4 resolves the current champion from `artifacts/registry/current.json` instead.
 
 ### 10. Example inference requests
 
@@ -402,11 +432,45 @@ Example `GET /signal` response:
 }
 ```
 
+### 15. Run the M7 retraining workflow
+
+Run one challenger retraining job from the canonical source:
+
+```powershell
+python -m app.training.retrain --config configs/training.m7.json
+```
+
+This writes one timestamped challenger run under `artifacts/training/m7/<run_id>/`, including `comparison_vs_champion.json` and `run_manifest.json`.
+
+Compare an existing challenger explicitly if needed:
+
+```powershell
+python -m app.training.compare --config configs/training.m7.json --run-dir artifacts/training/m7/<run_id>
+```
+
+Promote a passing challenger into the immutable local registry:
+
+```powershell
+python -m app.training.promote --run-dir artifacts/training/m7/<run_id> --model-version m7-<run_id>
+```
+
+Rollback to one previously promoted version without retraining:
+
+```powershell
+python -m app.training.rollback --model-version <model_version>
+```
+
+Bootstrap the registry from the current accepted artifact when you want registry-based inference before the first M7 challenger promotion:
+
+```powershell
+python -m app.training.promote --run-dir artifacts/training/m3/<run_id> --model-version m3-<run_id>
+```
+
 ## Tests And Lint
 
 ```powershell
 python -m pytest
-python -m pylint app tests
+python -m pylint app dashboards tests scripts\run_paper_trader.py
 ```
 
 ## Training Artifacts
@@ -430,6 +494,51 @@ Quick checks after a run:
 Get-ChildItem artifacts\training\m3
 Get-Content artifacts\training\m3\<run_id>\summary.json
 Get-Content artifacts\training\m3\<run_id>\dataset_manifest.json
+```
+
+## M7 Training Artifacts
+
+Each M7 challenger run writes:
+
+```text
+artifacts/training/m7/<run_id>/
+|-- comparison_vs_champion.json
+|-- dataset_manifest.json
+|-- feature_columns.json
+|-- fold_metrics.csv
+|-- model.joblib
+|-- oof_predictions.csv
+|-- run_config.json
+|-- run_manifest.json
+`-- summary.json
+```
+
+The immutable local registry lives under:
+
+```text
+artifacts/registry/
+|-- current.json
+|-- history.jsonl
+`-- models
+    `-- <model_version>/
+        |-- comparison_vs_champion.json
+        |-- dataset_manifest.json
+        |-- feature_columns.json
+        |-- fold_metrics.csv
+        |-- model.joblib
+        |-- oof_predictions.csv
+        |-- registry_entry.json
+        |-- run_config.json
+        |-- run_manifest.json
+        `-- summary.json
+```
+
+Quick checks after promotion:
+
+```powershell
+Get-Content artifacts\registry\current.json
+Get-Content artifacts\registry\history.jsonl
+Get-ChildItem artifacts\registry\models
 ```
 
 ## Paper-Trading Artifacts
@@ -508,6 +617,8 @@ docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c \"SEL
 - M5 fills signal-driven entries and exits at the next finalized candle open because only finalized canonical candles are processed.
 - M5 uses the existing M4 inference service as authoritative and does not re-score features locally.
 - M5 is long-only spot simulation with simple next-open fills plus barrier exits; it is intentionally not a live broker or advanced execution model.
+- M7 promotion is fully file-based and explicit; there is no scheduler daemon or automatic retraining loop.
+- M7 rollback only switches the promoted champion pointer and does not mutate old promoted snapshots.
 - This is still a single-broker local stack for development, not a highly available deployment.
 
 ## References
