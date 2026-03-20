@@ -1,0 +1,164 @@
+"""Runner idempotency tests for Stream Alpha M5."""
+
+# pylint: disable=duplicate-code,line-too-long,missing-class-docstring
+# pylint: disable=missing-function-docstring,too-few-public-methods
+
+from __future__ import annotations
+
+import asyncio
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+from app.trading.config import PaperTradingConfig, RiskConfig
+from app.trading.runner import PaperTradingRunner
+from app.trading.schemas import FeatureCandle, PaperEngineState, SignalDecision
+
+
+def _config(tmp_path: Path) -> PaperTradingConfig:
+    return PaperTradingConfig(
+        service_name="paper-trader",
+        source_exchange="kraken",
+        source_table="feature_ohlc",
+        interval_minutes=5,
+        symbols=("BTC/USD",),
+        inference_base_url="http://127.0.0.1:8000",
+        poll_interval_seconds=5.0,
+        artifact_dir=str(tmp_path / "artifacts"),
+        risk=RiskConfig(
+            initial_cash=10_000.0,
+            position_fraction=0.25,
+            fee_bps=20.0,
+            slippage_bps=5.0,
+            stop_loss_pct=0.02,
+            take_profit_pct=0.04,
+            cooldown_candles=1,
+            max_open_positions=1,
+            max_exposure_per_asset=0.25,
+        ),
+    )
+
+
+def _candle(index: int) -> FeatureCandle:
+    interval_begin = datetime(2026, 3, 20, 9, 0, tzinfo=timezone.utc) + timedelta(minutes=5 * index)
+    return FeatureCandle(
+        id=index + 1,
+        source_exchange="kraken",
+        symbol="BTC/USD",
+        interval_minutes=5,
+        interval_begin=interval_begin,
+        interval_end=interval_begin + timedelta(minutes=5),
+        as_of_time=interval_begin + timedelta(minutes=5),
+        raw_event_id=f"evt-{index}",
+        open_price=100.0 + index,
+        high_price=101.0 + index,
+        low_price=99.0 + index,
+        close_price=100.5 + index,
+    )
+
+
+class FakeRepository:
+    def __init__(self, candles: list[FeatureCandle]) -> None:
+        self.candles = candles
+        self.states = {"BTC/USD": PaperEngineState(service_name="paper-trader", symbol="BTC/USD")}
+        self.open_positions = {}
+        self.positions = []
+        self.ledger = []
+        self.position_id = 0
+
+    async def connect(self) -> None:
+        return None
+
+    async def close(self) -> None:
+        return None
+
+    async def load_engine_states(self, *, service_name: str, symbols: tuple[str, ...]):
+        del service_name, symbols
+        return dict(self.states)
+
+    async def load_open_positions(self, service_name: str):
+        del service_name
+        return dict(self.open_positions)
+
+    async def load_cash_balance(self, *, service_name: str, initial_cash: float) -> float:
+        del service_name
+        return initial_cash + sum(entry.cash_flow for entry in self.ledger)
+
+    async def fetch_new_feature_rows(
+        self,
+        *,
+        symbol: str,
+        source_exchange: str,
+        interval_minutes: int,
+        last_processed_interval_begin,
+    ):
+        del symbol, source_exchange, interval_minutes
+        if last_processed_interval_begin is None:
+            return list(self.candles)
+        return [row for row in self.candles if row.interval_begin > last_processed_interval_begin]
+
+    async def insert_position(self, position):
+        self.position_id += 1
+        stored = replace(position, position_id=self.position_id)
+        self.positions.append(stored)
+        return self.position_id
+
+    async def close_position(self, position) -> None:
+        self.positions = [
+            position if row.position_id == position.position_id else row
+            for row in self.positions
+        ]
+
+    async def insert_ledger_entry(self, entry) -> None:
+        self.ledger.append(entry)
+
+    async def save_engine_state(self, state) -> None:
+        self.states[state.symbol] = state
+
+    async def load_positions(self, *, service_name: str):
+        del service_name
+        return list(self.positions)
+
+    async def load_latest_prices(self, *, source_exchange: str, interval_minutes: int, symbols: tuple[str, ...]):
+        del source_exchange, interval_minutes, symbols
+        return {"BTC/USD": self.candles[-1].close_price}
+
+
+class FakeSignalClient:
+    async def close(self) -> None:
+        return None
+
+    async def fetch_signal(self, *, symbol: str, interval_begin):
+        del symbol
+        first_candle = _candle(0).interval_begin
+        signal = "BUY" if interval_begin == first_candle else "HOLD"
+        return SignalDecision(
+            symbol="BTC/USD",
+            signal=signal,
+            reason=signal.lower(),
+            prob_up=0.7 if signal == "BUY" else 0.5,
+            prob_down=0.3 if signal == "BUY" else 0.5,
+            confidence=0.7 if signal == "BUY" else 0.5,
+            predicted_class="UP" if signal == "BUY" else "DOWN",
+            row_id=f"BTC/USD|{interval_begin.isoformat().replace('+00:00', 'Z')}",
+            as_of_time=_candle(0).as_of_time if signal == "BUY" else _candle(1).as_of_time,
+            model_name="logistic_regression",
+        )
+
+
+def test_runner_does_not_duplicate_processed_candles(tmp_path: Path) -> None:
+    """Re-running the same cycle should not duplicate fills after state persistence."""
+    repository = FakeRepository([_candle(0), _candle(1)])
+    runner = PaperTradingRunner(
+        config=_config(tmp_path),
+        repository=repository,
+        signal_client=FakeSignalClient(),
+    )
+
+    asyncio.run(runner.run_once())
+    first_ledger_count = len(repository.ledger)
+    asyncio.run(runner.run_once())
+
+    assert first_ledger_count == 1
+    assert len(repository.ledger) == 1
+    assert repository.states["BTC/USD"].last_processed_interval_begin == _candle(1).interval_begin

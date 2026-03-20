@@ -1,0 +1,21 @@
+service_name: paper-trader
+source_exchange: kraken
+source_table: feature_ohlc
+interval_minutes: 5
+symbols:
+  - BTC/USD
+  - ETH/USD
+  - SOL/USD
+inference_base_url: http://127.0.0.1:8000
+poll_interval_seconds: 5
+artifact_dir: artifacts/paper_trading
+risk:
+  initial_cash: 10000.0
+  position_fraction: 0.25
+  fee_bps: 20.0
+  slippage_bps: 5.0
+  stop_loss_pct: 0.02
+  take_profit_pct: 0.04
+  cooldown_candles: 1
+  max_open_positions: 3
+  max_exposure_per_asset: 0.25

@@ -1,0 +1,94 @@
+"""Typed configuration loading for the Stream Alpha M5 paper trader."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+
+import yaml
+
+
+@dataclass(frozen=True, slots=True)
+class RiskConfig:  # pylint: disable=too-many-instance-attributes
+    """Explicit risk and execution settings for the M5 engine."""
+
+    initial_cash: float
+    position_fraction: float
+    fee_bps: float
+    slippage_bps: float
+    stop_loss_pct: float
+    take_profit_pct: float
+    cooldown_candles: int
+    max_open_positions: int
+    max_exposure_per_asset: float
+
+
+@dataclass(frozen=True, slots=True)
+class PaperTradingConfig:  # pylint: disable=too-many-instance-attributes
+    """Checked-in paper-trading configuration."""
+
+    service_name: str
+    source_exchange: str
+    source_table: str
+    interval_minutes: int
+    symbols: tuple[str, ...]
+    inference_base_url: str
+    poll_interval_seconds: float
+    artifact_dir: str
+    risk: RiskConfig
+
+
+def load_paper_trading_config(config_path: Path) -> PaperTradingConfig:
+    """Load the checked-in YAML config for M5."""
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    risk_payload = dict(payload["risk"])
+    symbols = tuple(str(symbol) for symbol in payload["symbols"])
+    if not symbols:
+        raise ValueError("Paper trading config must contain at least one symbol")
+
+    config = PaperTradingConfig(
+        service_name=str(payload["service_name"]),
+        source_exchange=str(payload["source_exchange"]),
+        source_table=str(payload["source_table"]),
+        interval_minutes=int(payload["interval_minutes"]),
+        symbols=symbols,
+        inference_base_url=str(payload["inference_base_url"]).rstrip("/"),
+        poll_interval_seconds=float(payload["poll_interval_seconds"]),
+        artifact_dir=str(payload["artifact_dir"]),
+        risk=RiskConfig(
+            initial_cash=float(risk_payload["initial_cash"]),
+            position_fraction=float(risk_payload["position_fraction"]),
+            fee_bps=float(risk_payload["fee_bps"]),
+            slippage_bps=float(risk_payload["slippage_bps"]),
+            stop_loss_pct=float(risk_payload["stop_loss_pct"]),
+            take_profit_pct=float(risk_payload["take_profit_pct"]),
+            cooldown_candles=int(risk_payload["cooldown_candles"]),
+            max_open_positions=int(risk_payload["max_open_positions"]),
+            max_exposure_per_asset=float(risk_payload["max_exposure_per_asset"]),
+        ),
+    )
+    _validate_config(config)
+    return config
+
+
+def _validate_config(config: PaperTradingConfig) -> None:
+    if config.interval_minutes <= 0:
+        raise ValueError("interval_minutes must be positive")
+    if config.poll_interval_seconds <= 0:
+        raise ValueError("poll_interval_seconds must be positive")
+    if config.risk.initial_cash <= 0:
+        raise ValueError("initial_cash must be positive")
+    if not 0 < config.risk.position_fraction <= 1:
+        raise ValueError("position_fraction must be in (0, 1]")
+    if not 0 < config.risk.max_exposure_per_asset <= 1:
+        raise ValueError("max_exposure_per_asset must be in (0, 1]")
+    if config.risk.max_open_positions <= 0:
+        raise ValueError("max_open_positions must be positive")
+    if config.risk.cooldown_candles < 0:
+        raise ValueError("cooldown_candles cannot be negative")
+    if config.risk.stop_loss_pct < 0:
+        raise ValueError("stop_loss_pct cannot be negative")
+    if config.risk.take_profit_pct < 0:
+        raise ValueError("take_profit_pct cannot be negative")
+    if config.risk.fee_bps < 0 or config.risk.slippage_bps < 0:
+        raise ValueError("fee_bps and slippage_bps cannot be negative")

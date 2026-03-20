@@ -50,6 +50,7 @@ class FakeDatabase:
         self.row = row
         self.healthy = healthy
         self.fetch_error = fetch_error
+        self.last_interval_begin = None
 
     async def connect(self) -> None:
         """Open the fake connection."""
@@ -63,9 +64,16 @@ class FakeDatabase:
         """Return the configured fake health state."""
         return self.healthy
 
-    async def fetch_latest_feature_row(self, *, symbol: str, interval_minutes: int) -> dict | None:
+    async def fetch_latest_feature_row(
+        self,
+        *,
+        symbol: str,
+        interval_minutes: int,
+        interval_begin=None,
+    ) -> dict | None:
         """Return the configured row or raise the configured error."""
         del symbol, interval_minutes
+        self.last_interval_begin = interval_begin
         if self.fetch_error is not None:
             raise self.fetch_error
         return self.row
@@ -220,6 +228,23 @@ def test_predict_happy_path(tmp_path: Path) -> None:
     assert payload["predicted_class"] == "UP"
     assert payload["prob_up"] == 0.7
     assert payload["row_id"].startswith("BTC/USD|")
+
+
+def test_signal_accepts_exact_interval_begin_selector(tmp_path: Path) -> None:
+    """The additive M4 contract should allow M5 to request an exact finalized candle."""
+    database = FakeDatabase(row=_feature_row())
+    client = _build_client(tmp_path, prob_up=0.7, database=database)
+
+    response = client.get(
+        "/signal",
+        params={
+            "symbol": "BTC/USD",
+            "interval_begin": "2026-03-19T22:00:00Z",
+        },
+    )
+
+    assert response.status_code == 200
+    assert database.last_interval_begin == datetime(2026, 3, 19, 22, 0, tzinfo=timezone.utc)
 
 
 def test_signal_buy_sell_and_hold(tmp_path: Path) -> None:

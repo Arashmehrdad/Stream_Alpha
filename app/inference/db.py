@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 import re
 from typing import Any
 
@@ -65,23 +66,41 @@ class InferenceDatabase:
         *,
         symbol: str,
         interval_minutes: int,
+        interval_begin: datetime | None = None,
     ) -> dict[str, Any] | None:
         """Fetch the latest canonical feature row for one symbol."""
         try:
             pool = await self._require_pool()
-            row = await pool.fetchrow(
-                f"""
-                SELECT *
-                FROM {self._feature_table}
-                WHERE source_exchange = 'kraken'
-                  AND symbol = $1
-                  AND interval_minutes = $2
-                ORDER BY as_of_time DESC, interval_begin DESC
-                LIMIT 1
-                """,
-                symbol,
-                interval_minutes,
-            )
+            if interval_begin is None:
+                row = await pool.fetchrow(
+                    f"""
+                    SELECT *
+                    FROM {self._feature_table}
+                    WHERE source_exchange = 'kraken'
+                      AND symbol = $1
+                      AND interval_minutes = $2
+                    ORDER BY as_of_time DESC, interval_begin DESC
+                    LIMIT 1
+                    """,
+                    symbol,
+                    interval_minutes,
+                )
+            else:
+                row = await pool.fetchrow(
+                    f"""
+                    SELECT *
+                    FROM {self._feature_table}
+                    WHERE source_exchange = 'kraken'
+                      AND symbol = $1
+                      AND interval_minutes = $2
+                      AND interval_begin = $3
+                    ORDER BY as_of_time DESC, interval_begin DESC
+                    LIMIT 1
+                    """,
+                    symbol,
+                    interval_minutes,
+                    interval_begin,
+                )
         except Exception as error:  # pylint: disable=broad-exception-caught
             raise DatabaseUnavailableError(f"Could not query PostgreSQL: {error}") from error
         return None if row is None else dict(row)

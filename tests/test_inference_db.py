@@ -57,3 +57,23 @@ def test_fetch_latest_feature_row_uses_expected_ordering_and_filters() -> None:
     assert "source_exchange = 'kraken'" in (fake_pool.query or "")
     assert "ORDER BY as_of_time DESC, interval_begin DESC" in (fake_pool.query or "")
     assert "LIMIT 1" in (fake_pool.query or "")
+
+
+def test_fetch_latest_feature_row_accepts_exact_interval_begin() -> None:
+    """The DB layer should allow exact-candle lookups for restart-safe consumers."""
+    database = InferenceDatabase("postgresql://ignored", "feature_ohlc")
+    interval_begin = datetime(2026, 3, 19, 22, 0, tzinfo=timezone.utc)
+    fake_pool = FakePool({"id": 1, "interval_begin": interval_begin})
+    database._pool = fake_pool  # pylint: disable=protected-access
+
+    row = asyncio.run(
+        database.fetch_latest_feature_row(
+            symbol="BTC/USD",
+            interval_minutes=5,
+            interval_begin=interval_begin,
+        ),
+    )
+
+    assert row == {"id": 1, "interval_begin": interval_begin}
+    assert fake_pool.args == ("BTC/USD", 5, interval_begin)
+    assert "AND interval_begin = $3" in (fake_pool.query or "")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from time import perf_counter
 from typing import Any
@@ -183,12 +184,17 @@ class InferenceService:
         if symbol not in self._symbols:
             raise InvalidSymbolError(f"Unsupported symbol: {symbol}")
 
-    async def latest_feature_row(self, symbol: str) -> dict[str, Any] | None:
+    async def latest_feature_row(
+        self,
+        symbol: str,
+        interval_begin: datetime | None = None,
+    ) -> dict[str, Any] | None:
         """Fetch the latest canonical feature row for one valid symbol."""
         self.validate_symbol(symbol)
         return await self.database.fetch_latest_feature_row(
             symbol=symbol,
             interval_minutes=self.settings.kraken.ohlc_interval_minutes,
+            interval_begin=interval_begin,
         )
 
     def predict_from_row(self, row: dict[str, Any]) -> PredictionResponse:

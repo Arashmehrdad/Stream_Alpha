@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 
 from app.common.config import Settings
 from app.common.logging import configure_logging
+from app.common.time import parse_rfc3339
 from app.inference.db import DatabaseUnavailableError
 from app.inference.schemas import FeatureRowResponse, HealthResponse, MetricsResponse
 from app.inference.schemas import PredictionResponse, SignalResponse
@@ -88,21 +89,42 @@ def create_app(service: InferenceService | None = None) -> FastAPI:
         )
 
     @app.get("/latest-features", response_model=FeatureRowResponse)
-    async def latest_features(symbol: str) -> FeatureRowResponse:
-        row = await _latest_row_or_error(service, symbol)
+    async def latest_features(
+        symbol: str,
+        interval_begin: str | None = None,
+    ) -> FeatureRowResponse:
+        row = await _latest_row_or_error(
+            service,
+            symbol,
+            interval_begin=_parse_interval_begin(interval_begin),
+        )
         return FeatureRowResponse.model_validate(row)
 
     @app.get("/predict", response_model=PredictionResponse)
-    async def predict(symbol: str) -> PredictionResponse:
-        row = await _latest_row_or_error(service, symbol)
+    async def predict(
+        symbol: str,
+        interval_begin: str | None = None,
+    ) -> PredictionResponse:
+        row = await _latest_row_or_error(
+            service,
+            symbol,
+            interval_begin=_parse_interval_begin(interval_begin),
+        )
         try:
             return service.predict_from_row(row)
         except ArtifactSchemaMismatchError as error:
             raise HTTPException(status_code=500, detail=str(error)) from error
 
     @app.get("/signal", response_model=SignalResponse)
-    async def signal(symbol: str) -> SignalResponse:
-        row = await _latest_row_or_error(service, symbol)
+    async def signal(
+        symbol: str,
+        interval_begin: str | None = None,
+    ) -> SignalResponse:
+        row = await _latest_row_or_error(
+            service,
+            symbol,
+            interval_begin=_parse_interval_begin(interval_begin),
+        )
         try:
             prediction = service.predict_from_row(row)
             return service.signal_from_prediction(prediction)
@@ -119,9 +141,11 @@ def create_app(service: InferenceService | None = None) -> FastAPI:
 async def _latest_row_or_error(
     service: InferenceService,
     symbol: str,
+    *,
+    interval_begin: Any | None = None,
 ) -> dict[str, Any]:
     try:
-        row = await service.latest_feature_row(symbol)
+        row = await service.latest_feature_row(symbol, interval_begin=interval_begin)
     except InvalidSymbolError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except DatabaseUnavailableError as error:
@@ -133,3 +157,13 @@ async def _latest_row_or_error(
             detail=f"No feature row found for symbol {symbol}",
         )
     return row
+
+
+def _parse_interval_begin(value: str | None) -> Any | None:
+    """Parse the optional exact-candle selector for M4 lookups."""
+    if value is None:
+        return None
+    try:
+        return parse_rfc3339(value)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error

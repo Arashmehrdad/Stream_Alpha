@@ -10,6 +10,8 @@ Milestone `M3` adds an offline training pipeline. It builds a labeled dataset fr
 
 Milestone `M4` adds a minimal FastAPI inference API. It loads the accepted saved M3 artifact, reads the latest canonical feature row from `feature_ohlc`, and serves health, latest-feature, prediction, signal, and JSON metrics endpoints.
 
+Milestone `M5` adds a minimum correct paper-trading engine. It polls finalized canonical candles from `feature_ohlc`, asks the existing M4 `/signal` endpoint for the authoritative BUY/SELL/HOLD decision for each exact candle, simulates long-only spot fills, persists positions and trade ledger rows in PostgreSQL, and writes rolling paper-trading summaries under `artifacts/paper_trading/`.
+
 ## Repository Tree
 
 ```text
@@ -42,6 +44,16 @@ Milestone `M4` adds a minimal FastAPI inference API. It loads the accepted saved
 |   |   |-- main.py
 |   |   |-- schemas.py
 |   |   `-- service.py
+|   |-- trading
+|   |   |-- __init__.py
+|   |   |-- config.py
+|   |   |-- engine.py
+|   |   |-- metrics.py
+|   |   |-- repository.py
+|   |   |-- risk.py
+|   |   |-- runner.py
+|   |   |-- schemas.py
+|   |   `-- signal_client.py
 |   |-- training
 |   |   |-- __init__.py
 |   |   |-- __main__.py
@@ -60,6 +72,7 @@ Milestone `M4` adds a minimal FastAPI inference API. It loads the accepted saved
 |       |-- publisher.py
 |       `-- service.py
 |-- configs
+|   |-- paper_trading.yaml
 |   |-- redpanda-console-config.yml
 |   `-- training.m3.json
 |-- docker
@@ -72,6 +85,7 @@ Milestone `M4` adds a minimal FastAPI inference API. It loads the accepted saved
 |   |-- check-db.ps1
 |   |-- check-topics.ps1
 |   |-- m3-smoke-run.sh
+|   |-- run_paper_trader.py
 |   `-- tail-producer.ps1
 `-- tests
     |-- test_inference_api.py
@@ -82,7 +96,12 @@ Milestone `M4` adds a minimal FastAPI inference API. It loads the accepted saved
     |-- test_normalizers.py
     |-- test_publish_smoke.py
     |-- test_training_labels.py
-    `-- test_training_splits.py
+    |-- test_training_splits.py
+    `-- trading
+        |-- test_engine.py
+        |-- test_metrics.py
+        |-- test_risk.py
+        `-- test_runner_idempotency.py
 ```
 
 ## Services
@@ -93,6 +112,7 @@ Milestone `M4` adds a minimal FastAPI inference API. It loads the accepted saved
 - `producer`: Kraken public WebSocket v2 ingestion service from M1
 - `features`: OHLC-only feature consumer from M2
 - `inference`: FastAPI prediction API from M4, run directly from the repo with the accepted M3 artifact
+- `paper-trader`: long-only spot paper-trading engine from M5, run directly from the repo against canonical features plus M4 signals
 
 ## M2 Scope
 
@@ -139,6 +159,21 @@ M4 does not do:
 - accept custom feature payloads
 - add batch endpoints, dashboards, paper trading, or signal-history storage
 - introduce MLflow, Prometheus, Grafana, or deployment automation
+
+## M5 Scope
+
+M5 does:
+- poll newly finalized canonical candles from `feature_ohlc`
+- call the existing M4 `/signal` endpoint for each exact candle
+- simulate long-only spot BUY/SELL/HOLD execution with next-open fills
+- apply fixed-fraction sizing, cooldown, stop loss, take profit, max open positions, and max exposure per asset
+- persist `paper_positions`, `paper_trade_ledger`, and `paper_engine_state`
+- write rolling summary artifacts under `artifacts/paper_trading/`
+
+M5 does not do:
+- place live orders
+- short, pyramid, or use leverage
+- add broker integrations, dashboards, monitoring stacks, or retraining hooks
 
 ## Environment Variables
 
@@ -276,6 +311,22 @@ Example `GET /predict` response:
 }
 ```
 
+### 11. Run the M5 paper trader once
+
+Make sure PostgreSQL, canonical `feature_ohlc`, and the M4 inference API are already available first.
+
+```powershell
+python scripts\run_paper_trader.py --config configs\paper_trading.yaml --once
+```
+
+### 12. Run the M5 paper trader in polling mode
+
+```powershell
+python scripts\run_paper_trader.py --config configs\paper_trading.yaml
+```
+
+The paper trader is intentionally local-first and long-only. It consumes the existing M4 `/signal` endpoint as authoritative and never reimplements signal logic.
+
 Example `GET /signal` response:
 
 ```json
@@ -327,6 +378,27 @@ Get-Content artifacts\training\m3\<run_id>\summary.json
 Get-Content artifacts\training\m3\<run_id>\dataset_manifest.json
 ```
 
+## Paper-Trading Artifacts
+
+Each M5 run updates a rolling artifact directory:
+
+```text
+artifacts/paper_trading/
+|-- by_asset_summary.csv
+|-- closed_positions.csv
+|-- latest_summary.json
+`-- open_positions.csv
+```
+
+Quick checks after a run:
+
+```powershell
+Get-Content artifacts\paper_trading\latest_summary.json
+Get-Content artifacts\paper_trading\by_asset_summary.csv
+Get-Content artifacts\paper_trading\open_positions.csv
+Get-Content artifacts\paper_trading\closed_positions.csv
+```
+
 ## Inspect Topics
 
 Open Redpanda Console at [http://localhost:8080](http://localhost:8080).
@@ -353,6 +425,15 @@ You can still validate the raw OHLC source table if needed:
 docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT COUNT(*) AS raw_ohlc_rows FROM raw_ohlc;"
 ```
 
+## Validate Paper-Trading Rows In PostgreSQL
+
+```powershell
+docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT COUNT(*) AS engine_state_rows FROM paper_engine_state;"
+docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT COUNT(*) AS open_positions FROM paper_positions WHERE status = 'OPEN';"
+docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT COUNT(*) AS closed_positions FROM paper_positions WHERE status = 'CLOSED';"
+docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c \"SELECT symbol, action, reason, fill_interval_begin, fill_price, quantity, fee FROM paper_trade_ledger ORDER BY fill_time DESC LIMIT 10;\"
+```
+
 ## Warmup And Finalization Rules
 
 - Feature rows are emitted only for finalized candles.
@@ -370,6 +451,9 @@ docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELE
 - Bootstrap backfills the most recent feature rows idempotently through PostgreSQL upserts rather than relying on historical Kafka replay.
 - M3 training drops the first 3 feature rows per symbol from the eligible labeled dataset so the official persistence baseline can be computed from the canonical source without pulling a second table.
 - M3 training will stop with a clear error if `feature_ohlc` does not yet contain enough eligible labeled rows for the configured walk-forward split. With the current checked-in split config, that means at least `9` unique eligible timestamps.
+- M5 fills signal-driven entries and exits at the next finalized candle open because only finalized canonical candles are processed.
+- M5 uses the existing M4 inference service as authoritative and does not re-score features locally.
+- M5 is long-only spot simulation with simple next-open fills plus barrier exits; it is intentionally not a live broker or advanced execution model.
 - This is still a single-broker local stack for development, not a highly available deployment.
 
 ## References
