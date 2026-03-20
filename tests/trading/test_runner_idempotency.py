@@ -57,7 +57,7 @@ def _candle(index: int) -> FeatureCandle:
     )
 
 
-class FakeRepository:
+class FakeRepository:  # pylint: disable=too-many-instance-attributes
     def __init__(self, candles: list[FeatureCandle]) -> None:
         self.candles = candles
         self.states = {"BTC/USD": PaperEngineState(service_name="paper-trader", symbol="BTC/USD")}
@@ -174,3 +174,22 @@ def test_runner_does_not_duplicate_processed_candles(tmp_path: Path) -> None:
     assert first_ledger_count == 1
     assert len(repository.ledger) == 1
     assert repository.states["BTC/USD"].last_processed_interval_begin == _candle(1).interval_begin
+
+
+def test_runner_persists_one_risk_decision_per_processed_signal(tmp_path: Path) -> None:
+    repository = FakeRepository([_candle(0), _candle(1)])
+    runner = PaperTradingRunner(
+        config=_config(tmp_path),
+        repository=repository,
+        signal_client=FakeSignalClient(),
+    )
+
+    asyncio.run(runner.run_once())
+
+    assert len(repository.risk_decisions) == 2
+    assert all(entry.outcome in {"APPROVED", "MODIFIED", "BLOCKED"} for entry in repository.risk_decisions)
+    assert all(entry.reason_codes for entry in repository.risk_decisions)
+
+    asyncio.run(runner.run_once())
+
+    assert len(repository.risk_decisions) == 2

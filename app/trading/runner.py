@@ -60,7 +60,7 @@ class PaperTradingRunner:
             await self.run_once()
             await asyncio.sleep(self.config.poll_interval_seconds)
 
-    async def run_once(self) -> None:
+    async def run_once(self) -> None:  # pylint: disable=too-many-locals
         """Process all newly observed finalized candles exactly once."""
         states = await self.repository.load_engine_states(
             service_name=self.config.service_name,
@@ -137,6 +137,7 @@ class PaperTradingRunner:
                 config=self.config,
                 candle=candle,
                 signal=signal,
+                engine_state=result.state,
                 open_position=open_positions.get(candle.symbol),
                 portfolio=post_execution_portfolio,
                 service_risk_state=service_risk_state,

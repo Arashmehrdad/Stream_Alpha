@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from app.common.time import utc_now
+from app.common.time import parse_rfc3339, utc_now
 from app.trading.config import PaperTradingConfig
 from app.trading.risk import calculate_fee, next_cooldown_boundary
 from app.trading.schemas import (
     FeatureCandle,
+    PaperEngineState,
     PaperPosition,
     PendingSignalState,
     PortfolioContext,
@@ -26,6 +27,9 @@ KILL_SWITCH_ENABLED = "KILL_SWITCH_ENABLED"
 MAX_DAILY_LOSS_BREACHED = "MAX_DAILY_LOSS_BREACHED"
 MAX_DRAWDOWN_BREACHED = "MAX_DRAWDOWN_BREACHED"
 LOSS_STREAK_COOLDOWN_ACTIVE = "LOSS_STREAK_COOLDOWN_ACTIVE"
+OPEN_POSITION_EXISTS = "OPEN_POSITION_EXISTS"
+ENTRY_COOLDOWN_ACTIVE = "ENTRY_COOLDOWN_ACTIVE"
+MAX_OPEN_POSITIONS_REACHED = "MAX_OPEN_POSITIONS_REACHED"
 INSUFFICIENT_CASH = "INSUFFICIENT_CASH"
 REGIME_POSITION_CAP_CLAMPED = "REGIME_POSITION_CAP_CLAMPED"
 VOLATILITY_SIZE_ADJUSTED = "VOLATILITY_SIZE_ADJUSTED"
@@ -133,11 +137,12 @@ def advance_service_risk_state(
     )
 
 
-def evaluate_risk(
+def evaluate_risk(  # pylint: disable=too-many-arguments,too-many-locals
     *,
     config: PaperTradingConfig,
     candle: FeatureCandle,
     signal: SignalDecision,
+    engine_state: PaperEngineState,
     open_position: PaperPosition | None,
     portfolio: PortfolioContext,
     service_risk_state: ServiceRiskState,
@@ -173,11 +178,13 @@ def evaluate_risk(
             trade_allowed=signal.trade_allowed,
         )
 
-    requested_notional = _requested_buy_notional(config, portfolio.available_cash)
+    requested_notional = _requested_buy_notional(config, portfolio)
     block_code = _first_buy_blocker(
         config=config,
         candle=candle,
         signal=signal,
+        engine_state=engine_state,
+        open_position=open_position,
         portfolio=portfolio,
         service_risk_state=service_risk_state,
     )
@@ -356,21 +363,33 @@ def current_drawdown_pct(state: ServiceRiskState) -> float:
     """Return the current drawdown percentage from the stored high watermark."""
     if state.equity_high_watermark <= 0:
         return 0.0
-    return max(0.0, (state.equity_high_watermark - state.current_equity) / state.equity_high_watermark)
+    return max(
+        0.0,
+        (state.equity_high_watermark - state.current_equity) / state.equity_high_watermark,
+    )
 
 
-def _requested_buy_notional(config: PaperTradingConfig, available_cash: float) -> float:
+def _requested_buy_notional(
+    config: PaperTradingConfig,
+    portfolio: PortfolioContext,
+) -> float:
     fee_rate = config.risk.fee_bps / 10_000.0
-    if available_cash <= 0.0:
+    base_notional_pre_fee = min(
+        portfolio.available_cash,
+        portfolio.current_equity * config.risk.position_fraction,
+    )
+    if base_notional_pre_fee <= 0.0:
         return 0.0
-    return (available_cash * config.risk.position_fraction) / (1.0 + fee_rate)
+    return base_notional_pre_fee / (1.0 + fee_rate)
 
 
-def _first_buy_blocker(
+def _first_buy_blocker(  # pylint: disable=too-many-arguments,too-many-return-statements
     *,
     config: PaperTradingConfig,
     candle: FeatureCandle,
     signal: SignalDecision,
+    engine_state: PaperEngineState,
+    open_position: PaperPosition | None,
     portfolio: PortfolioContext,
     service_risk_state: ServiceRiskState,
 ) -> str | None:
@@ -393,6 +412,15 @@ def _first_buy_blocker(
         and candle.interval_begin <= service_risk_state.loss_streak_cooldown_until_interval_begin
     ):
         return LOSS_STREAK_COOLDOWN_ACTIVE
+    if open_position is not None and open_position.status == "OPEN":
+        return OPEN_POSITION_EXISTS
+    if (
+        engine_state.cooldown_until_interval_begin is not None
+        and candle.interval_begin <= engine_state.cooldown_until_interval_begin
+    ):
+        return ENTRY_COOLDOWN_ACTIVE
+    if portfolio.open_position_count >= config.risk.max_open_positions:
+        return MAX_OPEN_POSITIONS_REACHED
     if portfolio.available_cash <= 0.0:
         return INSUFFICIENT_CASH
     return None
@@ -420,7 +448,5 @@ def _clamp_notional(current_notional: float, cap: float) -> tuple[float, bool]:
 
 
 def _parse_row_id_interval_begin(row_id: str):
-    from app.common.time import parse_rfc3339
-
     _, _, timestamp = row_id.partition("|")
     return parse_rfc3339(timestamp)

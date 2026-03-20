@@ -69,6 +69,9 @@ def _pending(
     *,
     interval_begin: datetime,
     regime_label: str | None = None,
+    approved_notional: float | None = None,
+    risk_outcome: str | None = None,
+    risk_reason_codes: tuple[str, ...] = (),
 ) -> PendingSignalState:
     return PendingSignalState(
         signal=signal,
@@ -82,6 +85,9 @@ def _pending(
         predicted_class="UP" if signal == "BUY" else "DOWN",
         model_name="logistic_regression",
         regime_label=regime_label,
+        approved_notional=approved_notional,
+        risk_outcome=risk_outcome,
+        risk_reason_codes=risk_reason_codes,
     )
 
 
@@ -254,37 +260,37 @@ def test_stop_loss_and_take_profit_respect_conservative_ordering() -> None:
     assert barrier_result.ledger_entries[0].regime_label == "HIGH_VOL"
 
 
-def test_cooldown_and_max_open_positions_block_new_entries() -> None:
-    """Cooldown and max-open-position checks should block BUY entries cleanly."""
+def test_risk_approved_pending_buy_is_not_dropped_by_legacy_execution_inputs() -> None:
+    """Execution should fill an already approved BUY instead of reapplying legacy gates."""
     candle = _candle(interval_begin=datetime(2026, 3, 20, 13, 0, tzinfo=timezone.utc), open_price=100.0)
-    cooldown_result = process_candle(
-        config=_config(),
-        candle=candle,
-        state=PaperEngineState(
-            service_name="paper-trader",
-            symbol="BTC/USD",
-            cooldown_until_interval_begin=candle.interval_begin,
-            pending_signal=_pending("BUY", interval_begin=datetime(2026, 3, 20, 12, 55, tzinfo=timezone.utc)),
-        ),
-        open_position=None,
-        signal=_signal("HOLD", interval_begin=candle.interval_begin),
-        portfolio=PortfolioContext(available_cash=10_000.0, open_position_count=0),
-    )
-    max_open_result = process_candle(
+    result = process_candle(
         config=_config(max_open_positions=1),
         candle=candle,
         state=PaperEngineState(
             service_name="paper-trader",
             symbol="BTC/USD",
-            pending_signal=_pending("BUY", interval_begin=datetime(2026, 3, 20, 12, 55, tzinfo=timezone.utc)),
+            cooldown_until_interval_begin=candle.interval_begin,
+            pending_signal=_pending(
+                "BUY",
+                interval_begin=datetime(2026, 3, 20, 12, 55, tzinfo=timezone.utc),
+                regime_label="TREND_UP",
+                approved_notional=900.0,
+                risk_outcome="APPROVED",
+                risk_reason_codes=("BUY_APPROVED",),
+            ),
         ),
         open_position=None,
         signal=_signal("HOLD", interval_begin=candle.interval_begin),
         portfolio=PortfolioContext(available_cash=10_000.0, open_position_count=1),
     )
 
-    assert cooldown_result.created_position is None
-    assert max_open_result.created_position is None
+    assert result.created_position is not None
+    assert result.state.pending_signal is None
+    assert result.created_position.entry_notional == 900.0
+    assert result.created_position.entry_approved_notional == 900.0
+    assert result.created_position.entry_risk_outcome == "APPROVED"
+    assert result.ledger_entries[0].approved_notional == 900.0
+    assert result.ledger_entries[0].risk_reason_codes == ("BUY_APPROVED",)
 
 
 def test_max_exposure_per_asset_caps_entry_size_and_ledger_fields() -> None:

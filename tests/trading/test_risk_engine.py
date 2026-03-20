@@ -1,5 +1,7 @@
 """Pure M10 risk-engine tests for Stream Alpha."""
 
+# pylint: disable=missing-function-docstring
+
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
@@ -7,18 +9,27 @@ from datetime import date, datetime, timedelta, timezone
 from app.trading.config import PaperTradingConfig, RiskConfig
 from app.trading.risk_engine import (
     BUY_APPROVED,
+    ENTRY_COOLDOWN_ACTIVE,
     HOLD_NO_OP,
     KILL_SWITCH_ENABLED,
     LOSS_STREAK_COOLDOWN_ACTIVE,
     MAX_ASSET_EXPOSURE_CLAMPED,
     MAX_DAILY_LOSS_BREACHED,
     MAX_DRAWDOWN_BREACHED,
+    MAX_OPEN_POSITIONS_REACHED,
     MAX_TOTAL_EXPOSURE_CLAMPED,
+    OPEN_POSITION_EXISTS,
     SELL_EXIT_APPROVED,
     VOLATILITY_SIZE_ADJUSTED,
     evaluate_risk,
 )
-from app.trading.schemas import FeatureCandle, PaperPosition, PortfolioContext, ServiceRiskState
+from app.trading.schemas import (
+    FeatureCandle,
+    PaperEngineState,
+    PaperPosition,
+    PortfolioContext,
+    ServiceRiskState,
+)
 from app.trading.schemas import SignalDecision
 
 
@@ -141,6 +152,18 @@ def _service_risk_state(**overrides) -> ServiceRiskState:
     return ServiceRiskState(**payload)
 
 
+def _engine_state(**overrides) -> PaperEngineState:
+    payload = {
+        "service_name": "paper-trader",
+        "symbol": "BTC/USD",
+        "last_processed_interval_begin": None,
+        "cooldown_until_interval_begin": None,
+        "pending_signal": None,
+    }
+    payload.update(overrides)
+    return PaperEngineState(**payload)
+
+
 def _open_position() -> PaperPosition:
     interval_begin = _candle().interval_begin
     return PaperPosition(
@@ -170,6 +193,7 @@ def test_kill_switch_blocks_buy() -> None:
         config=_config(kill_switch_enabled=True),
         candle=_candle(),
         signal=_signal(),
+        engine_state=_engine_state(),
         open_position=None,
         portfolio=_portfolio(),
         service_risk_state=_service_risk_state(),
@@ -184,6 +208,7 @@ def test_daily_loss_breach_blocks_buy() -> None:
         config=_config(max_daily_loss_amount=200.0),
         candle=_candle(),
         signal=_signal(),
+        engine_state=_engine_state(),
         open_position=None,
         portfolio=_portfolio(),
         service_risk_state=_service_risk_state(realized_pnl_today=-250.0),
@@ -198,6 +223,7 @@ def test_drawdown_breach_blocks_buy() -> None:
         config=_config(max_drawdown_pct=0.10),
         candle=_candle(),
         signal=_signal(),
+        engine_state=_engine_state(),
         open_position=None,
         portfolio=_portfolio(current_equity=8_000.0),
         service_risk_state=_service_risk_state(
@@ -215,6 +241,7 @@ def test_active_loss_streak_cooldown_blocks_buy() -> None:
         config=_config(),
         candle=_candle(),
         signal=_signal(),
+        engine_state=_engine_state(),
         open_position=None,
         portfolio=_portfolio(),
         service_risk_state=_service_risk_state(
@@ -231,6 +258,7 @@ def test_per_asset_cap_modifies_buy() -> None:
         config=_config(),
         candle=_candle(),
         signal=_signal(),
+        engine_state=_engine_state(),
         open_position=None,
         portfolio=_portfolio(current_symbol_exposure_notional=2_200.0),
         service_risk_state=_service_risk_state(),
@@ -246,6 +274,7 @@ def test_total_exposure_cap_modifies_buy() -> None:
         config=_config(),
         candle=_candle(),
         signal=_signal(),
+        engine_state=_engine_state(),
         open_position=None,
         portfolio=_portfolio(total_open_exposure_notional=5_800.0),
         service_risk_state=_service_risk_state(),
@@ -261,6 +290,7 @@ def test_high_volatility_reduces_approved_notional() -> None:
         config=_config(),
         candle=_candle(realized_vol_12=0.12),
         signal=_signal(),
+        engine_state=_engine_state(),
         open_position=None,
         portfolio=_portfolio(),
         service_risk_state=_service_risk_state(),
@@ -276,6 +306,7 @@ def test_sell_with_open_position_stays_approved() -> None:
         config=_config(),
         candle=_candle(),
         signal=_signal("SELL"),
+        engine_state=_engine_state(),
         open_position=_open_position(),
         portfolio=_portfolio(current_symbol_exposure_notional=1_000.0),
         service_risk_state=_service_risk_state(),
@@ -291,6 +322,7 @@ def test_hold_becomes_approved_no_op() -> None:
         config=_config(),
         candle=_candle(),
         signal=_signal("HOLD"),
+        engine_state=_engine_state(),
         open_position=None,
         portfolio=_portfolio(),
         service_risk_state=_service_risk_state(),
@@ -306,6 +338,7 @@ def test_every_evaluation_emits_explicit_outcome_and_reasons() -> None:
         config=_config(),
         candle=_candle(),
         signal=_signal(),
+        engine_state=_engine_state(),
         open_position=None,
         portfolio=_portfolio(),
         service_risk_state=_service_risk_state(),
@@ -313,3 +346,62 @@ def test_every_evaluation_emits_explicit_outcome_and_reasons() -> None:
 
     assert decision.outcome == "APPROVED"
     assert decision.reason_codes == (BUY_APPROVED,)
+
+
+def test_equity_aware_requested_sizing_uses_equity_fraction_capped_by_cash() -> None:
+    decision = evaluate_risk(
+        config=_config(),
+        candle=_candle(),
+        signal=_signal(),
+        engine_state=_engine_state(),
+        open_position=None,
+        portfolio=_portfolio(available_cash=2_000.0, current_equity=10_000.0),
+        service_risk_state=_service_risk_state(),
+    )
+
+    assert decision.outcome == "APPROVED"
+    assert round(decision.requested_notional, 6) == round(2_000.0 / 1.002, 6)
+    assert round(decision.approved_notional, 6) == round(decision.requested_notional, 6)
+
+
+def test_existing_open_position_blocks_buy_inside_risk_engine() -> None:
+    decision = evaluate_risk(
+        config=_config(),
+        candle=_candle(),
+        signal=_signal(),
+        engine_state=_engine_state(),
+        open_position=_open_position(),
+        portfolio=_portfolio(current_symbol_exposure_notional=1_000.0, open_position_count=1),
+        service_risk_state=_service_risk_state(),
+    )
+
+    assert decision.outcome == "BLOCKED"
+    assert decision.reason_codes == (OPEN_POSITION_EXISTS,)
+
+
+def test_engine_cooldown_and_max_open_position_checks_now_block_in_risk_engine() -> None:
+    decision = evaluate_risk(
+        config=_config(max_open_positions=1),
+        candle=_candle(),
+        signal=_signal(),
+        engine_state=_engine_state(cooldown_until_interval_begin=_candle().interval_begin),
+        open_position=None,
+        portfolio=_portfolio(open_position_count=1),
+        service_risk_state=_service_risk_state(),
+    )
+
+    assert decision.outcome == "BLOCKED"
+    assert decision.reason_codes == (ENTRY_COOLDOWN_ACTIVE,)
+
+    max_open_decision = evaluate_risk(
+        config=_config(max_open_positions=1),
+        candle=_candle(),
+        signal=_signal(),
+        engine_state=_engine_state(),
+        open_position=None,
+        portfolio=_portfolio(open_position_count=1),
+        service_risk_state=_service_risk_state(),
+    )
+
+    assert max_open_decision.outcome == "BLOCKED"
+    assert max_open_decision.reason_codes == (MAX_OPEN_POSITIONS_REACHED,)

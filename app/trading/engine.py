@@ -10,7 +10,6 @@ from app.trading.risk import (
     calculate_entry_fill_price,
     calculate_exit_fill_price,
     calculate_fee,
-    can_open_position,
     capped_entry_cash,
     evaluate_barrier_exit,
     next_cooldown_boundary,
@@ -129,14 +128,6 @@ def _execute_pending_signal(
         return EngineResult(state=cleared_state, open_position=open_position)
 
     if pending.signal == "BUY":
-        if not can_open_position(
-            config=config,
-            state=state,
-            open_position=open_position,
-            candle=candle,
-            portfolio=portfolio,
-        ):
-            return EngineResult(state=cleared_state, open_position=open_position)
         entry = _open_position(
             config=config,
             candle=candle,
