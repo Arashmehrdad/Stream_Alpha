@@ -503,6 +503,7 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
                 None if freshness is None else freshness.health_overall_status
             ),
             top_features=prediction.top_features,
+            prediction_explanation=prediction.prediction_explanation,
             threshold_snapshot=threshold_snapshot,
             regime_reason=regime_reason,
             signal_explanation=signal_explanation,
@@ -1298,6 +1299,9 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
             freshness_status=freshness.freshness_status,
             health_overall_status=freshness.health_overall_status,
             top_features=[],
+            prediction_explanation=self.explainability_service.build_prediction_unavailable(
+                summary_text=reason,
+            ),
             threshold_snapshot=threshold_snapshot,
             regime_reason=regime_reason,
             signal_explanation=signal_explanation,

@@ -7,6 +7,13 @@ from datetime import datetime
 import httpx
 
 from app.common.time import parse_rfc3339, to_rfc3339
+from app.explainability.schemas import (
+    PredictionExplanation,
+    RegimeReason,
+    SignalExplanation,
+    ThresholdSnapshot,
+    TopFeatureContribution,
+)
 from app.trading.schemas import SignalDecision
 
 
@@ -55,6 +62,11 @@ class SignalClient:
             row_id=row_id,
             as_of_time=parse_rfc3339(str(payload["as_of_time"])),
             model_name=str(payload["model_name"]),
+            model_version=(
+                None
+                if payload.get("model_version") is None
+                else str(payload["model_version"])
+            ),
             regime_label=(
                 None
                 if payload.get("regime_label") is None
@@ -94,5 +106,29 @@ class SignalClient:
                 None
                 if payload.get("health_overall_status") is None
                 else str(payload["health_overall_status"])
+            ),
+            top_features=tuple(
+                TopFeatureContribution.model_validate(item)
+                for item in payload.get("top_features", [])
+            ),
+            prediction_explanation=(
+                None
+                if payload.get("prediction_explanation") is None
+                else PredictionExplanation.model_validate(payload["prediction_explanation"])
+            ),
+            threshold_snapshot=(
+                None
+                if payload.get("threshold_snapshot") is None
+                else ThresholdSnapshot.model_validate(payload["threshold_snapshot"])
+            ),
+            regime_reason=(
+                None
+                if payload.get("regime_reason") is None
+                else RegimeReason.model_validate(payload["regime_reason"])
+            ),
+            signal_explanation=(
+                None
+                if payload.get("signal_explanation") is None
+                else SignalExplanation.model_validate(payload["signal_explanation"])
             ),
         )

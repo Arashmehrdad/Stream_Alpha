@@ -28,6 +28,8 @@ Milestone `M13` foundation adds explicit reliability and recovery state around t
 
 Milestone `M14` Packet 1 adds an M4-side explainability foundation only. It keeps M4 authoritative for prediction and signal generation, exposes `model_version` on decisions, adds deterministic top-feature contributions from one-at-a-time reference ablation against a persisted reference vector, and extends `/predict` plus `/signal` with additive explanation payloads without changing M10, M11, M12, or M13 behavior.
 
+Milestone `M14` Packet 2 adds a canonical decision-trace and risk-rationale foundation around the accepted M4 -> M10 -> M11/M12 path. It persists one JSONB-backed `decision_traces` row per authoritative M4 signal, enriches that row with the M4 explanation payload plus explicit M10 risk rationale, and links `paper_risk_decisions`, `execution_order_requests`, and `paper_engine_state` to the same trace without changing any authority boundary or adding dashboard/report generation yet.
+
 ## Repository Tree
 
 ```text
@@ -395,7 +397,7 @@ M14 Packet 1 does:
 - build the reference vector deterministically from canonical `feature_ohlc` medians when the artifact is missing, then persist it
 - compute top-feature contributions with one-at-a-time reference ablation against `prob_up`
 - extend `GET /predict` with additive `model_version`, `top_features`, and `prediction_explanation`
-- extend `GET /signal` with additive `model_version`, `top_features`, `threshold_snapshot`, `regime_reason`, and `signal_explanation`
+- extend `GET /signal` with additive `model_version`, `top_features`, `prediction_explanation`, `threshold_snapshot`, `regime_reason`, and `signal_explanation`
 - add explicit regime-reason codes `REGIME_HIGH_VOL`, `REGIME_TREND_UP`, `REGIME_TREND_DOWN`, and `REGIME_RANGE`
 
 M14 Packet 1 does not do:
@@ -404,6 +406,19 @@ M14 Packet 1 does not do:
 - change M11/M12 execution routing, live safety, or audit behavior
 - change M13 reliability HOLD behavior
 - add SHAP, external explainability dependencies, threshold rewrites, or dashboard redesigns
+
+M14 Packet 2 does:
+- keep M4 authoritative by creating one canonical `decision_traces` row from the accepted `/signal` response
+- persist the authoritative M4 prediction and signal explanation fields, `threshold_snapshot`, `regime_reason`, and `model_version` into the trace payload
+- extend M10 outputs additively with `primary_reason_code`, `reason_texts`, ordered adjustment steps, and `blocked_stage="risk"` for blocked trades
+- link `paper_risk_decisions.decision_trace_id`, `paper_risk_decisions.model_version`, `execution_order_requests.decision_trace_id`, `execution_order_requests.model_version`, and `paper_engine_state.pending_decision_trace_id`
+- keep `decision_traces` as the canonical rationale holder and keep the existing tables on lightweight linkage fields only
+
+M14 Packet 2 does not do:
+- change M4 prediction or signal authority
+- change M10 risk authority or sizing policy
+- change M11/M12 execution routing behavior beyond carrying trace ids
+- change M13 reliability behavior, dashboard layout, or report generation
 
 ## Environment Variables
 
@@ -983,7 +998,7 @@ Get-Content artifacts\explainability\<model_version>\reference.json
 Expect `prediction_explanation.method=ONE_AT_A_TIME_REFERENCE_ABLATION`, a persisted `reference.json`, and `top_features` sorted by absolute `signed_contribution` descending.
 
 2. Verify additive explainability on `/signal`.
-Call `GET /signal` for a fresh symbol and confirm the response now includes `model_version`, `top_features`, `threshold_snapshot`, `regime_reason`, and `signal_explanation`.
+Call `GET /signal` for a fresh symbol and confirm the response now includes `model_version`, `top_features`, `prediction_explanation`, `threshold_snapshot`, `regime_reason`, and `signal_explanation`.
 
 ```powershell
 curl "http://127.0.0.1:8000/signal?symbol=BTC/USD"
@@ -1000,6 +1015,37 @@ curl "http://127.0.0.1:8000/signal?symbol=BTC/USD&interval_begin=<older interval
 ```
 
 Expect `signal=HOLD`, `decision_source=reliability`, the existing M13 `reason_code`, and additive `threshold_snapshot` plus `signal_explanation` fields without any change to the underlying HOLD behavior.
+
+4. Verify canonical decision-trace persistence after one paper-trader pass.
+Run the accepted paper trader once, then confirm the latest M4 signal wrote a `decision_traces` row and that the existing M10 and M11 tables now link back to it.
+
+```powershell
+python scripts\run_paper_trader.py --once
+docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT id, symbol, signal, model_version, risk_outcome, created_at FROM decision_traces ORDER BY id DESC LIMIT 5;"
+docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT id, decision_trace_id, model_version, outcome, reason_codes FROM paper_risk_decisions ORDER BY id DESC LIMIT 5;"
+docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT id, decision_trace_id, model_version, action, risk_outcome FROM execution_order_requests ORDER BY id DESC LIMIT 5;"
+docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT service_name, symbol, pending_decision_trace_id FROM paper_engine_state ORDER BY symbol;"
+```
+
+Expect one `decision_traces` row per processed signal, a populated `decision_trace_id` on the matching `paper_risk_decisions` row, the same `decision_trace_id` on any created `execution_order_requests` row, and `pending_decision_trace_id` to remain restart-safe while a signal is waiting to fill.
+
+5. Verify blocked trades write an explicit risk rationale.
+Use a setup that blocks a new BUY, then inspect the latest trace payload and confirm the canonical blocked-trade section is present with `blocked_stage="risk"`.
+
+```powershell
+docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT id, trace_payload->'risk' AS risk_section, trace_payload->'blocked_trade' AS blocked_trade FROM decision_traces ORDER BY id DESC LIMIT 3;"
+```
+
+Expect blocked traces to show `risk.primary_reason_code`, ordered `reason_codes`, explicit `reason_texts`, and `blocked_trade.blocked_stage = "risk"`.
+
+6. Verify modified trades preserve ordered adjustment steps.
+Use a setup that produces a `MODIFIED` BUY and confirm the trace shows the ordered adjustment path rather than only a flat list of reason codes.
+
+```powershell
+docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT id, trace_payload->'risk'->'ordered_adjustments' AS ordered_adjustments FROM decision_traces WHERE risk_outcome = 'MODIFIED' ORDER BY id DESC LIMIT 3;"
+```
+
+Expect `ordered_adjustments` to remain in the exact sequence applied by M10, with each step showing `reason_code`, `reason_text`, `before_notional`, and `after_notional`.
 
 ## Inspect Topics
 

@@ -1,7 +1,7 @@
 """Focused M11 execution abstraction tests."""
 
 # pylint: disable=duplicate-code,missing-function-docstring,missing-class-docstring
-# pylint: disable=too-few-public-methods
+# pylint: disable=too-few-public-methods,too-many-public-methods
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from app.trading.config import ExecutionConfig, PaperTradingConfig, RiskConfig
 from app.trading.execution import build_idempotency_key, build_order_request
 from app.trading.runner import PaperTradingRunner
 from app.trading.schemas import (
+    DecisionTraceRecord,
     FeatureCandle,
     OrderLifecycleEvent,
     OrderRequest,
@@ -104,8 +105,10 @@ class FakeRepository:  # pylint: disable=too-many-instance-attributes
         self.heartbeats = []
         self.order_requests: dict[str, OrderRequest] = {}
         self.order_events: dict[tuple[int, str], OrderLifecycleEvent] = {}
+        self.decision_traces: dict[int, DecisionTraceRecord] = {}
         self.position_id = 0
         self.order_request_id = 0
+        self.decision_trace_id = 0
 
     async def connect(self) -> None:
         return None
@@ -189,6 +192,26 @@ class FakeRepository:  # pylint: disable=too-many-instance-attributes
     async def insert_risk_decision(self, entry) -> None:
         self.risk_decisions.append(entry)
 
+    async def ensure_decision_trace(self, trace):
+        for existing in self.decision_traces.values():
+            if (
+                existing.service_name == trace.service_name
+                and existing.execution_mode == trace.execution_mode
+                and existing.signal_row_id == trace.signal_row_id
+            ):
+                return existing
+        self.decision_trace_id += 1
+        stored = replace(trace, decision_trace_id=self.decision_trace_id)
+        self.decision_traces[stored.decision_trace_id] = stored
+        return stored
+
+    async def update_decision_trace(self, trace):
+        self.decision_traces[trace.decision_trace_id] = trace
+        return trace
+
+    async def load_decision_trace(self, *, decision_trace_id: int):
+        return self.decision_traces.get(decision_trace_id)
+
     async def load_reliability_state(self, *, service_name: str, component_name: str):
         del service_name
         return self.reliability_states.get(component_name)
@@ -259,6 +282,7 @@ class FakeSignalClient:
             row_id=f"{symbol}|{to_rfc3339(interval_begin)}",
             as_of_time=interval_begin + timedelta(minutes=5),
             model_name="logistic_regression",
+            model_version="m3-20260321T090000Z",
             regime_label="TREND_UP",
             regime_run_id="20260321T090000Z",
             trade_allowed=self.trade_allowed,

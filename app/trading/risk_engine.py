@@ -11,6 +11,7 @@ from app.trading.schemas import (
     PaperPosition,
     PendingSignalState,
     PortfolioContext,
+    RiskAdjustmentStep,
     RiskDecision,
     RiskDecisionLogEntry,
     ServiceRiskState,
@@ -37,6 +38,51 @@ CONFIDENCE_SIZE_ADJUSTED = "CONFIDENCE_SIZE_ADJUSTED"
 MAX_ASSET_EXPOSURE_CLAMPED = "MAX_ASSET_EXPOSURE_CLAMPED"
 MAX_TOTAL_EXPOSURE_CLAMPED = "MAX_TOTAL_EXPOSURE_CLAMPED"
 MIN_TRADE_NOTIONAL_BREACHED = "MIN_TRADE_NOTIONAL_BREACHED"
+RISK_BLOCKED_STAGE = "risk"
+
+RISK_REASON_TEXTS: dict[str, str] = {
+    BUY_APPROVED: "Buy passed all configured M10 risk checks with no size adjustments.",
+    SELL_EXIT_APPROVED: "Sell was approved to reduce or close the current open position.",
+    SELL_NO_OPEN_POSITION: (
+        "Sell was approved as a zero-notional exit because no open position existed."
+    ),
+    HOLD_NO_OP: "Hold produces no trade and requires no risk adjustment.",
+    TRADE_NOT_ALLOWED: (
+        "The resolved regime or M4 signal policy does not allow opening a new long trade."
+    ),
+    KILL_SWITCH_ENABLED: (
+        "The configured kill switch is enabled, so new risk approvals are blocked."
+    ),
+    MAX_DAILY_LOSS_BREACHED: (
+        "Realized daily loss has breached the configured maximum daily loss limit."
+    ),
+    MAX_DRAWDOWN_BREACHED: (
+        "Portfolio drawdown has breached the configured maximum drawdown limit."
+    ),
+    LOSS_STREAK_COOLDOWN_ACTIVE: "Loss-streak cooldown is still active for the current candle.",
+    OPEN_POSITION_EXISTS: "A long position is already open for this symbol.",
+    ENTRY_COOLDOWN_ACTIVE: "The per-symbol entry cooldown is still active for this candle.",
+    MAX_OPEN_POSITIONS_REACHED: "The maximum number of open positions is already reached.",
+    INSUFFICIENT_CASH: "Available cash is not sufficient to request a new entry.",
+    REGIME_POSITION_CAP_CLAMPED: (
+        "Approved notional was reduced to the configured regime position-fraction cap."
+    ),
+    VOLATILITY_SIZE_ADJUSTED: (
+        "Approved notional was reduced by the realized-volatility sizing multiplier."
+    ),
+    CONFIDENCE_SIZE_ADJUSTED: (
+        "Approved notional was reduced by the confidence-weighted sizing multiplier."
+    ),
+    MAX_ASSET_EXPOSURE_CLAMPED: (
+        "Approved notional was reduced to stay within the maximum per-asset exposure."
+    ),
+    MAX_TOTAL_EXPOSURE_CLAMPED: (
+        "Approved notional was reduced to stay within the maximum total exposure."
+    ),
+    MIN_TRADE_NOTIONAL_BREACHED: (
+        "Adjusted approved notional fell below the configured minimum trade notional."
+    ),
+}
 
 
 def default_service_risk_state(
@@ -140,7 +186,7 @@ def advance_service_risk_state(
     )
 
 
-def evaluate_risk(  # pylint: disable=too-many-arguments,too-many-locals
+def evaluate_risk(  # pylint: disable=too-many-arguments,too-many-locals,too-many-statements
     *,
     config: PaperTradingConfig,
     candle: FeatureCandle,
@@ -152,7 +198,7 @@ def evaluate_risk(  # pylint: disable=too-many-arguments,too-many-locals
 ) -> RiskDecision:
     """Evaluate one fetched M4 signal against the explicit M10 rules."""
     if signal.signal == "HOLD":
-        return RiskDecision(
+        return _build_risk_decision(
             service_name=config.service_name,
             symbol=signal.symbol,
             signal=signal.signal,
@@ -168,7 +214,7 @@ def evaluate_risk(  # pylint: disable=too-many-arguments,too-many-locals
     if signal.signal == "SELL":
         approved_notional = portfolio.current_symbol_exposure_notional
         reason_code = SELL_EXIT_APPROVED if open_position is not None else SELL_NO_OPEN_POSITION
-        return RiskDecision(
+        return _build_risk_decision(
             service_name=config.service_name,
             symbol=signal.symbol,
             signal=signal.signal,
@@ -192,7 +238,7 @@ def evaluate_risk(  # pylint: disable=too-many-arguments,too-many-locals
         service_risk_state=service_risk_state,
     )
     if block_code is not None:
-        return RiskDecision(
+        return _build_risk_decision(
             service_name=config.service_name,
             symbol=signal.symbol,
             signal=signal.signal,
@@ -200,6 +246,8 @@ def evaluate_risk(  # pylint: disable=too-many-arguments,too-many-locals
             approved_notional=0.0,
             requested_notional=requested_notional,
             reason_codes=(block_code,),
+            primary_reason_code=block_code,
+            blocked_stage=RISK_BLOCKED_STAGE,
             regime_label=signal.regime_label,
             regime_run_id=signal.regime_run_id,
             trade_allowed=signal.trade_allowed,
@@ -207,56 +255,108 @@ def evaluate_risk(  # pylint: disable=too-many-arguments,too-many-locals
 
     approved_notional = requested_notional
     reason_codes: list[str] = []
+    ordered_adjustments: list[RiskAdjustmentStep] = []
+    step_index = 1
 
     regime_cap_fraction = config.risk.regime_position_fraction_caps.get(
         signal.regime_label or "",
         config.risk.position_fraction,
     )
     regime_cap_notional = portfolio.current_equity * regime_cap_fraction
+    previous_notional = approved_notional
     approved_notional, changed = _clamp_notional(approved_notional, regime_cap_notional)
     if changed:
         reason_codes.append(REGIME_POSITION_CAP_CLAMPED)
+        ordered_adjustments.append(
+            _build_adjustment_step(
+                step_index=step_index,
+                reason_code=REGIME_POSITION_CAP_CLAMPED,
+                before_notional=previous_notional,
+                after_notional=approved_notional,
+            )
+        )
+        step_index += 1
 
     volatility_multiplier = _volatility_size_multiplier(
         realized_vol_12=candle.realized_vol_12,
         target_realized_vol=config.risk.volatility_target_realized_vol,
         min_multiplier=config.risk.min_volatility_size_multiplier,
     )
+    previous_notional = approved_notional
     volatility_adjusted_notional = approved_notional * volatility_multiplier
     if volatility_adjusted_notional < approved_notional:
         approved_notional = volatility_adjusted_notional
         reason_codes.append(VOLATILITY_SIZE_ADJUSTED)
+        ordered_adjustments.append(
+            _build_adjustment_step(
+                step_index=step_index,
+                reason_code=VOLATILITY_SIZE_ADJUSTED,
+                before_notional=previous_notional,
+                after_notional=approved_notional,
+            )
+        )
+        step_index += 1
 
     if config.risk.enable_confidence_weighted_sizing:
         confidence_multiplier = _confidence_size_multiplier(
             confidence=signal.confidence,
             min_multiplier=config.risk.min_confidence_size_multiplier,
         )
+        previous_notional = approved_notional
         confidence_adjusted_notional = approved_notional * confidence_multiplier
         if confidence_adjusted_notional < approved_notional:
             approved_notional = confidence_adjusted_notional
             reason_codes.append(CONFIDENCE_SIZE_ADJUSTED)
+            ordered_adjustments.append(
+                _build_adjustment_step(
+                    step_index=step_index,
+                    reason_code=CONFIDENCE_SIZE_ADJUSTED,
+                    before_notional=previous_notional,
+                    after_notional=approved_notional,
+                )
+            )
+            step_index += 1
 
     max_asset_notional = max(
         0.0,
         (portfolio.current_equity * config.risk.max_exposure_per_asset)
         - portfolio.current_symbol_exposure_notional,
     )
+    previous_notional = approved_notional
     approved_notional, changed = _clamp_notional(approved_notional, max_asset_notional)
     if changed:
         reason_codes.append(MAX_ASSET_EXPOSURE_CLAMPED)
+        ordered_adjustments.append(
+            _build_adjustment_step(
+                step_index=step_index,
+                reason_code=MAX_ASSET_EXPOSURE_CLAMPED,
+                before_notional=previous_notional,
+                after_notional=approved_notional,
+            )
+        )
+        step_index += 1
 
     max_total_notional = max(
         0.0,
         (portfolio.current_equity * config.risk.max_total_exposure)
         - portfolio.total_open_exposure_notional,
     )
+    previous_notional = approved_notional
     approved_notional, changed = _clamp_notional(approved_notional, max_total_notional)
     if changed:
         reason_codes.append(MAX_TOTAL_EXPOSURE_CLAMPED)
+        ordered_adjustments.append(
+            _build_adjustment_step(
+                step_index=step_index,
+                reason_code=MAX_TOTAL_EXPOSURE_CLAMPED,
+                before_notional=previous_notional,
+                after_notional=approved_notional,
+            )
+        )
+        step_index += 1
 
     if approved_notional < config.risk.min_trade_notional:
-        return RiskDecision(
+        return _build_risk_decision(
             service_name=config.service_name,
             symbol=signal.symbol,
             signal=signal.signal,
@@ -264,6 +364,9 @@ def evaluate_risk(  # pylint: disable=too-many-arguments,too-many-locals
             approved_notional=0.0,
             requested_notional=requested_notional,
             reason_codes=tuple([*reason_codes, MIN_TRADE_NOTIONAL_BREACHED]),
+            primary_reason_code=MIN_TRADE_NOTIONAL_BREACHED,
+            ordered_adjustments=tuple(ordered_adjustments),
+            blocked_stage=RISK_BLOCKED_STAGE,
             regime_label=signal.regime_label,
             regime_run_id=signal.regime_run_id,
             trade_allowed=signal.trade_allowed,
@@ -271,7 +374,7 @@ def evaluate_risk(  # pylint: disable=too-many-arguments,too-many-locals
 
     outcome = "APPROVED" if not reason_codes else "MODIFIED"
     final_reason_codes = (BUY_APPROVED,) if not reason_codes else tuple(reason_codes)
-    return RiskDecision(
+    return _build_risk_decision(
         service_name=config.service_name,
         symbol=signal.symbol,
         signal=signal.signal,
@@ -279,6 +382,7 @@ def evaluate_risk(  # pylint: disable=too-many-arguments,too-many-locals
         approved_notional=approved_notional,
         requested_notional=requested_notional,
         reason_codes=final_reason_codes,
+        ordered_adjustments=tuple(ordered_adjustments),
         regime_label=signal.regime_label,
         regime_run_id=signal.regime_run_id,
         trade_allowed=signal.trade_allowed,
@@ -338,6 +442,7 @@ def build_risk_decision_log_entry(  # pylint: disable=too-many-arguments
     signal: SignalDecision,
     decision: RiskDecision,
     portfolio: PortfolioContext,
+    decision_trace_id: int | None = None,
 ) -> RiskDecisionLogEntry:
     """Build the persisted M10 audit row for one processed signal."""
     return RiskDecisionLogEntry(
@@ -361,6 +466,8 @@ def build_risk_decision_log_entry(  # pylint: disable=too-many-arguments
         regime_label=signal.regime_label,
         regime_run_id=signal.regime_run_id,
         trade_allowed=signal.trade_allowed,
+        decision_trace_id=decision_trace_id,
+        model_version=signal.model_version,
     )
 
 
@@ -450,6 +557,68 @@ def _confidence_size_multiplier(*, confidence: float, min_multiplier: float) -> 
 def _clamp_notional(current_notional: float, cap: float) -> tuple[float, bool]:
     next_notional = min(current_notional, max(0.0, cap))
     return next_notional, next_notional < current_notional
+
+
+def _build_risk_decision(  # pylint: disable=too-many-arguments
+    *,
+    service_name: str,
+    symbol: str,
+    signal: str,
+    outcome: str,
+    approved_notional: float,
+    requested_notional: float,
+    reason_codes: tuple[str, ...],
+    primary_reason_code: str | None = None,
+    ordered_adjustments: tuple[RiskAdjustmentStep, ...] = (),
+    blocked_stage: str | None = None,
+    regime_label: str | None,
+    regime_run_id: str | None,
+    trade_allowed: bool | None,
+) -> RiskDecision:
+    resolved_primary_reason = (
+        primary_reason_code
+        if primary_reason_code is not None
+        else (None if not reason_codes else reason_codes[0])
+    )
+    return RiskDecision(
+        service_name=service_name,
+        symbol=symbol,
+        signal=signal,
+        outcome=outcome,
+        approved_notional=approved_notional,
+        requested_notional=requested_notional,
+        reason_codes=reason_codes,
+        primary_reason_code=resolved_primary_reason,
+        reason_texts=tuple(_reason_text(reason_code) for reason_code in reason_codes),
+        ordered_adjustments=ordered_adjustments,
+        blocked_stage=blocked_stage,
+        regime_label=regime_label,
+        regime_run_id=regime_run_id,
+        trade_allowed=trade_allowed,
+    )
+
+
+def _build_adjustment_step(
+    *,
+    step_index: int,
+    reason_code: str,
+    before_notional: float,
+    after_notional: float,
+) -> RiskAdjustmentStep:
+    return RiskAdjustmentStep(
+        step_index=step_index,
+        reason_code=reason_code,
+        reason_text=_reason_text(reason_code),
+        before_notional=before_notional,
+        after_notional=after_notional,
+    )
+
+
+def _reason_text(reason_code: str) -> str:
+    return RISK_REASON_TEXTS.get(
+        reason_code,
+        f"No explicit rationale text is registered for {reason_code}.",
+    )
 
 
 def _parse_row_id_interval_begin(row_id: str):

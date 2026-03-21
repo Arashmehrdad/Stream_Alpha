@@ -131,6 +131,7 @@ class SignalResponse(BaseModel):
     freshness_status: str | None = None
     health_overall_status: str | None = None
     top_features: list[TopFeatureContribution] = Field(default_factory=list)
+    prediction_explanation: PredictionExplanation
     threshold_snapshot: ThresholdSnapshot
     regime_reason: RegimeReason | None = None
     signal_explanation: SignalExplanation

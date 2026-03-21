@@ -111,6 +111,7 @@ def build_order_request(
     candle: FeatureCandle,
     signal: SignalDecision,
     decision: RiskDecision,
+    decision_trace_id: int | None = None,
 ) -> OrderRequest | None:
     """Build one deterministic order request for an actionable risk-approved signal."""
     if signal.signal == "BUY" and decision.outcome in {"APPROVED", "MODIFIED"}:
@@ -150,6 +151,8 @@ def build_order_request(
         regime_run_id=signal.regime_run_id,
         risk_outcome=decision.outcome,
         risk_reason_codes=decision.reason_codes,
+        decision_trace_id=decision_trace_id,
+        model_version=signal.model_version,
     )
 
 
@@ -176,6 +179,8 @@ def build_pending_order_request(
     config: PaperTradingConfig,
     candle: FeatureCandle,
     pending_signal: PendingSignalState,
+    decision_trace_id: int | None = None,
+    model_version: str | None = None,
 ) -> OrderRequest:
     """Build the due order request for a legacy or restart-recovered pending signal."""
     approved_notional = pending_signal.approved_notional or 0.0
@@ -206,6 +211,8 @@ def build_pending_order_request(
         regime_run_id=pending_signal.regime_run_id,
         risk_outcome=pending_signal.risk_outcome,
         risk_reason_codes=pending_signal.risk_reason_codes,
+        decision_trace_id=decision_trace_id,
+        model_version=model_version,
         order_request_id=pending_signal.order_request_id,
     )
 

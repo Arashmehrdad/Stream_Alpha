@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 ContributionDirection = Literal["UP", "DOWN", "NEUTRAL"]
@@ -103,3 +103,103 @@ class ResolvedReferenceVector(BaseModel):
     reference_vector_path: str
     reference_vector_source: str
     reference_values: dict[str, float]
+
+
+class DecisionTracePrediction(BaseModel):
+    """Canonical prediction section stored inside an M14 decision trace."""
+
+    model_name: str
+    model_version: str
+    prob_up: float
+    prob_down: float
+    confidence: float
+    predicted_class: str
+    top_features: list[TopFeatureContribution] = Field(default_factory=list)
+    prediction_explanation: PredictionExplanation | None = None
+
+
+class DecisionTraceSignal(BaseModel):
+    """Canonical signal section stored inside an M14 decision trace."""
+
+    signal: str
+    reason: str
+    signal_status: str | None = None
+    decision_source: str | None = None
+    reason_code: str | None = None
+    freshness_status: str | None = None
+    health_overall_status: str | None = None
+    signal_explanation: SignalExplanation | None = None
+
+
+class DecisionTracePortfolioContext(BaseModel):
+    """Portfolio snapshot attached to one M10 rationale."""
+
+    available_cash: float
+    open_position_count: int
+    current_equity: float
+    total_open_exposure_notional: float
+    current_symbol_exposure_notional: float
+
+
+class DecisionTraceServiceRiskState(BaseModel):
+    """Service-level M10 state summary attached to one decision trace."""
+
+    trading_day: str
+    realized_pnl_today: float
+    equity_high_watermark: float
+    current_equity: float
+    loss_streak_count: int
+    loss_streak_cooldown_until_interval_begin: str | None = None
+    kill_switch_enabled: bool
+
+
+class OrderedRiskAdjustment(BaseModel):
+    """One ordered M10 adjustment step for a modified trade."""
+
+    step_index: int
+    reason_code: str
+    reason_text: str
+    before_notional: float
+    after_notional: float
+
+
+class DecisionTraceRisk(BaseModel):
+    """Canonical risk-rationale section stored inside an M14 decision trace."""
+
+    outcome: str
+    primary_reason_code: str | None = None
+    reason_codes: list[str] = Field(default_factory=list)
+    reason_texts: list[str] = Field(default_factory=list)
+    requested_notional: float
+    approved_notional: float
+    portfolio_context: DecisionTracePortfolioContext
+    service_risk_state: DecisionTraceServiceRiskState
+    ordered_adjustments: list[OrderedRiskAdjustment] = Field(default_factory=list)
+
+
+class DecisionTraceBlockedTrade(BaseModel):
+    """Blocked-trade summary attached when M10 blocks the signal."""
+
+    blocked_stage: str
+    reason_code: str | None = None
+    reason_texts: list[str] = Field(default_factory=list)
+
+
+class DecisionTracePayload(BaseModel):
+    """Canonical M14 decision-trace payload persisted in PostgreSQL JSONB."""
+
+    schema_version: str
+    service_name: str
+    execution_mode: str
+    symbol: str
+    signal_row_id: str
+    signal_interval_begin: str
+    signal_as_of_time: str
+    model_name: str
+    model_version: str
+    prediction: DecisionTracePrediction
+    signal: DecisionTraceSignal
+    threshold_snapshot: ThresholdSnapshot | None = None
+    regime_reason: RegimeReason | None = None
+    risk: DecisionTraceRisk | None = None
+    blocked_trade: DecisionTraceBlockedTrade | None = None

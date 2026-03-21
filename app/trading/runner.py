@@ -36,6 +36,10 @@ from app.reliability.service import (
     transition_circuit_breaker,
 )
 from app.trading.config import PaperTradingConfig
+from app.trading.decision_trace import (
+    build_initial_decision_trace,
+    enrich_decision_trace_with_risk,
+)
 from app.trading.execution import (
     build_created_event,
     build_execution_adapter,
@@ -248,6 +252,13 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
                 state=signal_client_state,
                 evaluated_at=candle.as_of_time,
             )
+            decision_trace = await self.repository.ensure_decision_trace(
+                build_initial_decision_trace(
+                    service_name=self.config.service_name,
+                    execution_mode=self.config.execution.mode,
+                    signal=signal,
+                )
+            )
             state = states[candle.symbol]
             open_position = open_positions.get(candle.symbol)
             pre_execution_portfolio = mark_to_market_portfolio_context(
@@ -314,6 +325,14 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
                 portfolio=post_execution_portfolio,
                 service_risk_state=service_risk_state,
             )
+            decision_trace = await self.repository.update_decision_trace(
+                enrich_decision_trace_with_risk(
+                    trace=decision_trace,
+                    decision=risk_decision,
+                    portfolio=post_execution_portfolio,
+                    service_risk_state=service_risk_state,
+                )
+            )
             next_pending_signal = build_pending_signal_state(
                 signal=signal,
                 decision=risk_decision,
@@ -322,6 +341,7 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
                 candle=candle,
                 signal=signal,
                 decision=risk_decision,
+                decision_trace_id=decision_trace.decision_trace_id,
             )
             if next_pending_signal is not None and created_order_request is not None:
                 next_pending_signal = replace(
@@ -332,6 +352,11 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
             next_state = replace(
                 execution_result.state,
                 pending_signal=next_pending_signal,
+                pending_decision_trace_id=(
+                    None
+                    if next_pending_signal is None
+                    else decision_trace.decision_trace_id
+                ),
             )
             states[candle.symbol] = next_state
             await self.repository.save_engine_state(next_state)
@@ -344,6 +369,7 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
                     signal=signal,
                     decision=risk_decision,
                     portfolio=post_execution_portfolio,
+                    decision_trace_id=decision_trace.decision_trace_id,
                 )
             )
             self.logger.info(
@@ -438,16 +464,43 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
             return state, None
 
         order_request = None
+        trace_model_version = None
         if pending_signal.order_request_idempotency_key is not None:
             order_request = await self.repository.load_order_request_by_idempotency_key(
                 idempotency_key=pending_signal.order_request_idempotency_key,
             )
+            if (
+                order_request is not None
+                and state.pending_decision_trace_id is not None
+                and order_request.decision_trace_id is None
+            ):
+                trace = await self.repository.load_decision_trace(
+                    decision_trace_id=state.pending_decision_trace_id,
+                )
+                order_request = await self.repository.ensure_order_request(
+                    replace(
+                        order_request,
+                        decision_trace_id=state.pending_decision_trace_id,
+                        model_version=(
+                            order_request.model_version
+                            if order_request.model_version is not None or trace is None
+                            else trace.model_version
+                        ),
+                    )
+                )
 
         if order_request is None:
+            if state.pending_decision_trace_id is not None:
+                trace = await self.repository.load_decision_trace(
+                    decision_trace_id=state.pending_decision_trace_id,
+                )
+                trace_model_version = None if trace is None else trace.model_version
             seeded_request = build_pending_order_request(
                 config=self.config,
                 candle=candle,
                 pending_signal=pending_signal,
+                decision_trace_id=state.pending_decision_trace_id,
+                model_version=trace_model_version,
             )
             order_request = await self.repository.ensure_order_request(seeded_request)
             await self.repository.insert_order_event_if_absent(
@@ -478,12 +531,14 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
         candle: FeatureCandle,
         signal,
         decision,
+        decision_trace_id: int | None = None,
     ) -> OrderRequest | None:
         order_request = build_order_request(
             config=self.config,
             candle=candle,
             signal=signal,
             decision=decision,
+            decision_trace_id=decision_trace_id,
         )
         if order_request is None:
             return None

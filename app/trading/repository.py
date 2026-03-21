@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Sequence
 from datetime import date, datetime
@@ -11,8 +12,10 @@ from datetime import date, datetime
 import asyncpg
 
 from app.common.time import to_rfc3339
+from app.explainability.schemas import DecisionTracePayload
 from app.reliability.schemas import RecoveryEvent, ReliabilityState, ServiceHeartbeat
 from app.trading.schemas import (
+    DecisionTraceRecord,
     FeatureCandle,
     LiveSafetyState,
     OrderLifecycleEvent,
@@ -31,6 +34,7 @@ LEDGER_TABLE = "paper_trade_ledger"
 STATE_TABLE = "paper_engine_state"
 RISK_STATE_TABLE = "paper_risk_state"
 RISK_DECISIONS_TABLE = "paper_risk_decisions"
+DECISION_TRACES_TABLE = "decision_traces"
 ORDER_REQUESTS_TABLE = "execution_order_requests"
 ORDER_EVENTS_TABLE = "execution_order_events"
 LIVE_SAFETY_TABLE = "execution_live_safety_state"
@@ -73,6 +77,7 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
         self._state_table = _quote_table_name(STATE_TABLE)
         self._risk_state_table = _quote_table_name(RISK_STATE_TABLE)
         self._risk_decisions_table = _quote_table_name(RISK_DECISIONS_TABLE)
+        self._decision_traces_table = _quote_table_name(DECISION_TRACES_TABLE)
         self._order_requests_table = _quote_table_name(ORDER_REQUESTS_TABLE)
         self._order_events_table = _quote_table_name(ORDER_EVENTS_TABLE)
         self._live_safety_table = _quote_table_name(LIVE_SAFETY_TABLE)
@@ -159,10 +164,11 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                 pending_order_request_id,
                 pending_order_idempotency_key,
                 pending_risk_reason_codes,
+                pending_decision_trace_id,
                 updated_at
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-                $16, $17, $18, $19, $20, $21::text[], NOW()
+                $16, $17, $18, $19, $20, $21::text[], $22, NOW()
             )
             ON CONFLICT (service_name, execution_mode, symbol)
             DO UPDATE SET
@@ -184,6 +190,7 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                 pending_order_request_id = EXCLUDED.pending_order_request_id,
                 pending_order_idempotency_key = EXCLUDED.pending_order_idempotency_key,
                 pending_risk_reason_codes = EXCLUDED.pending_risk_reason_codes,
+                pending_decision_trace_id = EXCLUDED.pending_decision_trace_id,
                 updated_at = NOW()
             """,
             state.service_name,
@@ -207,6 +214,7 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
             None if pending is None else pending.order_request_id,
             None if pending is None else pending.order_request_idempotency_key,
             None if pending is None else list(pending.risk_reason_codes),
+            None if pending is None else state.pending_decision_trace_id,
         )
 
     async def load_service_risk_state(
@@ -272,6 +280,120 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
             state.kill_switch_enabled,
         )
 
+    async def ensure_decision_trace(
+        self,
+        trace: DecisionTraceRecord,
+    ) -> DecisionTraceRecord:
+        """Insert one canonical M14 decision trace or return the existing row."""
+        pool = self._require_pool()
+        payload_json = json.dumps(trace.payload.model_dump(mode="json"))
+        row = await pool.fetchrow(
+            f"""
+            INSERT INTO {self._decision_traces_table} (
+                service_name,
+                execution_mode,
+                symbol,
+                signal,
+                signal_interval_begin,
+                signal_as_of_time,
+                signal_row_id,
+                model_name,
+                model_version,
+                risk_outcome,
+                trace_payload
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb
+            )
+            ON CONFLICT (service_name, execution_mode, signal_row_id) DO NOTHING
+            RETURNING *
+            """,
+            trace.service_name,
+            trace.execution_mode,
+            trace.symbol,
+            trace.signal,
+            trace.signal_interval_begin,
+            trace.signal_as_of_time,
+            trace.signal_row_id,
+            trace.model_name,
+            trace.model_version,
+            trace.risk_outcome,
+            payload_json,
+        )
+        if row is None:
+            existing_row = await pool.fetchrow(
+                f"""
+                SELECT *
+                FROM {self._decision_traces_table}
+                WHERE service_name = $1
+                  AND execution_mode = $2
+                  AND signal_row_id = $3
+                """,
+                trace.service_name,
+                trace.execution_mode,
+                trace.signal_row_id,
+            )
+            if existing_row is None:
+                raise RuntimeError("Decision trace insert returned no row and no existing record")
+            row = existing_row
+        return _decision_trace_from_row(row)
+
+    async def update_decision_trace(
+        self,
+        trace: DecisionTraceRecord,
+    ) -> DecisionTraceRecord:
+        """Persist one enriched canonical M14 decision trace payload."""
+        if trace.decision_trace_id is None:
+            raise ValueError("DecisionTraceRecord must have decision_trace_id before update")
+        pool = self._require_pool()
+        row = await pool.fetchrow(
+            f"""
+            UPDATE {self._decision_traces_table}
+            SET
+                symbol = $1,
+                signal = $2,
+                signal_interval_begin = $3,
+                signal_as_of_time = $4,
+                model_name = $5,
+                model_version = $6,
+                risk_outcome = $7,
+                trace_payload = $8::jsonb,
+                updated_at = NOW()
+            WHERE id = $9
+            RETURNING *
+            """,
+            trace.symbol,
+            trace.signal,
+            trace.signal_interval_begin,
+            trace.signal_as_of_time,
+            trace.model_name,
+            trace.model_version,
+            trace.risk_outcome,
+            json.dumps(trace.payload.model_dump(mode="json")),
+            trace.decision_trace_id,
+        )
+        if row is None:
+            raise RuntimeError(f"Decision trace {trace.decision_trace_id} could not be updated")
+        return _decision_trace_from_row(row)
+
+    async def load_decision_trace(
+        self,
+        *,
+        decision_trace_id: int,
+    ) -> DecisionTraceRecord | None:
+        """Load one canonical M14 decision trace by its persisted identifier."""
+        pool = self._require_pool()
+        row = await pool.fetchrow(
+            f"""
+            SELECT *
+            FROM {self._decision_traces_table}
+            WHERE id = $1
+            """,
+            decision_trace_id,
+        )
+        if row is None:
+            return None
+        return _decision_trace_from_row(row)
+
     async def insert_risk_decision(self, entry: RiskDecisionLogEntry) -> None:
         """Persist one M10 risk-decision audit row."""
         pool = self._require_pool()
@@ -297,10 +419,12 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                 confidence,
                 regime_label,
                 regime_run_id,
-                trade_allowed
+                trade_allowed,
+                decision_trace_id,
+                model_version
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9::text[], $10, $11, $12, $13, $14, $15,
-                $16, $17, $18, $19, $20
+                $16, $17, $18, $19, $20, $21, $22
             )
             """,
             entry.service_name,
@@ -323,6 +447,8 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
             entry.regime_label,
             entry.regime_run_id,
             entry.trade_allowed,
+            entry.decision_trace_id,
+            entry.model_version,
         )
 
     async def load_live_safety_state(
@@ -583,16 +709,27 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                 approved_notional,
                 idempotency_key,
                 model_name,
+                model_version,
                 confidence,
                 regime_label,
                 regime_run_id,
                 risk_outcome,
-                risk_reason_codes
+                risk_reason_codes,
+                decision_trace_id
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-                $12, $13, $14, $15, $16, $17::text[]
+                $12, $13, $14, $15, $16, $17, $18::text[], $19
             )
-            ON CONFLICT (idempotency_key) DO NOTHING
+            ON CONFLICT (idempotency_key)
+            DO UPDATE SET
+                decision_trace_id = COALESCE(
+                    {self._order_requests_table}.decision_trace_id,
+                    EXCLUDED.decision_trace_id
+                ),
+                model_version = COALESCE(
+                    {self._order_requests_table}.model_version,
+                    EXCLUDED.model_version
+                )
             RETURNING *
             """,
             order_request.service_name,
@@ -607,11 +744,13 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
             order_request.approved_notional,
             order_request.idempotency_key,
             order_request.model_name,
+            order_request.model_version,
             order_request.confidence,
             order_request.regime_label,
             order_request.regime_run_id,
             order_request.risk_outcome,
             list(order_request.risk_reason_codes),
+            order_request.decision_trace_id,
         )
         if row is None:
             existing_row = await pool.fetchrow(
@@ -1133,6 +1272,14 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
             _table_basename(RISK_DECISIONS_TABLE),
             "service_mode_signal_time_idx",
         )
+        decision_traces_index = _build_index_name(
+            _table_basename(DECISION_TRACES_TABLE),
+            "service_mode_signal_time_idx",
+        )
+        decision_traces_unique = _build_index_name(
+            _table_basename(DECISION_TRACES_TABLE),
+            "service_mode_signal_row_uidx",
+        )
         order_requests_index = _build_index_name(
             _table_basename(ORDER_REQUESTS_TABLE),
             "service_mode_target_fill_idx",
@@ -1376,6 +1523,7 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                     pending_order_request_id BIGINT NULL,
                     pending_order_idempotency_key TEXT NULL,
                     pending_risk_reason_codes TEXT[] NULL,
+                    pending_decision_trace_id BIGINT NULL,
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     PRIMARY KEY (service_name, execution_mode, symbol)
                 )
@@ -1421,6 +1569,12 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                 f"""
                 ALTER TABLE {self._state_table}
                 ADD COLUMN IF NOT EXISTS pending_risk_reason_codes TEXT[] NULL
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._state_table}
+                ADD COLUMN IF NOT EXISTS pending_decision_trace_id BIGINT NULL
                 """
             )
             await connection.execute(
@@ -1479,6 +1633,59 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
             )
             await connection.execute(
                 f"""
+                CREATE TABLE IF NOT EXISTS {self._decision_traces_table} (
+                    id BIGSERIAL PRIMARY KEY,
+                    service_name TEXT NOT NULL,
+                    execution_mode TEXT NOT NULL DEFAULT 'paper',
+                    symbol TEXT NOT NULL,
+                    signal TEXT NOT NULL,
+                    signal_interval_begin TIMESTAMPTZ NOT NULL,
+                    signal_as_of_time TIMESTAMPTZ NOT NULL,
+                    signal_row_id TEXT NOT NULL,
+                    model_name TEXT NOT NULL,
+                    model_version TEXT NOT NULL,
+                    risk_outcome TEXT NULL,
+                    trace_payload JSONB NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._decision_traces_table}
+                ADD COLUMN IF NOT EXISTS risk_outcome TEXT NULL
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._decision_traces_table}
+                ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                """
+            )
+            await connection.execute(
+                f"""
+                CREATE UNIQUE INDEX IF NOT EXISTS {decision_traces_unique}
+                ON {self._decision_traces_table} (
+                    service_name,
+                    execution_mode,
+                    signal_row_id
+                )
+                """
+            )
+            await connection.execute(
+                f"""
+                CREATE INDEX IF NOT EXISTS {decision_traces_index}
+                ON {self._decision_traces_table} (
+                    service_name,
+                    execution_mode,
+                    signal_as_of_time DESC,
+                    id DESC
+                )
+                """
+            )
+            await connection.execute(
+                f"""
                 CREATE TABLE IF NOT EXISTS {self._risk_decisions_table} (
                     id BIGSERIAL PRIMARY KEY,
                     service_name TEXT NOT NULL,
@@ -1501,6 +1708,8 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                     regime_label TEXT NULL,
                     regime_run_id TEXT NULL,
                     trade_allowed BOOLEAN NULL,
+                    decision_trace_id BIGINT NULL,
+                    model_version TEXT NULL,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
                 """
@@ -1509,6 +1718,18 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                 f"""
                 ALTER TABLE {self._risk_decisions_table}
                 ADD COLUMN IF NOT EXISTS execution_mode TEXT NOT NULL DEFAULT 'paper'
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._risk_decisions_table}
+                ADD COLUMN IF NOT EXISTS decision_trace_id BIGINT NULL
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._risk_decisions_table}
+                ADD COLUMN IF NOT EXISTS model_version TEXT NULL
                 """
             )
             await connection.execute(f"DROP INDEX IF EXISTS {risk_decisions_index}")
@@ -1539,13 +1760,27 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                     approved_notional DOUBLE PRECISION NOT NULL,
                     idempotency_key TEXT NOT NULL,
                     model_name TEXT NULL,
+                    model_version TEXT NULL,
                     confidence DOUBLE PRECISION NULL,
                     regime_label TEXT NULL,
                     regime_run_id TEXT NULL,
                     risk_outcome TEXT NULL,
                     risk_reason_codes TEXT[] NULL,
+                    decision_trace_id BIGINT NULL,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._order_requests_table}
+                ADD COLUMN IF NOT EXISTS model_version TEXT NULL
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._order_requests_table}
+                ADD COLUMN IF NOT EXISTS decision_trace_id BIGINT NULL
                 """
             )
             await connection.execute(
@@ -1847,6 +2082,11 @@ def _state_from_row(row: asyncpg.Record) -> PaperEngineState:
         last_processed_interval_begin=row["last_processed_interval_begin"],
         cooldown_until_interval_begin=row["cooldown_until_interval_begin"],
         pending_signal=pending_signal,
+        pending_decision_trace_id=(
+            None
+            if row["pending_decision_trace_id"] is None
+            else int(row["pending_decision_trace_id"])
+        ),
     )
 
 
@@ -2037,13 +2277,40 @@ def _order_request_from_row(row: asyncpg.Record) -> OrderRequest:
         approved_notional=float(row["approved_notional"]),
         idempotency_key=str(row["idempotency_key"]),
         model_name=None if row["model_name"] is None else str(row["model_name"]),
+        model_version=(
+            None if row["model_version"] is None else str(row["model_version"])
+        ),
         confidence=None if row["confidence"] is None else float(row["confidence"]),
         regime_label=None if row["regime_label"] is None else str(row["regime_label"]),
         regime_run_id=None if row["regime_run_id"] is None else str(row["regime_run_id"]),
         risk_outcome=None if row["risk_outcome"] is None else str(row["risk_outcome"]),
         risk_reason_codes=_text_array_to_tuple(row["risk_reason_codes"]),
+        decision_trace_id=(
+            None
+            if row["decision_trace_id"] is None
+            else int(row["decision_trace_id"])
+        ),
         order_request_id=int(row["id"]),
         created_at=row["created_at"],
+    )
+
+
+def _decision_trace_from_row(row: asyncpg.Record) -> DecisionTraceRecord:
+    return DecisionTraceRecord(
+        service_name=str(row["service_name"]),
+        execution_mode=str(row["execution_mode"]),
+        symbol=str(row["symbol"]),
+        signal=str(row["signal"]),
+        signal_interval_begin=row["signal_interval_begin"],
+        signal_as_of_time=row["signal_as_of_time"],
+        signal_row_id=str(row["signal_row_id"]),
+        model_name=str(row["model_name"]),
+        model_version=str(row["model_version"]),
+        payload=DecisionTracePayload.model_validate(_jsonb_to_object(row["trace_payload"])),
+        risk_outcome=None if row["risk_outcome"] is None else str(row["risk_outcome"]),
+        decision_trace_id=int(row["id"]),
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
     )
 
 
@@ -2129,6 +2396,12 @@ def _text_array_to_tuple(value: Sequence[str] | None) -> tuple[str, ...]:
     if value is None:
         return ()
     return tuple(str(item) for item in value)
+
+
+def _jsonb_to_object(value):
+    if isinstance(value, str):
+        return json.loads(value)
+    return value
 
 
 def _coerce_date(value: date | datetime) -> date:

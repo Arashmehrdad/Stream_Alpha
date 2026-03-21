@@ -656,6 +656,7 @@ def test_predict_and_signal_include_m14_explainability_fields(tmp_path: Path) ->
     )
     assert signal_payload["model_version"] == "m3-20260321T120000Z"
     assert signal_payload["top_features"][0]["feature_name"] == "volume_zscore_12"
+    assert signal_payload["prediction_explanation"]["available"] is True
     assert signal_payload["threshold_snapshot"]["buy_prob_up"] == 0.54
     assert signal_payload["threshold_snapshot"]["allow_new_long_entries"] is True
     assert signal_payload["regime_reason"]["reason_code"] == "REGIME_TREND_UP"
@@ -787,6 +788,7 @@ def test_invalid_symbol_and_missing_row_behaviour(tmp_path: Path) -> None:
     assert missing_signal_payload["reason_code"] == "RELIABILITY_HOLD_MISSING_FEATURE_ROW"
     assert missing_signal_payload["row_id"] == "BTC/USD|2026-03-21T12:00:00Z"
     assert missing_signal_payload["top_features"] == []
+    assert missing_signal_payload["prediction_explanation"]["available"] is False
     assert missing_signal_payload["signal_explanation"]["decision_source"] == "reliability"
     assert missing_signal_payload["threshold_snapshot"]["regime_label"] is None
 
@@ -843,6 +845,7 @@ def test_signal_degrades_to_reliability_hold_when_feature_row_is_stale(tmp_path:
     assert payload["freshness_status"] == "STALE"
     assert payload["reason_code"] == "RELIABILITY_HOLD_STALE_FEATURE_ROW"
     assert payload["top_features"] == []
+    assert payload["prediction_explanation"]["available"] is False
     assert payload["threshold_snapshot"]["regime_label"] == "TREND_UP"
     assert payload["regime_reason"]["reason_code"] == "REGIME_TREND_UP"
     assert payload["signal_explanation"]["decision_source"] == "reliability"

@@ -2,6 +2,7 @@
 
 # pylint: disable=duplicate-code,line-too-long,missing-class-docstring
 # pylint: disable=missing-function-docstring,too-few-public-methods
+# pylint: disable=too-many-public-methods,too-many-arguments
 
 from __future__ import annotations
 
@@ -14,6 +15,7 @@ from app.reliability.schemas import RecoveryEvent, ReliabilityState, ServiceHear
 from app.trading.config import PaperTradingConfig, RiskConfig
 from app.trading.runner import PaperTradingRunner
 from app.trading.schemas import (
+    DecisionTraceRecord,
     FeatureCandle,
     OrderLifecycleEvent,
     OrderRequest,
@@ -80,8 +82,10 @@ class FakeRepository:  # pylint: disable=too-many-instance-attributes
         self.heartbeats = []
         self.order_requests: dict[str, OrderRequest] = {}
         self.order_events: dict[tuple[int, str], OrderLifecycleEvent] = {}
+        self.decision_traces: dict[int, DecisionTraceRecord] = {}
         self.position_id = 0
         self.order_request_id = 0
+        self.decision_trace_id = 0
 
     async def connect(self) -> None:
         return None
@@ -165,6 +169,26 @@ class FakeRepository:  # pylint: disable=too-many-instance-attributes
     async def insert_risk_decision(self, entry) -> None:
         self.risk_decisions.append(entry)
 
+    async def ensure_decision_trace(self, trace):
+        for existing in self.decision_traces.values():
+            if (
+                existing.service_name == trace.service_name
+                and existing.execution_mode == trace.execution_mode
+                and existing.signal_row_id == trace.signal_row_id
+            ):
+                return existing
+        self.decision_trace_id += 1
+        stored = replace(trace, decision_trace_id=self.decision_trace_id)
+        self.decision_traces[stored.decision_trace_id] = stored
+        return stored
+
+    async def update_decision_trace(self, trace):
+        self.decision_traces[trace.decision_trace_id] = trace
+        return trace
+
+    async def load_decision_trace(self, *, decision_trace_id: int):
+        return self.decision_traces.get(decision_trace_id)
+
     async def load_reliability_state(self, *, service_name: str, component_name: str):
         del service_name
         return self.reliability_states.get(component_name)
@@ -231,6 +255,46 @@ class FakeSignalClient:
             row_id=f"BTC/USD|{interval_begin.isoformat().replace('+00:00', 'Z')}",
             as_of_time=_candle(0).as_of_time if signal == "BUY" else _candle(1).as_of_time,
             model_name="logistic_regression",
+            model_version="m3-20260320T090000Z",
+        )
+
+
+class StaticSignalClient:
+    def __init__(
+        self,
+        *,
+        signal: str,
+        trade_allowed: bool | None = True,
+        decision_source: str | None = "model",
+        signal_status: str | None = "MODEL_SIGNAL",
+        reason_code: str | None = None,
+    ) -> None:  # pylint: disable=too-many-arguments
+        self.signal = signal
+        self.trade_allowed = trade_allowed
+        self.decision_source = decision_source
+        self.signal_status = signal_status
+        self.reason_code = reason_code
+
+    async def close(self) -> None:
+        return None
+
+    async def fetch_signal(self, *, symbol: str, interval_begin):
+        return SignalDecision(
+            symbol=symbol,
+            signal=self.signal,
+            reason=self.signal.lower(),
+            prob_up=0.7 if self.signal == "BUY" else 0.5,
+            prob_down=0.3 if self.signal == "BUY" else 0.5,
+            confidence=0.7 if self.signal == "BUY" else 0.0,
+            predicted_class="UP" if self.signal == "BUY" else "UNKNOWN",
+            row_id=f"{symbol}|{interval_begin.isoformat().replace('+00:00', 'Z')}",
+            as_of_time=interval_begin + timedelta(minutes=5),
+            model_name="logistic_regression",
+            model_version="m3-20260320T090000Z",
+            trade_allowed=self.trade_allowed,
+            decision_source=self.decision_source,
+            signal_status=self.signal_status,
+            reason_code=self.reason_code,
         )
 
 
@@ -351,3 +415,84 @@ def test_runner_skips_signal_fetch_when_breaker_is_open(tmp_path: Path) -> None:
     assert repository.reliability_events[-1].reason_code == (
         "SIGNAL_FETCH_SKIPPED_BREAKER_OPEN"
     )
+
+
+def test_runner_blocked_buy_writes_clear_risk_rationale(tmp_path: Path) -> None:
+    repository = FakeRepository([_candle(0)])
+    runner = PaperTradingRunner(
+        config=_config(tmp_path),
+        repository=repository,
+        signal_client=StaticSignalClient(
+            signal="BUY",
+            trade_allowed=False,
+        ),
+    )
+
+    asyncio.run(runner.run_once())
+
+    assert len(repository.decision_traces) == 1
+    trace = next(iter(repository.decision_traces.values()))
+    assert trace.payload.risk is not None
+    assert trace.payload.risk.outcome == "BLOCKED"
+    assert trace.payload.risk.primary_reason_code == "TRADE_NOT_ALLOWED"
+    assert trace.payload.blocked_trade is not None
+    assert trace.payload.blocked_trade.blocked_stage == "risk"
+    assert len(repository.order_requests) == 0
+
+
+def test_runner_modified_buy_links_order_request_to_same_decision_trace(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config = replace(
+        config,
+        risk=replace(
+            config.risk,
+            max_exposure_per_asset=0.05,
+            volatility_target_realized_vol=0.03,
+            min_volatility_size_multiplier=0.40,
+        ),
+    )
+    repository = FakeRepository([replace(_candle(0), realized_vol_12=0.10), _candle(1)])
+    runner = PaperTradingRunner(
+        config=config,
+        repository=repository,
+        signal_client=StaticSignalClient(signal="BUY"),
+    )
+
+    asyncio.run(runner.run_once())
+
+    assert len(repository.decision_traces) == 2
+    first_trace = sorted(
+        repository.decision_traces.values(),
+        key=lambda trace: trace.signal_interval_begin,
+    )[0]
+    assert first_trace.payload.risk is not None
+    assert first_trace.payload.risk.outcome == "MODIFIED"
+    assert first_trace.payload.risk.ordered_adjustments
+    order_request = next(iter(repository.order_requests.values()))
+    assert order_request.decision_trace_id == first_trace.decision_trace_id
+    assert order_request.model_version == "m3-20260320T090000Z"
+
+
+def test_runner_reliability_hold_path_stays_non_actionable(tmp_path: Path) -> None:
+    repository = FakeRepository([_candle(0)])
+    runner = PaperTradingRunner(
+        config=_config(tmp_path),
+        repository=repository,
+        signal_client=StaticSignalClient(
+            signal="HOLD",
+            trade_allowed=False,
+            decision_source="reliability",
+            signal_status="RELIABILITY_HOLD",
+            reason_code="RELIABILITY_HOLD_STALE_FEATURE_ROW",
+        ),
+    )
+
+    asyncio.run(runner.run_once())
+
+    assert len(repository.order_requests) == 0
+    assert len(repository.risk_decisions) == 1
+    assert repository.risk_decisions[0].reason_codes == ("HOLD_NO_OP",)
+    trace = next(iter(repository.decision_traces.values()))
+    assert trace.payload.signal.decision_source == "reliability"
+    assert trace.payload.risk is not None
+    assert trace.payload.risk.outcome == "APPROVED"

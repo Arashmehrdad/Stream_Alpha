@@ -9,6 +9,14 @@ from datetime import date, datetime
 from typing import Literal
 
 from app.common.time import to_rfc3339
+from app.explainability.schemas import (
+    DecisionTracePayload,
+    PredictionExplanation,
+    RegimeReason,
+    SignalExplanation,
+    ThresholdSnapshot,
+    TopFeatureContribution,
+)
 
 
 SignalAction = Literal["BUY", "SELL", "HOLD"]
@@ -58,6 +66,7 @@ class SignalDecision:
     row_id: str
     as_of_time: datetime
     model_name: str
+    model_version: str | None = None
     regime_label: str | None = None
     regime_run_id: str | None = None
     trade_allowed: bool | None = None
@@ -69,6 +78,11 @@ class SignalDecision:
     approved_notional: float | None = None
     risk_outcome: RiskOutcome | None = None
     risk_reason_codes: tuple[str, ...] = field(default_factory=tuple)
+    top_features: tuple[TopFeatureContribution, ...] = field(default_factory=tuple)
+    prediction_explanation: PredictionExplanation | None = None
+    threshold_snapshot: ThresholdSnapshot | None = None
+    regime_reason: RegimeReason | None = None
+    signal_explanation: SignalExplanation | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,6 +118,7 @@ class PaperEngineState:
     last_processed_interval_begin: datetime | None = None
     cooldown_until_interval_begin: datetime | None = None
     pending_signal: PendingSignalState | None = None
+    pending_decision_trace_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,9 +227,24 @@ class RiskDecision:
     approved_notional: float
     requested_notional: float
     reason_codes: tuple[str, ...] = field(default_factory=tuple)
+    primary_reason_code: str | None = None
+    reason_texts: tuple[str, ...] = field(default_factory=tuple)
+    ordered_adjustments: tuple[RiskAdjustmentStep, ...] = field(default_factory=tuple)
+    blocked_stage: str | None = None
     regime_label: str | None = None
     regime_run_id: str | None = None
     trade_allowed: bool | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RiskAdjustmentStep:
+    """One ordered M10 sizing adjustment step."""
+
+    step_index: int
+    reason_code: str
+    reason_text: str
+    before_notional: float
+    after_notional: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -309,6 +339,8 @@ class RiskDecisionLogEntry:
     regime_label: str | None = None
     regime_run_id: str | None = None
     trade_allowed: bool | None = None
+    decision_trace_id: int | None = None
+    model_version: str | None = None
     created_at: datetime | None = None
 
 
@@ -358,8 +390,30 @@ class OrderRequest:  # pylint: disable=too-many-instance-attributes
     regime_run_id: str | None = None
     risk_outcome: RiskOutcome | None = None
     risk_reason_codes: tuple[str, ...] = field(default_factory=tuple)
+    decision_trace_id: int | None = None
+    model_version: str | None = None
     order_request_id: int | None = None
     created_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DecisionTraceRecord:
+    """Canonical persisted M14 decision trace row."""
+
+    service_name: str
+    execution_mode: ExecutionMode
+    symbol: str
+    signal: SignalAction
+    signal_interval_begin: datetime
+    signal_as_of_time: datetime
+    signal_row_id: str
+    model_name: str
+    model_version: str
+    payload: DecisionTracePayload
+    risk_outcome: RiskOutcome | None = None
+    decision_trace_id: int | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)

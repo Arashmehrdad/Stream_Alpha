@@ -6,15 +6,35 @@ from __future__ import annotations
 
 import asyncio
 import os
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import asyncpg
 import pytest
 
+from app.explainability.schemas import (
+    DecisionTraceBlockedTrade,
+    DecisionTracePayload,
+    DecisionTracePortfolioContext,
+    DecisionTracePrediction,
+    DecisionTraceRisk,
+    DecisionTraceServiceRiskState,
+    DecisionTraceSignal,
+    PredictionExplanation,
+    SignalExplanation,
+    ThresholdSnapshot,
+)
 from app.reliability.schemas import RecoveryEvent, ReliabilityState, ServiceHeartbeat
 from app.trading.repository import TradingRepository
-from app.trading.schemas import PaperEngineState, PendingSignalState, TradeLedgerEntry
+from app.trading.schemas import (
+    DecisionTraceRecord,
+    OrderRequest,
+    PaperEngineState,
+    PendingSignalState,
+    RiskDecisionLogEntry,
+    TradeLedgerEntry,
+)
 
 
 def _postgres_dsn() -> str:
@@ -26,6 +46,67 @@ def _postgres_dsn() -> str:
     user = os.getenv("POSTGRES_USER", "streamalpha").strip() or "streamalpha"
     password = os.getenv("POSTGRES_PASSWORD", "change-me-local-only").strip()
     return f"postgresql://{user}:{password}@{host}:{port}/{database}"
+
+
+def _decision_trace_payload(
+    *,
+    service_name: str,
+    execution_mode: str,
+    signal_row_id: str,
+) -> DecisionTracePayload:
+    return DecisionTracePayload(
+        schema_version="m14_decision_trace_v1",
+        service_name=service_name,
+        execution_mode=execution_mode,
+        symbol="BTC/USD",
+        signal_row_id=signal_row_id,
+        signal_interval_begin="2026-03-21T12:00:00Z",
+        signal_as_of_time="2026-03-21T12:05:00Z",
+        model_name="logistic_regression",
+        model_version="m3-20260321T120000Z",
+        prediction=DecisionTracePrediction(
+            model_name="logistic_regression",
+            model_version="m3-20260321T120000Z",
+            prob_up=0.71,
+            prob_down=0.29,
+            confidence=0.71,
+            predicted_class="UP",
+            prediction_explanation=PredictionExplanation(
+                method="ONE_AT_A_TIME_REFERENCE_ABLATION",
+                available=True,
+                reason_code="EXPLAINABILITY_AVAILABLE",
+                summary_text="deterministic top features",
+                reference_vector_path="artifacts/explainability/m3-20260321T120000Z/reference.json",
+                reference_vector_source="PERSISTED_ARTIFACT",
+                explainable_feature_count=3,
+                top_feature_count=2,
+            ),
+        ),
+        signal=DecisionTraceSignal(
+            signal="BUY",
+            reason="prob_up 0.7100 >= buy threshold 0.54",
+            signal_status="MODEL_SIGNAL",
+            decision_source="model",
+            signal_explanation=SignalExplanation(
+                signal="BUY",
+                available=True,
+                reason_code="SIGNAL_EXPLANATION_MODEL_DECISION",
+                summary_text="BUY came from the M4 model path.",
+                trade_allowed=True,
+                decision_source="model",
+            ),
+        ),
+        threshold_snapshot=ThresholdSnapshot(
+            buy_prob_up=0.54,
+            sell_prob_up=0.44,
+            allow_new_long_entries=True,
+            regime_label="TREND_UP",
+            regime_run_id="20260321T120000Z",
+            regime_artifact_path="artifacts/regime/m8/20260321T120000Z/thresholds.json",
+            high_vol_threshold=0.05,
+            trend_abs_threshold=0.02,
+        ),
+    )
 
 
 def test_save_engine_state_round_trip_includes_pending_order_fields() -> None:
@@ -57,6 +138,7 @@ def test_save_engine_state_round_trip_includes_pending_order_fields() -> None:
         last_processed_interval_begin=interval_begin,
         cooldown_until_interval_begin=interval_begin + timedelta(minutes=5),
         pending_signal=pending,
+        pending_decision_trace_id=77,
     )
 
     asyncio.run(_run_save_engine_state_round_trip_test(state))
@@ -90,6 +172,7 @@ async def _run_save_engine_state_round_trip_test(state: PaperEngineState) -> Non
             "BUY_APPROVED",
             "VOLATILITY_SIZE_ADJUSTED",
         )
+        assert loaded_state.pending_decision_trace_id == 77
     finally:
         pool = repository._require_pool()  # pylint: disable=protected-access
         await pool.execute(
@@ -99,6 +182,190 @@ async def _run_save_engine_state_round_trip_test(state: PaperEngineState) -> Non
             """,
             state.service_name,
             state.execution_mode,
+        )
+        await repository.close()
+
+
+def test_decision_trace_round_trip_supports_enrichment_and_linkage() -> None:
+    service_name = f"paper-trader-trace-{uuid4().hex[:10]}"
+    signal_row_id = "BTC/USD|2026-03-21T12:00:00Z"
+    trace = DecisionTraceRecord(
+        service_name=service_name,
+        execution_mode="shadow",
+        symbol="BTC/USD",
+        signal="BUY",
+        signal_interval_begin=datetime(2026, 3, 21, 12, 0, tzinfo=timezone.utc),
+        signal_as_of_time=datetime(2026, 3, 21, 12, 5, tzinfo=timezone.utc),
+        signal_row_id=signal_row_id,
+        model_name="logistic_regression",
+        model_version="m3-20260321T120000Z",
+        payload=_decision_trace_payload(
+            service_name=service_name,
+            execution_mode="shadow",
+            signal_row_id=signal_row_id,
+        ),
+    )
+
+    asyncio.run(_run_decision_trace_round_trip_test(trace))
+
+
+async def _run_decision_trace_round_trip_test(trace: DecisionTraceRecord) -> None:
+    repository = TradingRepository(dsn=_postgres_dsn(), source_table="feature_ohlc")
+    try:
+        await repository.connect()
+    except (OSError, asyncpg.CannotConnectNowError) as error:
+        pytest.skip(f"PostgreSQL not reachable for repository round-trip test: {error}")
+        return
+
+    stored_trace = None
+    try:
+        stored_trace = await repository.ensure_decision_trace(trace)
+        enriched_trace = await repository.update_decision_trace(
+            replace(
+                stored_trace,
+                risk_outcome="BLOCKED",
+                payload=stored_trace.payload.model_copy(
+                    update={
+                        "risk": DecisionTraceRisk(
+                            outcome="BLOCKED",
+                            primary_reason_code="TRADE_NOT_ALLOWED",
+                            reason_codes=["TRADE_NOT_ALLOWED"],
+                            reason_texts=[
+                                "The resolved regime or M4 signal policy does not "
+                                "allow opening a new long trade."
+                            ],
+                            requested_notional=2495.00998,
+                            approved_notional=0.0,
+                            portfolio_context=DecisionTracePortfolioContext(
+                                available_cash=10_000.0,
+                                open_position_count=0,
+                                current_equity=10_000.0,
+                                total_open_exposure_notional=0.0,
+                                current_symbol_exposure_notional=0.0,
+                            ),
+                            service_risk_state=DecisionTraceServiceRiskState(
+                                trading_day="2026-03-21",
+                                realized_pnl_today=0.0,
+                                equity_high_watermark=10_000.0,
+                                current_equity=10_000.0,
+                                loss_streak_count=0,
+                                kill_switch_enabled=False,
+                            ),
+                        ),
+                        "blocked_trade": DecisionTraceBlockedTrade(
+                            blocked_stage="risk",
+                            reason_code="TRADE_NOT_ALLOWED",
+                            reason_texts=[
+                                "The resolved regime or M4 signal policy does not "
+                                "allow opening a new long trade."
+                            ],
+                        ),
+                    },
+                    deep=True,
+                ),
+            )
+        )
+        loaded_trace = await repository.load_decision_trace(
+            decision_trace_id=enriched_trace.decision_trace_id,
+        )
+        assert loaded_trace is not None
+        assert loaded_trace.payload.risk is not None
+        assert loaded_trace.payload.risk.outcome == "BLOCKED"
+        assert loaded_trace.payload.blocked_trade is not None
+        assert loaded_trace.payload.blocked_trade.blocked_stage == "risk"
+
+        stored_request = await repository.ensure_order_request(
+            OrderRequest(
+                service_name=trace.service_name,
+                execution_mode=trace.execution_mode,
+                symbol=trace.symbol,
+                action="BUY",
+                signal_interval_begin=trace.signal_interval_begin,
+                signal_as_of_time=trace.signal_as_of_time,
+                signal_row_id=trace.signal_row_id,
+                target_fill_interval_begin=trace.signal_interval_begin + timedelta(minutes=5),
+                requested_notional=2495.00998,
+                approved_notional=0.0,
+                idempotency_key=f"trace-test|{trace.service_name}",
+                model_name=trace.model_name,
+                model_version=trace.model_version,
+                confidence=0.71,
+                regime_label="TREND_UP",
+                regime_run_id="20260321T120000Z",
+                risk_outcome="BLOCKED",
+                risk_reason_codes=("TRADE_NOT_ALLOWED",),
+                decision_trace_id=enriched_trace.decision_trace_id,
+            )
+        )
+        assert stored_request.decision_trace_id == enriched_trace.decision_trace_id
+        assert stored_request.model_version == trace.model_version
+
+        await repository.insert_risk_decision(
+            RiskDecisionLogEntry(
+                service_name=trace.service_name,
+                execution_mode=trace.execution_mode,
+                symbol=trace.symbol,
+                signal="BUY",
+                signal_interval_begin=trace.signal_interval_begin,
+                signal_as_of_time=trace.signal_as_of_time,
+                signal_row_id=trace.signal_row_id,
+                outcome="BLOCKED",
+                reason_codes=("TRADE_NOT_ALLOWED",),
+                requested_notional=2495.00998,
+                approved_notional=0.0,
+                available_cash=10_000.0,
+                current_equity=10_000.0,
+                current_symbol_exposure_notional=0.0,
+                total_open_exposure_notional=0.0,
+                realized_vol_12=0.01,
+                confidence=0.71,
+                regime_label="TREND_UP",
+                regime_run_id="20260321T120000Z",
+                trade_allowed=False,
+                decision_trace_id=enriched_trace.decision_trace_id,
+                model_version=trace.model_version,
+            )
+        )
+        pool = repository._require_pool()  # pylint: disable=protected-access
+        linked_risk_row = await pool.fetchrow(
+            """
+            SELECT decision_trace_id, model_version
+            FROM paper_risk_decisions
+            WHERE service_name = $1 AND execution_mode = $2
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            trace.service_name,
+            trace.execution_mode,
+        )
+        assert linked_risk_row is not None
+        assert linked_risk_row["decision_trace_id"] == enriched_trace.decision_trace_id
+        assert linked_risk_row["model_version"] == trace.model_version
+    finally:
+        pool = repository._require_pool()  # pylint: disable=protected-access
+        await pool.execute(
+            """
+            DELETE FROM execution_order_requests
+            WHERE service_name = $1 AND execution_mode = $2
+            """,
+            trace.service_name,
+            trace.execution_mode,
+        )
+        await pool.execute(
+            """
+            DELETE FROM paper_risk_decisions
+            WHERE service_name = $1 AND execution_mode = $2
+            """,
+            trace.service_name,
+            trace.execution_mode,
+        )
+        await pool.execute(
+            """
+            DELETE FROM decision_traces
+            WHERE service_name = $1 AND execution_mode = $2
+            """,
+            trace.service_name,
+            trace.execution_mode,
         )
         await repository.close()
 
