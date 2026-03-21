@@ -45,6 +45,7 @@ def default_service_risk_state(
     trading_day,
     initial_cash: float,
     kill_switch_enabled: bool,
+    execution_mode: str = "paper",
 ) -> ServiceRiskState:
     """Return the default restart-safe risk state for one service."""
     return ServiceRiskState(
@@ -54,6 +55,7 @@ def default_service_risk_state(
         equity_high_watermark=initial_cash,
         current_equity=initial_cash,
         loss_streak_count=0,
+        execution_mode=execution_mode,
         kill_switch_enabled=kill_switch_enabled,
     )
 
@@ -131,6 +133,7 @@ def advance_service_risk_state(
         equity_high_watermark=max(state.equity_high_watermark, current_equity),
         current_equity=current_equity,
         loss_streak_count=loss_streak_count,
+        execution_mode=state.execution_mode,
         loss_streak_cooldown_until_interval_begin=cooldown_until,
         kill_switch_enabled=config.risk.kill_switch_enabled,
         updated_at=utc_now(),
@@ -330,6 +333,7 @@ def build_pending_signal_state(
 def build_risk_decision_log_entry(
     *,
     service_name: str,
+    execution_mode: str,
     candle: FeatureCandle,
     signal: SignalDecision,
     decision: RiskDecision,
@@ -353,6 +357,7 @@ def build_risk_decision_log_entry(
         total_open_exposure_notional=portfolio.total_open_exposure_notional,
         realized_vol_12=candle.realized_vol_12,
         confidence=signal.confidence,
+        execution_mode=execution_mode,
         regime_label=signal.regime_label,
         regime_run_id=signal.regime_run_id,
         trade_allowed=signal.trade_allowed,

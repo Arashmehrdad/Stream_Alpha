@@ -36,6 +36,14 @@ class RiskConfig:  # pylint: disable=too-many-instance-attributes
 
 
 @dataclass(frozen=True, slots=True)
+class ExecutionConfig:
+    """Explicit M11 execution settings for paper and shadow modes."""
+
+    mode: str = "paper"
+    idempotency_key_version: int = 1
+
+
+@dataclass(frozen=True, slots=True)
 class PaperTradingConfig:  # pylint: disable=too-many-instance-attributes
     """Checked-in paper-trading configuration."""
 
@@ -48,12 +56,14 @@ class PaperTradingConfig:  # pylint: disable=too-many-instance-attributes
     poll_interval_seconds: float
     artifact_dir: str
     risk: RiskConfig
+    execution: ExecutionConfig = field(default_factory=ExecutionConfig)
 
 
 def load_paper_trading_config(config_path: Path) -> PaperTradingConfig:
     """Load the checked-in YAML config for M5."""
     payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     risk_payload = dict(payload["risk"])
+    execution_payload = dict(payload.get("execution", {}))
     symbols = tuple(str(symbol) for symbol in payload["symbols"])
     if not symbols:
         raise ValueError("Paper trading config must contain at least one symbol")
@@ -97,6 +107,12 @@ def load_paper_trading_config(config_path: Path) -> PaperTradingConfig:
                 for label, value in dict(risk_payload["regime_position_fraction_caps"]).items()
             },
         ),
+        execution=ExecutionConfig(
+            mode=str(execution_payload.get("mode", "paper")),
+            idempotency_key_version=int(
+                execution_payload.get("idempotency_key_version", 1)
+            ),
+        ),
     )
     _validate_config(config)
     return config
@@ -117,6 +133,10 @@ def _validate_config(config: PaperTradingConfig) -> None:
         raise ValueError("max_total_exposure must be in (0, 1]")
     if config.risk.max_total_exposure < config.risk.max_exposure_per_asset:
         raise ValueError("max_total_exposure cannot be less than max_exposure_per_asset")
+    if config.execution.mode not in {"paper", "shadow"}:
+        raise ValueError("execution.mode must be 'paper' or 'shadow'")
+    if config.execution.idempotency_key_version <= 0:
+        raise ValueError("execution.idempotency_key_version must be positive")
     if config.risk.max_open_positions <= 0:
         raise ValueError("max_open_positions must be positive")
     if config.risk.cooldown_candles < 0:

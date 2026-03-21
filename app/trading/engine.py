@@ -47,6 +47,7 @@ def process_candle(  # pylint: disable=too-many-arguments
     next_state = PaperEngineState(
         service_name=state.service_name,
         symbol=state.symbol,
+        execution_mode=state.execution_mode,
         last_processed_interval_begin=candle.interval_begin,
         cooldown_until_interval_begin=state.cooldown_until_interval_begin,
         pending_signal=state.pending_signal,
@@ -209,9 +210,11 @@ def _open_position(
         entry_fee=entry_fee,
         stop_loss_price=entry_price * (1.0 - config.risk.stop_loss_pct),
         take_profit_price=entry_price * (1.0 + config.risk.take_profit_pct),
+        execution_mode=config.execution.mode,
         entry_regime_label=pending.regime_label,
         entry_approved_notional=pending.approved_notional,
         entry_risk_outcome=pending.risk_outcome,
+        entry_order_request_id=pending.order_request_id,
         entry_risk_reason_codes=pending.risk_reason_codes,
         opened_at=opened_at,
         updated_at=opened_at,
@@ -229,9 +232,11 @@ def _open_position(
         fee=entry_fee,
         slippage_bps=config.risk.slippage_bps,
         cash_flow=-(entry_notional + entry_fee),
+        execution_mode=config.execution.mode,
         signal_interval_begin=pending.signal_interval_begin,
         signal_as_of_time=pending.signal_as_of_time,
         signal_row_id=pending.row_id,
+        order_request_id=pending.order_request_id,
         model_name=pending.model_name,
         prob_up=pending.prob_up,
         prob_down=pending.prob_down,
@@ -289,6 +294,9 @@ def _close_position(  # pylint: disable=too-many-arguments
         exit_regime_label=(
             regime_label if signal_state is None else signal_state.regime_label
         ),
+        exit_order_request_id=(
+            None if signal_state is None else signal_state.order_request_id
+        ),
         closed_at=closed_at,
         updated_at=closed_at,
     )
@@ -305,6 +313,8 @@ def _close_position(  # pylint: disable=too-many-arguments
         fee=exit_fee,
         slippage_bps=config.risk.slippage_bps,
         cash_flow=exit_notional - exit_fee,
+        execution_mode=config.execution.mode,
+        order_request_id=(None if signal_state is None else signal_state.order_request_id),
         signal_interval_begin=None if signal_state is None else signal_state.signal_interval_begin,
         signal_as_of_time=None if signal_state is None else signal_state.signal_as_of_time,
         signal_row_id=None if signal_state is None else signal_state.row_id,

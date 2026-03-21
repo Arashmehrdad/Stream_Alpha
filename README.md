@@ -20,6 +20,8 @@ Milestone `M8` foundation adds an explicit offline regime workflow. It reads can
 
 Milestone `M9` adds a minimum regime-aware live signal foundation. It loads the saved M8 `thresholds.json`, resolves regime labels for the exact canonical feature row used by M4, extends the accepted inference and paper-trading contracts additively, and surfaces by-regime performance in the existing dashboard and trading artifacts.
 
+Milestone `M11` adds a minimum execution abstraction after M10 risk approval. It keeps M4 authoritative for signals, keeps M10 authoritative for risk and sizing, records deterministic idempotent order requests plus lifecycle events, and supports two local-only execution modes: `paper` and `shadow`.
+
 ## Repository Tree
 
 ```text
@@ -64,6 +66,7 @@ Milestone `M9` adds a minimum regime-aware live signal foundation. It loads the 
 |   |   |-- __init__.py
 |   |   |-- config.py
 |   |   |-- engine.py
+|   |   |-- execution.py
 |   |   |-- metrics.py
 |   |   |-- repository.py
 |   |   |-- risk.py
@@ -136,6 +139,7 @@ Milestone `M9` adds a minimum regime-aware live signal foundation. It loads the 
     |-- test_training_splits.py
     |-- training_workflow_helpers.py
     `-- trading
+        |-- test_execution.py
         |-- test_engine.py
         |-- test_metrics.py
         |-- test_risk.py
@@ -150,7 +154,7 @@ Milestone `M9` adds a minimum regime-aware live signal foundation. It loads the 
 - `producer`: Kraken public WebSocket v2 ingestion service from M1
 - `features`: OHLC-only feature consumer from M2
 - `inference`: FastAPI prediction API from M4, run directly from the repo with the accepted M3 artifact
-- `paper-trader`: long-only spot paper-trading engine from M5, run directly from the repo against canonical features plus authoritative M4/M9 signals
+- `paper-trader`: long-only spot execution engine from M5/M9/M11, run directly from the repo against canonical features plus authoritative M4 signals, M9 regime decisions, and the configured paper or shadow execution mode
 - `dashboard`: read-only Streamlit UI from M6, run directly from the repo against the accepted API and PostgreSQL sources, including additive M9 regime fields
 
 ## M2 Scope
@@ -277,6 +281,23 @@ M9 does not do:
 - add a new PostgreSQL table, orchestration stack, scheduler, control plane, or background daemon
 - duplicate regime logic in M5 or change M7 registry model resolution
 - add RL, sentiment/news, anomaly detection, MLflow, or adaptive threshold tuning
+
+## M11 Scope
+
+M11 does:
+- keep M4 authoritative for prediction and signal generation
+- keep M10 authoritative for risk approval and sizing
+- add deterministic idempotent order requests and lifecycle audit rows under `execution_order_requests` and `execution_order_events`
+- support two local-only execution modes: `paper` and `shadow`
+- keep the same risk-approved signal path in both modes
+- record explicit `CREATED`, `ACCEPTED`, `FILLED`, and `REJECTED` lifecycle states
+- keep paper mode functional while making every intended order traceable
+
+M11 does not do:
+- place live orders or add broker credentials
+- add a live adapter, new backend service, scheduler, or control plane
+- change M4 API contracts or move signal logic out of M4
+- weaken accepted M1-M10 behavior to make execution abstraction easier
 
 ## Environment Variables
 
@@ -443,6 +464,16 @@ python scripts\run_paper_trader.py --config configs\paper_trading.yaml
 ```
 
 The paper trader is intentionally local-first and long-only. It consumes the existing M4 `/signal` endpoint as authoritative, including M9 regime-aware decisions, and never reimplements signal logic.
+
+For M11, `configs/paper_trading.yaml` adds:
+
+```yaml
+execution:
+  mode: paper
+  idempotency_key_version: 1
+```
+
+Set `execution.mode: shadow` to run the same M4 and M10 path with isolated shadow rows and explicit order lifecycle audit events.
 
 ### 13. Run the M6 Streamlit dashboard
 
@@ -660,6 +691,13 @@ Get-Content artifacts\paper_trading\by_asset_summary.csv
 Get-Content artifacts\paper_trading\by_regime_summary.csv
 Get-Content artifacts\paper_trading\open_positions.csv
 Get-Content artifacts\paper_trading\closed_positions.csv
+```
+
+For M11 execution-audit checks:
+
+```powershell
+docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT execution_mode, COUNT(*) AS order_requests FROM execution_order_requests GROUP BY execution_mode ORDER BY execution_mode;"
+docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT execution_mode, lifecycle_state, COUNT(*) AS event_rows FROM execution_order_events GROUP BY execution_mode, lifecycle_state ORDER BY execution_mode, lifecycle_state;"
 ```
 
 ## Inspect Topics

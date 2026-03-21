@@ -16,7 +16,12 @@ import httpx
 from app.common.config import Settings
 from app.common.time import parse_rfc3339, utc_now
 from app.trading.config import PaperTradingConfig
-from app.trading.repository import LEDGER_TABLE, POSITIONS_TABLE, STATE_TABLE
+from app.trading.repository import (
+    LEDGER_TABLE,
+    ORDER_EVENTS_TABLE,
+    POSITIONS_TABLE,
+    STATE_TABLE,
+)
 from app.trading.schemas import PaperPosition
 
 
@@ -123,6 +128,20 @@ class LedgerEntrySnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class OrderAuditSnapshot:
+    """Read-only recent order lifecycle row for the trading tab."""
+
+    event_id: int
+    order_request_id: int
+    symbol: str
+    action: str
+    lifecycle_state: str
+    event_time: datetime
+    reason_code: str | None
+    details: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class EngineStateSnapshot:
     """Persisted per-symbol paper-trading engine state."""
 
@@ -133,6 +152,7 @@ class EngineStateSnapshot:
     pending_signal_action: str | None
     pending_regime_label: str | None
     updated_at: datetime
+    execution_mode: str = "paper"
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +165,7 @@ class DatabaseSnapshot:
     positions: tuple[PaperPosition, ...] = field(default_factory=tuple)
     recent_closed_positions: tuple[PaperPosition, ...] = field(default_factory=tuple)
     recent_ledger_entries: tuple[LedgerEntrySnapshot, ...] = field(default_factory=tuple)
+    recent_order_events: tuple[OrderAuditSnapshot, ...] = field(default_factory=tuple)
     engine_states: tuple[EngineStateSnapshot, ...] = field(default_factory=tuple)
     latest_prices: dict[str, float] = field(default_factory=dict)
     cash_balance: float | None = None
@@ -179,6 +200,7 @@ class DashboardDataSources:
         self._positions_table = _quote_table_name(POSITIONS_TABLE)
         self._ledger_table = _quote_table_name(LEDGER_TABLE)
         self._state_table = _quote_table_name(STATE_TABLE)
+        self._order_events_table = _quote_table_name(ORDER_EVENTS_TABLE)
 
     async def load_snapshot(self) -> DashboardSnapshot:
         """Load one point-in-time dashboard snapshot from API and PostgreSQL."""
@@ -300,20 +322,22 @@ class DashboardDataSources:
                 f"""
                 SELECT *
                 FROM {self._positions_table}
-                WHERE service_name = $1
+                WHERE service_name = $1 AND execution_mode = $2
                 ORDER BY entry_fill_interval_begin ASC, id ASC
                 """,
                 self._trading_config.service_name,
+                self._trading_config.execution.mode,
             )
             recent_closed_rows = await connection.fetch(
                 f"""
                 SELECT *
                 FROM {self._positions_table}
-                WHERE service_name = $1 AND status = 'CLOSED'
+                WHERE service_name = $1 AND execution_mode = $2 AND status = 'CLOSED'
                 ORDER BY closed_at DESC NULLS LAST, id DESC
-                LIMIT $2
+                LIMIT $3
                 """,
                 self._trading_config.service_name,
+                self._trading_config.execution.mode,
                 self._settings.dashboard.recent_trades_limit,
             )
             recent_ledger_rows = await connection.fetch(
@@ -322,33 +346,49 @@ class DashboardDataSources:
                        fill_price, quantity, notional, fee, cash_flow,
                        realized_pnl, signal_row_id, model_name, confidence, regime_label
                 FROM {self._ledger_table}
-                WHERE service_name = $1
+                WHERE service_name = $1 AND execution_mode = $2
                 ORDER BY fill_time DESC, id DESC
-                LIMIT $2
+                LIMIT $3
                 """,
                 self._trading_config.service_name,
+                self._trading_config.execution.mode,
+                self._settings.dashboard.recent_ledger_limit,
+            )
+            recent_order_rows = await connection.fetch(
+                f"""
+                SELECT id, order_request_id, symbol, action, lifecycle_state, event_time,
+                       reason_code, details
+                FROM {self._order_events_table}
+                WHERE service_name = $1 AND execution_mode = $2
+                ORDER BY event_time DESC, id DESC
+                LIMIT $3
+                """,
+                self._trading_config.service_name,
+                self._trading_config.execution.mode,
                 self._settings.dashboard.recent_ledger_limit,
             )
             engine_state_rows = await connection.fetch(
                 f"""
-                SELECT service_name, symbol, last_processed_interval_begin,
+                SELECT service_name, execution_mode, symbol, last_processed_interval_begin,
                        cooldown_until_interval_begin, pending_signal_action,
                        pending_regime_label,
                        updated_at
                 FROM {self._state_table}
-                WHERE service_name = $1
+                WHERE service_name = $1 AND execution_mode = $2
                 ORDER BY symbol ASC
                 """,
                 self._trading_config.service_name,
+                self._trading_config.execution.mode,
             )
             cash_delta = float(
                 await connection.fetchval(
                     f"""
                     SELECT COALESCE(SUM(cash_flow), 0.0)
                     FROM {self._ledger_table}
-                    WHERE service_name = $1
+                    WHERE service_name = $1 AND execution_mode = $2
                     """,
                     self._trading_config.service_name,
+                    self._trading_config.execution.mode,
                 )
             )
         except Exception as error:  # pylint: disable=broad-exception-caught
@@ -370,6 +410,9 @@ class DashboardDataSources:
         recent_ledger_entries = tuple(
             _ledger_entry_from_row(row) for row in recent_ledger_rows
         )
+        recent_order_events = tuple(
+            _order_audit_from_row(row) for row in recent_order_rows
+        )
         engine_states = tuple(_engine_state_from_row(row) for row in engine_state_rows)
         latest_prices = {row.symbol: row.close_price for row in latest_features}
         return DatabaseSnapshot(
@@ -379,6 +422,7 @@ class DashboardDataSources:
             positions=positions,
             recent_closed_positions=recent_closed_positions,
             recent_ledger_entries=recent_ledger_entries,
+            recent_order_events=recent_order_events,
             engine_states=engine_states,
             latest_prices=latest_prices,
             cash_balance=self._trading_config.risk.initial_cash + cash_delta,
@@ -546,6 +590,7 @@ def _ledger_entry_from_row(row: Mapping[str, Any]) -> LedgerEntrySnapshot:
 def _engine_state_from_row(row: Mapping[str, Any]) -> EngineStateSnapshot:
     return EngineStateSnapshot(
         service_name=str(row["service_name"]),
+        execution_mode=str(row["execution_mode"]),
         symbol=str(row["symbol"]),
         last_processed_interval_begin=row["last_processed_interval_begin"],
         cooldown_until_interval_begin=row["cooldown_until_interval_begin"],
@@ -556,4 +601,17 @@ def _engine_state_from_row(row: Mapping[str, Any]) -> EngineStateSnapshot:
             None if row["pending_regime_label"] is None else str(row["pending_regime_label"])
         ),
         updated_at=row["updated_at"],
+    )
+
+
+def _order_audit_from_row(row: Mapping[str, Any]) -> OrderAuditSnapshot:
+    return OrderAuditSnapshot(
+        event_id=int(row["id"]),
+        order_request_id=int(row["order_request_id"]),
+        symbol=str(row["symbol"]),
+        action=str(row["action"]),
+        lifecycle_state=str(row["lifecycle_state"]),
+        event_time=row["event_time"],
+        reason_code=None if row["reason_code"] is None else str(row["reason_code"]),
+        details=None if row["details"] is None else str(row["details"]),
     )

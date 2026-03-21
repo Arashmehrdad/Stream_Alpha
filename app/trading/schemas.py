@@ -16,6 +16,8 @@ PositionStatus = Literal["OPEN", "CLOSED"]
 ExitReason = Literal["SELL_SIGNAL", "STOP_LOSS", "TAKE_PROFIT"]
 TradeAction = Literal["BUY", "SELL"]
 RiskOutcome = Literal["APPROVED", "MODIFIED", "BLOCKED"]
+ExecutionMode = Literal["paper", "shadow"]
+OrderLifecycleState = Literal["CREATED", "ACCEPTED", "FILLED", "REJECTED"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +84,8 @@ class PendingSignalState:
     regime_run_id: str | None = None
     approved_notional: float | None = None
     risk_outcome: RiskOutcome | None = None
+    order_request_id: int | None = None
+    order_request_idempotency_key: str | None = None
     risk_reason_codes: tuple[str, ...] = field(default_factory=tuple)
 
 
@@ -91,6 +95,7 @@ class PaperEngineState:
 
     service_name: str
     symbol: str
+    execution_mode: ExecutionMode = "paper"
     last_processed_interval_begin: datetime | None = None
     cooldown_until_interval_begin: datetime | None = None
     pending_signal: PendingSignalState | None = None
@@ -118,9 +123,11 @@ class PaperPosition:  # pylint: disable=too-many-instance-attributes
     entry_fee: float
     stop_loss_price: float
     take_profit_price: float
+    execution_mode: ExecutionMode = "paper"
     entry_regime_label: str | None = None
     entry_approved_notional: float | None = None
     entry_risk_outcome: RiskOutcome | None = None
+    entry_order_request_id: int | None = None
     entry_risk_reason_codes: tuple[str, ...] = field(default_factory=tuple)
     position_id: int | None = None
     exit_reason: ExitReason | None = None
@@ -138,6 +145,7 @@ class PaperPosition:  # pylint: disable=too-many-instance-attributes
     realized_pnl: float | None = None
     realized_return: float | None = None
     exit_regime_label: str | None = None
+    exit_order_request_id: int | None = None
     opened_at: datetime | None = None
     closed_at: datetime | None = None
     updated_at: datetime | None = None
@@ -159,7 +167,9 @@ class TradeLedgerEntry:  # pylint: disable=too-many-instance-attributes
     fee: float
     slippage_bps: float
     cash_flow: float
+    execution_mode: ExecutionMode = "paper"
     position_id: int | None = None
+    order_request_id: int | None = None
     signal_interval_begin: datetime | None = None
     signal_as_of_time: datetime | None = None
     signal_row_id: str | None = None
@@ -212,6 +222,7 @@ class ServiceRiskState:
     equity_high_watermark: float
     current_equity: float
     loss_streak_count: int
+    execution_mode: ExecutionMode = "paper"
     loss_streak_cooldown_until_interval_begin: datetime | None = None
     kill_switch_enabled: bool = False
     updated_at: datetime | None = None
@@ -237,10 +248,66 @@ class RiskDecisionLogEntry:
     total_open_exposure_notional: float
     realized_vol_12: float
     confidence: float
+    execution_mode: ExecutionMode = "paper"
     regime_label: str | None = None
     regime_run_id: str | None = None
     trade_allowed: bool | None = None
     created_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class OrderRequest:  # pylint: disable=too-many-instance-attributes
+    """Deterministic execution request created after M10 risk approval."""
+
+    service_name: str
+    execution_mode: ExecutionMode
+    symbol: str
+    action: TradeAction
+    signal_interval_begin: datetime
+    signal_as_of_time: datetime
+    signal_row_id: str
+    target_fill_interval_begin: datetime
+    requested_notional: float
+    approved_notional: float
+    idempotency_key: str
+    model_name: str | None = None
+    confidence: float | None = None
+    regime_label: str | None = None
+    regime_run_id: str | None = None
+    risk_outcome: RiskOutcome | None = None
+    risk_reason_codes: tuple[str, ...] = field(default_factory=tuple)
+    order_request_id: int | None = None
+    created_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class OrderLifecycleEvent:
+    """Explicit lifecycle event for one order request."""
+
+    order_request_id: int
+    service_name: str
+    execution_mode: ExecutionMode
+    symbol: str
+    action: TradeAction
+    lifecycle_state: OrderLifecycleState
+    event_time: datetime
+    reason_code: str | None = None
+    details: str | None = None
+    event_id: int | None = None
+    created_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionResult:
+    """Adapter result for one execution-phase candle evaluation."""
+
+    state: PaperEngineState
+    open_position: PaperPosition | None
+    lifecycle_events: tuple[OrderLifecycleEvent, ...] = field(default_factory=tuple)
+    created_position: PaperPosition | None = None
+    closed_position: PaperPosition | None = None
+    ledger_entries: tuple[TradeLedgerEntry, ...] = field(default_factory=tuple)
+    cash_delta: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)

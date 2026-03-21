@@ -1,6 +1,6 @@
 """Dashboard data-source tests for Stream Alpha M6."""
 
-# pylint: disable=duplicate-code,too-few-public-methods
+# pylint: disable=duplicate-code,missing-function-docstring,too-few-public-methods
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import os
 from datetime import datetime, timezone
 
 from app.common.config import Settings
-from app.trading.config import PaperTradingConfig, RiskConfig
+from app.trading.config import ExecutionConfig, PaperTradingConfig, RiskConfig
 from dashboards.data_sources import DashboardDataSources, shape_latest_feature_rows
 
 
@@ -18,7 +18,7 @@ def _settings() -> Settings:
     return Settings.from_env()
 
 
-def _paper_config() -> PaperTradingConfig:
+def _paper_config(*, execution_mode: str = "paper") -> PaperTradingConfig:
     return PaperTradingConfig(
         service_name="paper-trader",
         source_exchange="kraken",
@@ -39,6 +39,7 @@ def _paper_config() -> PaperTradingConfig:
             max_open_positions=3,
             max_exposure_per_asset=0.25,
         ),
+        execution=ExecutionConfig(mode=execution_mode, idempotency_key_version=1),
     )
 
 
@@ -194,3 +195,52 @@ def test_dashboard_snapshot_parses_regime_fields_from_api_payloads() -> None:
     assert snapshot.api_health.regime_run_id == "20260320T120000Z"
     assert snapshot.signals[0].regime_label == "TREND_UP"
     assert snapshot.signals[0].trade_allowed is True
+
+
+class _RecordingConnection:
+    def __init__(self) -> None:
+        self.fetch_calls: list[tuple[str, tuple]] = []
+        self.fetchval_calls: list[tuple[str, tuple]] = []
+
+    async def fetch(self, query: str, *params):
+        self.fetch_calls.append((query, params))
+        return []
+
+    async def fetchval(self, query: str, *params):
+        self.fetchval_calls.append((query, params))
+        if "SELECT 1" in query:
+            return 1
+        return 0.0
+
+    async def close(self) -> None:
+        return None
+
+
+def test_dashboard_snapshot_filters_database_queries_by_execution_mode() -> None:
+    connection = _RecordingConnection()
+
+    async def _db_connect(_dsn: str):
+        return connection
+
+    data_sources = DashboardDataSources(
+        settings=_settings(),
+        trading_config=_paper_config(execution_mode="shadow"),
+        http_client=_HealthyHttpClient(),
+        db_connect=_db_connect,
+    )
+
+    snapshot = asyncio.run(data_sources.load_snapshot())
+
+    assert snapshot.database.available is True
+    mode_params = [
+        params[1]
+        for _query, params in connection.fetch_calls
+        if len(params) >= 2 and params[0] == "paper-trader"
+    ]
+    mode_params.extend(
+        params[1]
+        for _query, params in connection.fetchval_calls
+        if len(params) >= 2 and params[0] == "paper-trader"
+    )
+    assert mode_params
+    assert all(mode == "shadow" for mode in mode_params)

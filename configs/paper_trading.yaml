@@ -9,6 +9,9 @@ symbols:
 inference_base_url: http://127.0.0.1:8000
 poll_interval_seconds: 5
 artifact_dir: artifacts/paper_trading
+execution:
+  mode: paper
+  idempotency_key_version: 1
 risk:
   initial_cash: 10000.0
   position_fraction: 0.25

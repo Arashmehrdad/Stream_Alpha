@@ -12,7 +12,14 @@ from pathlib import Path
 
 from app.trading.config import PaperTradingConfig, RiskConfig
 from app.trading.runner import PaperTradingRunner
-from app.trading.schemas import FeatureCandle, PaperEngineState, ServiceRiskState, SignalDecision
+from app.trading.schemas import (
+    FeatureCandle,
+    OrderLifecycleEvent,
+    OrderRequest,
+    PaperEngineState,
+    ServiceRiskState,
+    SignalDecision,
+)
 
 
 def _config(tmp_path: Path) -> PaperTradingConfig:
@@ -66,7 +73,10 @@ class FakeRepository:  # pylint: disable=too-many-instance-attributes
         self.ledger = []
         self.risk_state = None
         self.risk_decisions = []
+        self.order_requests: dict[str, OrderRequest] = {}
+        self.order_events: dict[tuple[int, str], OrderLifecycleEvent] = {}
         self.position_id = 0
+        self.order_request_id = 0
 
     async def connect(self) -> None:
         return None
@@ -74,16 +84,28 @@ class FakeRepository:  # pylint: disable=too-many-instance-attributes
     async def close(self) -> None:
         return None
 
-    async def load_engine_states(self, *, service_name: str, symbols: tuple[str, ...]):
-        del service_name, symbols
+    async def load_engine_states(
+        self,
+        *,
+        service_name: str,
+        execution_mode: str,
+        symbols: tuple[str, ...],
+    ):
+        del service_name, execution_mode, symbols
         return dict(self.states)
 
-    async def load_open_positions(self, service_name: str):
-        del service_name
+    async def load_open_positions(self, service_name: str, *, execution_mode: str):
+        del service_name, execution_mode
         return dict(self.open_positions)
 
-    async def load_cash_balance(self, *, service_name: str, initial_cash: float) -> float:
-        del service_name
+    async def load_cash_balance(
+        self,
+        *,
+        service_name: str,
+        execution_mode: str,
+        initial_cash: float,
+    ) -> float:
+        del service_name, execution_mode
         return initial_cash + sum(entry.cash_flow for entry in self.ledger)
 
     async def fetch_new_feature_rows(
@@ -117,8 +139,8 @@ class FakeRepository:  # pylint: disable=too-many-instance-attributes
     async def save_engine_state(self, state) -> None:
         self.states[state.symbol] = state
 
-    async def load_service_risk_state(self, *, service_name: str):
-        del service_name
+    async def load_service_risk_state(self, *, service_name: str, execution_mode: str):
+        del service_name, execution_mode
         return self.risk_state
 
     async def save_service_risk_state(self, state: ServiceRiskState) -> None:
@@ -127,9 +149,26 @@ class FakeRepository:  # pylint: disable=too-many-instance-attributes
     async def insert_risk_decision(self, entry) -> None:
         self.risk_decisions.append(entry)
 
-    async def load_positions(self, *, service_name: str):
-        del service_name
+    async def load_positions(self, *, service_name: str, execution_mode: str):
+        del service_name, execution_mode
         return list(self.positions)
+
+    async def ensure_order_request(self, order_request: OrderRequest) -> OrderRequest:
+        existing = self.order_requests.get(order_request.idempotency_key)
+        if existing is not None:
+            return existing
+        self.order_request_id += 1
+        stored = replace(order_request, order_request_id=self.order_request_id)
+        self.order_requests[stored.idempotency_key] = stored
+        return stored
+
+    async def load_order_request_by_idempotency_key(self, *, idempotency_key: str):
+        return self.order_requests.get(idempotency_key)
+
+    async def insert_order_event_if_absent(self, event: OrderLifecycleEvent) -> OrderLifecycleEvent:
+        key = (event.order_request_id, event.lifecycle_state)
+        self.order_events.setdefault(key, event)
+        return self.order_events[key]
 
     async def load_latest_prices(self, *, source_exchange: str, interval_minutes: int, symbols: tuple[str, ...]):
         del source_exchange, interval_minutes, symbols
@@ -169,10 +208,18 @@ def test_runner_does_not_duplicate_processed_candles(tmp_path: Path) -> None:
 
     asyncio.run(runner.run_once())
     first_ledger_count = len(repository.ledger)
+    first_order_request_count = len(repository.order_requests)
+    first_filled_event_count = len(
+        [event for event in repository.order_events.values() if event.lifecycle_state == "FILLED"]
+    )
     asyncio.run(runner.run_once())
 
     assert first_ledger_count == 1
     assert len(repository.ledger) == 1
+    assert first_order_request_count == 1
+    assert len(repository.order_requests) == 1
+    assert first_filled_event_count == 1
+    assert len([event for event in repository.order_events.values() if event.lifecycle_state == "FILLED"]) == 1
     assert repository.states["BTC/USD"].last_processed_interval_begin == _candle(1).interval_begin
 
 
@@ -189,7 +236,9 @@ def test_runner_persists_one_risk_decision_per_processed_signal(tmp_path: Path) 
     assert len(repository.risk_decisions) == 2
     assert all(entry.outcome in {"APPROVED", "MODIFIED", "BLOCKED"} for entry in repository.risk_decisions)
     assert all(entry.reason_codes for entry in repository.risk_decisions)
+    assert len(repository.order_requests) == 1
 
     asyncio.run(runner.run_once())
 
     assert len(repository.risk_decisions) == 2
+    assert len(repository.order_requests) == 1

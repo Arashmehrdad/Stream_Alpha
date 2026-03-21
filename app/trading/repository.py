@@ -13,6 +13,8 @@ import asyncpg
 from app.common.time import to_rfc3339
 from app.trading.schemas import (
     FeatureCandle,
+    OrderLifecycleEvent,
+    OrderRequest,
     PaperEngineState,
     PaperPosition,
     PendingSignalState,
@@ -27,6 +29,8 @@ LEDGER_TABLE = "paper_trade_ledger"
 STATE_TABLE = "paper_engine_state"
 RISK_STATE_TABLE = "paper_risk_state"
 RISK_DECISIONS_TABLE = "paper_risk_decisions"
+ORDER_REQUESTS_TABLE = "execution_order_requests"
+ORDER_EVENTS_TABLE = "execution_order_events"
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -48,6 +52,10 @@ def _build_index_name(table_name: str, suffix: str) -> str:
     return _quote_identifier(f"{table_name}_{suffix}")
 
 
+def _table_basename(name: str) -> str:
+    return name.split(".")[-1]
+
+
 class TradingRepository:
     """Repository for M5 state, positions, ledger rows, and canonical candles."""
 
@@ -59,6 +67,8 @@ class TradingRepository:
         self._state_table = _quote_table_name(STATE_TABLE)
         self._risk_state_table = _quote_table_name(RISK_STATE_TABLE)
         self._risk_decisions_table = _quote_table_name(RISK_DECISIONS_TABLE)
+        self._order_requests_table = _quote_table_name(ORDER_REQUESTS_TABLE)
+        self._order_events_table = _quote_table_name(ORDER_EVENTS_TABLE)
         self._pool: asyncpg.Pool | None = None
 
     async def connect(self) -> None:
@@ -79,6 +89,7 @@ class TradingRepository:
         self,
         *,
         service_name: str,
+        execution_mode: str,
         symbols: Sequence[str],
     ) -> dict[str, PaperEngineState]:
         """Load persisted per-symbol engine state and fill any missing defaults."""
@@ -87,9 +98,12 @@ class TradingRepository:
             f"""
             SELECT *
             FROM {self._state_table}
-            WHERE service_name = $1 AND symbol = ANY($2::text[])
+            WHERE service_name = $1
+              AND execution_mode = $2
+              AND symbol = ANY($3::text[])
             """,
             service_name,
+            execution_mode,
             list(symbols),
         )
         states = {
@@ -99,7 +113,11 @@ class TradingRepository:
         for symbol in symbols:
             states.setdefault(
                 symbol,
-                PaperEngineState(service_name=service_name, symbol=symbol),
+                PaperEngineState(
+                    service_name=service_name,
+                    symbol=symbol,
+                    execution_mode=execution_mode,
+                ),
             )
         return states
 
@@ -111,6 +129,7 @@ class TradingRepository:
             f"""
             INSERT INTO {self._state_table} (
                 service_name,
+                execution_mode,
                 symbol,
                 last_processed_interval_begin,
                 cooldown_until_interval_begin,
@@ -127,13 +146,15 @@ class TradingRepository:
                 pending_regime_label,
                 pending_approved_notional,
                 pending_risk_outcome,
+                pending_order_request_id,
+                pending_order_idempotency_key,
                 pending_risk_reason_codes,
                 updated_at
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-                $16, $17, $18::text[], NOW()
+                $16, $17, $18, $19, $20::text[], NOW()
             )
-            ON CONFLICT (service_name, symbol)
+            ON CONFLICT (service_name, execution_mode, symbol)
             DO UPDATE SET
                 last_processed_interval_begin = EXCLUDED.last_processed_interval_begin,
                 cooldown_until_interval_begin = EXCLUDED.cooldown_until_interval_begin,
@@ -150,10 +171,13 @@ class TradingRepository:
                 pending_regime_label = EXCLUDED.pending_regime_label,
                 pending_approved_notional = EXCLUDED.pending_approved_notional,
                 pending_risk_outcome = EXCLUDED.pending_risk_outcome,
+                pending_order_request_id = EXCLUDED.pending_order_request_id,
+                pending_order_idempotency_key = EXCLUDED.pending_order_idempotency_key,
                 pending_risk_reason_codes = EXCLUDED.pending_risk_reason_codes,
                 updated_at = NOW()
             """,
             state.service_name,
+            state.execution_mode,
             state.symbol,
             state.last_processed_interval_begin,
             state.cooldown_until_interval_begin,
@@ -170,6 +194,8 @@ class TradingRepository:
             None if pending is None else pending.regime_label,
             None if pending is None else pending.approved_notional,
             None if pending is None else pending.risk_outcome,
+            None if pending is None else pending.order_request_id,
+            None if pending is None else pending.order_request_idempotency_key,
             None if pending is None else list(pending.risk_reason_codes),
         )
 
@@ -177,6 +203,7 @@ class TradingRepository:
         self,
         *,
         service_name: str,
+        execution_mode: str,
     ) -> ServiceRiskState | None:
         """Load the persisted M10 service-level risk state, if present."""
         pool = self._require_pool()
@@ -184,9 +211,10 @@ class TradingRepository:
             f"""
             SELECT *
             FROM {self._risk_state_table}
-            WHERE service_name = $1
+            WHERE service_name = $1 AND execution_mode = $2
             """,
             service_name,
+            execution_mode,
         )
         if row is None:
             return None
@@ -199,6 +227,7 @@ class TradingRepository:
             f"""
             INSERT INTO {self._risk_state_table} (
                 service_name,
+                execution_mode,
                 trading_day,
                 realized_pnl_today,
                 equity_high_watermark,
@@ -208,9 +237,9 @@ class TradingRepository:
                 kill_switch_enabled,
                 updated_at
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, NOW()
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, NOW()
             )
-            ON CONFLICT (service_name)
+            ON CONFLICT (service_name, execution_mode)
             DO UPDATE SET
                 trading_day = EXCLUDED.trading_day,
                 realized_pnl_today = EXCLUDED.realized_pnl_today,
@@ -223,6 +252,7 @@ class TradingRepository:
                 updated_at = NOW()
             """,
             state.service_name,
+            state.execution_mode,
             state.trading_day,
             state.realized_pnl_today,
             state.equity_high_watermark,
@@ -239,6 +269,7 @@ class TradingRepository:
             f"""
             INSERT INTO {self._risk_decisions_table} (
                 service_name,
+                execution_mode,
                 symbol,
                 signal,
                 signal_interval_begin,
@@ -258,11 +289,12 @@ class TradingRepository:
                 regime_run_id,
                 trade_allowed
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8::text[], $9, $10, $11, $12, $13, $14,
-                $15, $16, $17, $18, $19
+                $1, $2, $3, $4, $5, $6, $7, $8, $9::text[], $10, $11, $12, $13, $14, $15,
+                $16, $17, $18, $19, $20
             )
             """,
             entry.service_name,
+            entry.execution_mode,
             entry.symbol,
             entry.signal,
             entry.signal_interval_begin,
@@ -282,6 +314,159 @@ class TradingRepository:
             entry.regime_run_id,
             entry.trade_allowed,
         )
+
+    async def ensure_order_request(self, order_request: OrderRequest) -> OrderRequest:
+        """Insert one deterministic M11 order request or return the existing row."""
+        pool = self._require_pool()
+        row = await pool.fetchrow(
+            f"""
+            INSERT INTO {self._order_requests_table} (
+                service_name,
+                execution_mode,
+                symbol,
+                action,
+                signal_interval_begin,
+                signal_as_of_time,
+                signal_row_id,
+                target_fill_interval_begin,
+                requested_notional,
+                approved_notional,
+                idempotency_key,
+                model_name,
+                confidence,
+                regime_label,
+                regime_run_id,
+                risk_outcome,
+                risk_reason_codes
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+                $12, $13, $14, $15, $16, $17::text[]
+            )
+            ON CONFLICT (idempotency_key) DO NOTHING
+            RETURNING *
+            """,
+            order_request.service_name,
+            order_request.execution_mode,
+            order_request.symbol,
+            order_request.action,
+            order_request.signal_interval_begin,
+            order_request.signal_as_of_time,
+            order_request.signal_row_id,
+            order_request.target_fill_interval_begin,
+            order_request.requested_notional,
+            order_request.approved_notional,
+            order_request.idempotency_key,
+            order_request.model_name,
+            order_request.confidence,
+            order_request.regime_label,
+            order_request.regime_run_id,
+            order_request.risk_outcome,
+            list(order_request.risk_reason_codes),
+        )
+        if row is None:
+            existing_row = await pool.fetchrow(
+                f"""
+                SELECT *
+                FROM {self._order_requests_table}
+                WHERE idempotency_key = $1
+                """,
+                order_request.idempotency_key,
+            )
+            if existing_row is None:
+                raise RuntimeError("Order request insert returned no row and no existing record")
+            row = existing_row
+        return _order_request_from_row(row)
+
+    async def load_order_request_by_idempotency_key(
+        self,
+        *,
+        idempotency_key: str,
+    ) -> OrderRequest | None:
+        """Load one order request by its deterministic idempotency key."""
+        pool = self._require_pool()
+        row = await pool.fetchrow(
+            f"""
+            SELECT *
+            FROM {self._order_requests_table}
+            WHERE idempotency_key = $1
+            """,
+            idempotency_key,
+        )
+        if row is None:
+            return None
+        return _order_request_from_row(row)
+
+    async def insert_order_event_if_absent(
+        self,
+        event: OrderLifecycleEvent,
+    ) -> OrderLifecycleEvent:
+        """Insert one lifecycle event unless that request already has the same state."""
+        pool = self._require_pool()
+        row = await pool.fetchrow(
+            f"""
+            INSERT INTO {self._order_events_table} (
+                order_request_id,
+                service_name,
+                execution_mode,
+                symbol,
+                action,
+                lifecycle_state,
+                event_time,
+                reason_code,
+                details
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9
+            )
+            ON CONFLICT (order_request_id, lifecycle_state) DO NOTHING
+            RETURNING *
+            """,
+            event.order_request_id,
+            event.service_name,
+            event.execution_mode,
+            event.symbol,
+            event.action,
+            event.lifecycle_state,
+            event.event_time,
+            event.reason_code,
+            event.details,
+        )
+        if row is None:
+            existing_row = await pool.fetchrow(
+                f"""
+                SELECT *
+                FROM {self._order_events_table}
+                WHERE order_request_id = $1 AND lifecycle_state = $2
+                """,
+                event.order_request_id,
+                event.lifecycle_state,
+            )
+            if existing_row is None:
+                raise RuntimeError("Order lifecycle insert returned no row and no existing record")
+            row = existing_row
+        return _order_event_from_row(row)
+
+    async def load_recent_order_events(
+        self,
+        *,
+        service_name: str,
+        execution_mode: str,
+        limit: int,
+    ) -> list[OrderLifecycleEvent]:
+        """Load recent order lifecycle rows for dashboard and manual inspection."""
+        pool = self._require_pool()
+        rows = await pool.fetch(
+            f"""
+            SELECT *
+            FROM {self._order_events_table}
+            WHERE service_name = $1 AND execution_mode = $2
+            ORDER BY event_time DESC, id DESC
+            LIMIT $3
+            """,
+            service_name,
+            execution_mode,
+            limit,
+        )
+        return [_order_event_from_row(row) for row in rows]
 
     async def fetch_new_feature_rows(
         self,
@@ -329,17 +514,25 @@ class TradingRepository:
             )
         return [_candle_from_row(row) for row in rows]
 
-    async def load_open_positions(self, service_name: str) -> dict[str, PaperPosition]:
+    async def load_open_positions(
+        self,
+        service_name: str,
+        *,
+        execution_mode: str,
+    ) -> dict[str, PaperPosition]:
         """Load currently open positions keyed by symbol."""
         pool = self._require_pool()
         rows = await pool.fetch(
             f"""
             SELECT *
             FROM {self._positions_table}
-            WHERE service_name = $1 AND status = 'OPEN'
+            WHERE service_name = $1
+              AND execution_mode = $2
+              AND status = 'OPEN'
             ORDER BY entry_fill_interval_begin ASC
             """,
             service_name,
+            execution_mode,
         )
         return {str(row["symbol"]): _position_from_row(row) for row in rows}
 
@@ -351,6 +544,7 @@ class TradingRepository:
                 f"""
                 INSERT INTO {self._positions_table} (
                     service_name,
+                    execution_mode,
                     symbol,
                     status,
                     entry_signal_interval_begin,
@@ -368,20 +562,23 @@ class TradingRepository:
                     entry_fee,
                     stop_loss_price,
                     take_profit_price,
+                    entry_order_request_id,
                     entry_regime_label,
                     entry_approved_notional,
                     entry_risk_outcome,
                     entry_risk_reason_codes,
+                    exit_order_request_id,
                     opened_at,
                     updated_at
                 ) VALUES (
                     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
                     $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
-                    $21, $22::text[], $23, $24
+                    $21, $22, $23, $24::text[], $25, $26, $27
                 )
                 RETURNING id
                 """,
                 position.service_name,
+                position.execution_mode,
                 position.symbol,
                 position.status,
                 position.entry_signal_interval_begin,
@@ -399,10 +596,12 @@ class TradingRepository:
                 position.entry_fee,
                 position.stop_loss_price,
                 position.take_profit_price,
+                position.entry_order_request_id,
                 position.entry_regime_label,
                 position.entry_approved_notional,
                 position.entry_risk_outcome,
                 list(position.entry_risk_reason_codes),
+                position.exit_order_request_id,
                 position.opened_at,
                 position.updated_at,
             )
@@ -432,13 +631,15 @@ class TradingRepository:
                 exit_fee = $14,
                 realized_pnl = $15,
                 realized_return = $16,
-                entry_regime_label = $17,
-                entry_approved_notional = $18,
-                entry_risk_outcome = $19,
-                entry_risk_reason_codes = $20::text[],
-                exit_regime_label = $21,
-                closed_at = $22,
-                updated_at = $23
+                entry_order_request_id = $17,
+                entry_regime_label = $18,
+                entry_approved_notional = $19,
+                entry_risk_outcome = $20,
+                entry_risk_reason_codes = $21::text[],
+                exit_regime_label = $22,
+                exit_order_request_id = $23,
+                closed_at = $24,
+                updated_at = $25
             WHERE id = $1
             """,
             position.position_id,
@@ -457,11 +658,13 @@ class TradingRepository:
             position.exit_fee,
             position.realized_pnl,
             position.realized_return,
+            position.entry_order_request_id,
             position.entry_regime_label,
             position.entry_approved_notional,
             position.entry_risk_outcome,
             list(position.entry_risk_reason_codes),
             position.exit_regime_label,
+            position.exit_order_request_id,
             position.closed_at,
             position.updated_at,
         )
@@ -473,7 +676,9 @@ class TradingRepository:
             f"""
             INSERT INTO {self._ledger_table} (
                 service_name,
+                execution_mode,
                 position_id,
+                order_request_id,
                 symbol,
                 action,
                 reason,
@@ -498,13 +703,15 @@ class TradingRepository:
                 cash_flow,
                 realized_pnl
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-                $11, $12, $13, $14, $15, $16::text[], $17, $18, $19, $20, $21,
-                $22, $23, $24, $25
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+                $12, $13, $14, $15, $16, $17::text[], $18, $19, $20, $21, $22,
+                $23, $24, $25, $26, $27
             )
             """,
             entry.service_name,
+            entry.execution_mode,
             entry.position_id,
+            entry.order_request_id,
             entry.symbol,
             entry.action,
             entry.reason,
@@ -534,6 +741,7 @@ class TradingRepository:
         self,
         *,
         service_name: str,
+        execution_mode: str,
         initial_cash: float,
     ) -> float:
         """Reconstruct current cash from the persisted trade ledger."""
@@ -543,9 +751,10 @@ class TradingRepository:
                 f"""
                 SELECT COALESCE(SUM(cash_flow), 0.0)
                 FROM {self._ledger_table}
-                WHERE service_name = $1
+                WHERE service_name = $1 AND execution_mode = $2
                 """,
                 service_name,
+                execution_mode,
             )
         )
         return initial_cash + cash_delta
@@ -554,6 +763,7 @@ class TradingRepository:
         self,
         *,
         service_name: str,
+        execution_mode: str,
         status: str | None = None,
     ) -> list[PaperPosition]:
         """Load persisted positions, optionally filtered by status."""
@@ -563,20 +773,22 @@ class TradingRepository:
                 f"""
                 SELECT *
                 FROM {self._positions_table}
-                WHERE service_name = $1
+                WHERE service_name = $1 AND execution_mode = $2
                 ORDER BY entry_fill_interval_begin ASC, id ASC
                 """,
                 service_name,
+                execution_mode,
             )
         else:
             rows = await pool.fetch(
                 f"""
                 SELECT *
                 FROM {self._positions_table}
-                WHERE service_name = $1 AND status = $2
+                WHERE service_name = $1 AND execution_mode = $2 AND status = $3
                 ORDER BY entry_fill_interval_begin ASC, id ASC
                 """,
                 service_name,
+                execution_mode,
                 status,
             )
         return [_position_from_row(row) for row in rows]
@@ -610,14 +822,40 @@ class TradingRepository:
     async def _ensure_schema(self) -> None:
         pool = self._require_pool()
         open_position_index = _build_index_name(
-            "paper_positions",
+            _table_basename(POSITIONS_TABLE),
             "one_open_position_per_symbol_idx",
         )
-        state_index = _build_index_name("paper_engine_state", "service_symbol_idx")
-        ledger_index = _build_index_name("paper_trade_ledger", "service_fill_time_idx")
+        state_index = _build_index_name(
+            _table_basename(STATE_TABLE),
+            "service_mode_symbol_idx",
+        )
+        ledger_index = _build_index_name(
+            _table_basename(LEDGER_TABLE),
+            "service_mode_fill_time_idx",
+        )
         risk_decisions_index = _build_index_name(
-            "paper_risk_decisions",
-            "service_signal_time_idx",
+            _table_basename(RISK_DECISIONS_TABLE),
+            "service_mode_signal_time_idx",
+        )
+        order_requests_index = _build_index_name(
+            _table_basename(ORDER_REQUESTS_TABLE),
+            "service_mode_target_fill_idx",
+        )
+        order_requests_unique = _build_index_name(
+            _table_basename(ORDER_REQUESTS_TABLE),
+            "idempotency_key_uidx",
+        )
+        order_events_index = _build_index_name(
+            _table_basename(ORDER_EVENTS_TABLE),
+            "service_mode_event_time_idx",
+        )
+        order_events_unique = _build_index_name(
+            _table_basename(ORDER_EVENTS_TABLE),
+            "request_state_uidx",
+        )
+        state_primary_key = _quote_identifier(f"{_table_basename(STATE_TABLE)}_pkey")
+        risk_state_primary_key = _quote_identifier(
+            f"{_table_basename(RISK_STATE_TABLE)}_pkey"
         )
         async with pool.acquire() as connection:
             await connection.execute(
@@ -625,6 +863,7 @@ class TradingRepository:
                 CREATE TABLE IF NOT EXISTS {self._positions_table} (
                     id BIGSERIAL PRIMARY KEY,
                     service_name TEXT NOT NULL,
+                    execution_mode TEXT NOT NULL DEFAULT 'paper',
                     symbol TEXT NOT NULL,
                     status TEXT NOT NULL,
                     entry_signal_interval_begin TIMESTAMPTZ NOT NULL,
@@ -642,6 +881,7 @@ class TradingRepository:
                     entry_fee DOUBLE PRECISION NOT NULL,
                     stop_loss_price DOUBLE PRECISION NOT NULL,
                     take_profit_price DOUBLE PRECISION NOT NULL,
+                    entry_order_request_id BIGINT NULL,
                     entry_regime_label TEXT NULL,
                     entry_approved_notional DOUBLE PRECISION NULL,
                     entry_risk_outcome TEXT NULL,
@@ -661,10 +901,17 @@ class TradingRepository:
                     realized_pnl DOUBLE PRECISION NULL,
                     realized_return DOUBLE PRECISION NULL,
                     exit_regime_label TEXT NULL,
+                    exit_order_request_id BIGINT NULL,
                     opened_at TIMESTAMPTZ NOT NULL,
                     closed_at TIMESTAMPTZ NULL,
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._positions_table}
+                ADD COLUMN IF NOT EXISTS execution_mode TEXT NOT NULL DEFAULT 'paper'
                 """
             )
             await connection.execute(
@@ -694,13 +941,26 @@ class TradingRepository:
             await connection.execute(
                 f"""
                 ALTER TABLE {self._positions_table}
+                ADD COLUMN IF NOT EXISTS entry_order_request_id BIGINT NULL
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._positions_table}
                 ADD COLUMN IF NOT EXISTS exit_regime_label TEXT NULL
                 """
             )
             await connection.execute(
                 f"""
+                ALTER TABLE {self._positions_table}
+                ADD COLUMN IF NOT EXISTS exit_order_request_id BIGINT NULL
+                """
+            )
+            await connection.execute(f"DROP INDEX IF EXISTS {open_position_index}")
+            await connection.execute(
+                f"""
                 CREATE UNIQUE INDEX IF NOT EXISTS {open_position_index}
-                ON {self._positions_table} (service_name, symbol)
+                ON {self._positions_table} (service_name, execution_mode, symbol)
                 WHERE status = 'OPEN'
                 """
             )
@@ -709,7 +969,9 @@ class TradingRepository:
                 CREATE TABLE IF NOT EXISTS {self._ledger_table} (
                     id BIGSERIAL PRIMARY KEY,
                     service_name TEXT NOT NULL,
+                    execution_mode TEXT NOT NULL DEFAULT 'paper',
                     position_id BIGINT NULL REFERENCES {self._positions_table}(id),
+                    order_request_id BIGINT NULL,
                     symbol TEXT NOT NULL,
                     action TEXT NOT NULL,
                     reason TEXT NOT NULL,
@@ -740,6 +1002,18 @@ class TradingRepository:
             await connection.execute(
                 f"""
                 ALTER TABLE {self._ledger_table}
+                ADD COLUMN IF NOT EXISTS execution_mode TEXT NOT NULL DEFAULT 'paper'
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._ledger_table}
+                ADD COLUMN IF NOT EXISTS order_request_id BIGINT NULL
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._ledger_table}
                 ADD COLUMN IF NOT EXISTS regime_label TEXT NULL
                 """
             )
@@ -761,16 +1035,18 @@ class TradingRepository:
                 ADD COLUMN IF NOT EXISTS risk_reason_codes TEXT[] NULL
                 """
             )
+            await connection.execute(f"DROP INDEX IF EXISTS {ledger_index}")
             await connection.execute(
                 f"""
                 CREATE INDEX IF NOT EXISTS {ledger_index}
-                ON {self._ledger_table} (service_name, fill_time DESC)
+                ON {self._ledger_table} (service_name, execution_mode, fill_time DESC)
                 """
             )
             await connection.execute(
                 f"""
                 CREATE TABLE IF NOT EXISTS {self._state_table} (
                     service_name TEXT NOT NULL,
+                    execution_mode TEXT NOT NULL DEFAULT 'paper',
                     symbol TEXT NOT NULL,
                     last_processed_interval_begin TIMESTAMPTZ NULL,
                     cooldown_until_interval_begin TIMESTAMPTZ NULL,
@@ -787,10 +1063,18 @@ class TradingRepository:
                     pending_regime_label TEXT NULL,
                     pending_approved_notional DOUBLE PRECISION NULL,
                     pending_risk_outcome TEXT NULL,
+                    pending_order_request_id BIGINT NULL,
+                    pending_order_idempotency_key TEXT NULL,
                     pending_risk_reason_codes TEXT[] NULL,
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    PRIMARY KEY (service_name, symbol)
+                    PRIMARY KEY (service_name, execution_mode, symbol)
                 )
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._state_table}
+                ADD COLUMN IF NOT EXISTS execution_mode TEXT NOT NULL DEFAULT 'paper'
                 """
             )
             await connection.execute(
@@ -814,19 +1098,45 @@ class TradingRepository:
             await connection.execute(
                 f"""
                 ALTER TABLE {self._state_table}
+                ADD COLUMN IF NOT EXISTS pending_order_request_id BIGINT NULL
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._state_table}
+                ADD COLUMN IF NOT EXISTS pending_order_idempotency_key TEXT NULL
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._state_table}
                 ADD COLUMN IF NOT EXISTS pending_risk_reason_codes TEXT[] NULL
                 """
             )
             await connection.execute(
                 f"""
+                ALTER TABLE {self._state_table}
+                DROP CONSTRAINT IF EXISTS {state_primary_key}
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._state_table}
+                ADD PRIMARY KEY (service_name, execution_mode, symbol)
+                """
+            )
+            await connection.execute(f"DROP INDEX IF EXISTS {state_index}")
+            await connection.execute(
+                f"""
                 CREATE INDEX IF NOT EXISTS {state_index}
-                ON {self._state_table} (service_name, symbol)
+                ON {self._state_table} (service_name, execution_mode, symbol)
                 """
             )
             await connection.execute(
                 f"""
                 CREATE TABLE IF NOT EXISTS {self._risk_state_table} (
-                    service_name TEXT PRIMARY KEY,
+                    service_name TEXT NOT NULL,
+                    execution_mode TEXT NOT NULL DEFAULT 'paper',
                     trading_day DATE NOT NULL,
                     realized_pnl_today DOUBLE PRECISION NOT NULL,
                     equity_high_watermark DOUBLE PRECISION NOT NULL,
@@ -834,8 +1144,27 @@ class TradingRepository:
                     loss_streak_count INTEGER NOT NULL,
                     loss_streak_cooldown_until_interval_begin TIMESTAMPTZ NULL,
                     kill_switch_enabled BOOLEAN NOT NULL DEFAULT FALSE,
-                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (service_name, execution_mode)
                 )
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._risk_state_table}
+                ADD COLUMN IF NOT EXISTS execution_mode TEXT NOT NULL DEFAULT 'paper'
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._risk_state_table}
+                DROP CONSTRAINT IF EXISTS {risk_state_primary_key}
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._risk_state_table}
+                ADD PRIMARY KEY (service_name, execution_mode)
                 """
             )
             await connection.execute(
@@ -843,6 +1172,7 @@ class TradingRepository:
                 CREATE TABLE IF NOT EXISTS {self._risk_decisions_table} (
                     id BIGSERIAL PRIMARY KEY,
                     service_name TEXT NOT NULL,
+                    execution_mode TEXT NOT NULL DEFAULT 'paper',
                     symbol TEXT NOT NULL,
                     signal TEXT NOT NULL,
                     signal_interval_begin TIMESTAMPTZ NOT NULL,
@@ -867,8 +1197,96 @@ class TradingRepository:
             )
             await connection.execute(
                 f"""
+                ALTER TABLE {self._risk_decisions_table}
+                ADD COLUMN IF NOT EXISTS execution_mode TEXT NOT NULL DEFAULT 'paper'
+                """
+            )
+            await connection.execute(f"DROP INDEX IF EXISTS {risk_decisions_index}")
+            await connection.execute(
+                f"""
                 CREATE INDEX IF NOT EXISTS {risk_decisions_index}
-                ON {self._risk_decisions_table} (service_name, signal_as_of_time DESC, id DESC)
+                ON {self._risk_decisions_table} (
+                    service_name,
+                    execution_mode,
+                    signal_as_of_time DESC,
+                    id DESC
+                )
+                """
+            )
+            await connection.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {self._order_requests_table} (
+                    id BIGSERIAL PRIMARY KEY,
+                    service_name TEXT NOT NULL,
+                    execution_mode TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    signal_interval_begin TIMESTAMPTZ NOT NULL,
+                    signal_as_of_time TIMESTAMPTZ NOT NULL,
+                    signal_row_id TEXT NOT NULL,
+                    target_fill_interval_begin TIMESTAMPTZ NOT NULL,
+                    requested_notional DOUBLE PRECISION NOT NULL,
+                    approved_notional DOUBLE PRECISION NOT NULL,
+                    idempotency_key TEXT NOT NULL,
+                    model_name TEXT NULL,
+                    confidence DOUBLE PRECISION NULL,
+                    regime_label TEXT NULL,
+                    regime_run_id TEXT NULL,
+                    risk_outcome TEXT NULL,
+                    risk_reason_codes TEXT[] NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            await connection.execute(
+                f"""
+                CREATE UNIQUE INDEX IF NOT EXISTS {order_requests_unique}
+                ON {self._order_requests_table} (idempotency_key)
+                """
+            )
+            await connection.execute(
+                f"""
+                CREATE INDEX IF NOT EXISTS {order_requests_index}
+                ON {self._order_requests_table} (
+                    service_name,
+                    execution_mode,
+                    target_fill_interval_begin DESC,
+                    id DESC
+                )
+                """
+            )
+            await connection.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {self._order_events_table} (
+                    id BIGSERIAL PRIMARY KEY,
+                    order_request_id BIGINT NOT NULL REFERENCES {self._order_requests_table}(id),
+                    service_name TEXT NOT NULL,
+                    execution_mode TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    lifecycle_state TEXT NOT NULL,
+                    event_time TIMESTAMPTZ NOT NULL,
+                    reason_code TEXT NULL,
+                    details TEXT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            await connection.execute(
+                f"""
+                CREATE UNIQUE INDEX IF NOT EXISTS {order_events_unique}
+                ON {self._order_events_table} (order_request_id, lifecycle_state)
+                """
+            )
+            await connection.execute(
+                f"""
+                CREATE INDEX IF NOT EXISTS {order_events_index}
+                ON {self._order_events_table} (
+                    service_name,
+                    execution_mode,
+                    event_time DESC,
+                    id DESC
+                )
                 """
             )
 
@@ -925,11 +1343,22 @@ def _state_from_row(row: asyncpg.Record) -> PaperEngineState:
                 if row["pending_risk_outcome"] is None
                 else str(row["pending_risk_outcome"])
             ),
+            order_request_id=(
+                None
+                if row["pending_order_request_id"] is None
+                else int(row["pending_order_request_id"])
+            ),
+            order_request_idempotency_key=(
+                None
+                if row["pending_order_idempotency_key"] is None
+                else str(row["pending_order_idempotency_key"])
+            ),
             risk_reason_codes=_text_array_to_tuple(row["pending_risk_reason_codes"]),
         )
     return PaperEngineState(
         service_name=str(row["service_name"]),
         symbol=str(row["symbol"]),
+        execution_mode=str(row["execution_mode"]),
         last_processed_interval_begin=row["last_processed_interval_begin"],
         cooldown_until_interval_begin=row["cooldown_until_interval_begin"],
         pending_signal=pending_signal,
@@ -956,6 +1385,12 @@ def _position_from_row(row: asyncpg.Record) -> PaperPosition:
         entry_fee=float(row["entry_fee"]),
         stop_loss_price=float(row["stop_loss_price"]),
         take_profit_price=float(row["take_profit_price"]),
+        execution_mode=str(row["execution_mode"]),
+        entry_order_request_id=(
+            None
+            if row["entry_order_request_id"] is None
+            else int(row["entry_order_request_id"])
+        ),
         entry_regime_label=(
             None if row["entry_regime_label"] is None else str(row["entry_regime_label"])
         ),
@@ -994,6 +1429,11 @@ def _position_from_row(row: asyncpg.Record) -> PaperPosition:
         exit_regime_label=(
             None if row["exit_regime_label"] is None else str(row["exit_regime_label"])
         ),
+        exit_order_request_id=(
+            None
+            if row["exit_order_request_id"] is None
+            else int(row["exit_order_request_id"])
+        ),
         opened_at=row["opened_at"],
         closed_at=row["closed_at"],
         updated_at=row["updated_at"],
@@ -1008,9 +1448,50 @@ def _service_risk_state_from_row(row: asyncpg.Record) -> ServiceRiskState:
         equity_high_watermark=float(row["equity_high_watermark"]),
         current_equity=float(row["current_equity"]),
         loss_streak_count=int(row["loss_streak_count"]),
+        execution_mode=str(row["execution_mode"]),
         loss_streak_cooldown_until_interval_begin=row["loss_streak_cooldown_until_interval_begin"],
         kill_switch_enabled=bool(row["kill_switch_enabled"]),
         updated_at=row["updated_at"],
+    )
+
+
+def _order_request_from_row(row: asyncpg.Record) -> OrderRequest:
+    return OrderRequest(
+        service_name=str(row["service_name"]),
+        execution_mode=str(row["execution_mode"]),
+        symbol=str(row["symbol"]),
+        action=str(row["action"]),
+        signal_interval_begin=row["signal_interval_begin"],
+        signal_as_of_time=row["signal_as_of_time"],
+        signal_row_id=str(row["signal_row_id"]),
+        target_fill_interval_begin=row["target_fill_interval_begin"],
+        requested_notional=float(row["requested_notional"]),
+        approved_notional=float(row["approved_notional"]),
+        idempotency_key=str(row["idempotency_key"]),
+        model_name=None if row["model_name"] is None else str(row["model_name"]),
+        confidence=None if row["confidence"] is None else float(row["confidence"]),
+        regime_label=None if row["regime_label"] is None else str(row["regime_label"]),
+        regime_run_id=None if row["regime_run_id"] is None else str(row["regime_run_id"]),
+        risk_outcome=None if row["risk_outcome"] is None else str(row["risk_outcome"]),
+        risk_reason_codes=_text_array_to_tuple(row["risk_reason_codes"]),
+        order_request_id=int(row["id"]),
+        created_at=row["created_at"],
+    )
+
+
+def _order_event_from_row(row: asyncpg.Record) -> OrderLifecycleEvent:
+    return OrderLifecycleEvent(
+        order_request_id=int(row["order_request_id"]),
+        service_name=str(row["service_name"]),
+        execution_mode=str(row["execution_mode"]),
+        symbol=str(row["symbol"]),
+        action=str(row["action"]),
+        lifecycle_state=str(row["lifecycle_state"]),
+        event_time=row["event_time"],
+        reason_code=None if row["reason_code"] is None else str(row["reason_code"]),
+        details=None if row["details"] is None else str(row["details"]),
+        event_id=int(row["id"]),
+        created_at=row["created_at"],
     )
 
 
@@ -1021,7 +1502,9 @@ def ledger_rows_to_csv(entries: Sequence[TradeLedgerEntry]) -> list[dict[str, ob
         rows.append(
             {
                 "service_name": entry.service_name,
+                "execution_mode": entry.execution_mode,
                 "position_id": entry.position_id,
+                "order_request_id": entry.order_request_id,
                 "symbol": entry.symbol,
                 "action": entry.action,
                 "reason": entry.reason,

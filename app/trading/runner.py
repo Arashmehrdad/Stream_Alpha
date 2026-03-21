@@ -15,7 +15,12 @@ from typing import Any
 from app.common.serialization import make_json_safe
 from app.common.time import to_rfc3339, utc_now
 from app.trading.config import PaperTradingConfig
-from app.trading.engine import process_candle
+from app.trading.execution import (
+    build_created_event,
+    build_execution_adapter,
+    build_order_request,
+    build_pending_order_request,
+)
 from app.trading.metrics import build_summary
 from app.trading.repository import TradingRepository
 from app.trading.risk_engine import (
@@ -26,7 +31,7 @@ from app.trading.risk_engine import (
     evaluate_risk,
     mark_to_market_portfolio_context,
 )
-from app.trading.schemas import FeatureCandle, PaperPosition
+from app.trading.schemas import FeatureCandle, OrderRequest, PaperPosition
 from app.trading.signal_client import SignalClient
 
 
@@ -43,6 +48,7 @@ class PaperTradingRunner:
         self.config = config
         self.repository = repository
         self.signal_client = signal_client
+        self.execution_adapter = build_execution_adapter(config.execution.mode)
         self.logger = logging.getLogger(f"{config.service_name}.runner")
 
     async def startup(self) -> None:
@@ -64,11 +70,16 @@ class PaperTradingRunner:
         """Process all newly observed finalized candles exactly once."""
         states = await self.repository.load_engine_states(
             service_name=self.config.service_name,
+            execution_mode=self.config.execution.mode,
             symbols=self.config.symbols,
         )
-        open_positions = await self.repository.load_open_positions(self.config.service_name)
+        open_positions = await self.repository.load_open_positions(
+            self.config.service_name,
+            execution_mode=self.config.execution.mode,
+        )
         available_cash = await self.repository.load_cash_balance(
             service_name=self.config.service_name,
+            execution_mode=self.config.execution.mode,
             initial_cash=self.config.risk.initial_cash,
         )
         latest_mark_prices = {
@@ -77,6 +88,7 @@ class PaperTradingRunner:
         }
         service_risk_state = await self.repository.load_service_risk_state(
             service_name=self.config.service_name,
+            execution_mode=self.config.execution.mode,
         )
         candles = await self._load_pending_candles(states)
         if service_risk_state is None:
@@ -85,6 +97,7 @@ class PaperTradingRunner:
                 trading_day=(candles[0].as_of_time.date() if candles else utc_now().date()),
                 initial_cash=self.config.risk.initial_cash,
                 kill_switch_enabled=self.config.risk.kill_switch_enabled,
+                execution_mode=self.config.execution.mode,
             )
 
         for candle in candles:
@@ -101,17 +114,25 @@ class PaperTradingRunner:
                 latest_mark_prices=latest_mark_prices,
                 fee_bps=self.config.risk.fee_bps,
             )
-            result = process_candle(
+            state, due_order_request = await self._hydrate_due_order_request(
+                candle=candle,
+                state=state,
+            )
+            execution_result = self.execution_adapter.execute_candle(
                 config=self.config,
                 candle=candle,
                 state=state,
                 open_position=open_position,
                 signal=signal,
                 portfolio=pre_execution_portfolio,
-                next_pending_signal=None,
+                order_request=due_order_request,
             )
-            persisted_open, persisted_closed, ledger_entries = await self._persist_result(result)
-            available_cash += result.cash_delta
+            (
+                persisted_open,
+                persisted_closed,
+                ledger_entries,
+            ) = await self._persist_execution_result(execution_result)
+            available_cash += execution_result.cash_delta
             if persisted_open is None:
                 open_positions.pop(candle.symbol, None)
             else:
@@ -137,17 +158,29 @@ class PaperTradingRunner:
                 config=self.config,
                 candle=candle,
                 signal=signal,
-                engine_state=result.state,
+                engine_state=execution_result.state,
                 open_position=open_positions.get(candle.symbol),
                 portfolio=post_execution_portfolio,
                 service_risk_state=service_risk_state,
             )
+            next_pending_signal = build_pending_signal_state(
+                signal=signal,
+                decision=risk_decision,
+            )
+            created_order_request = await self._create_next_order_request(
+                candle=candle,
+                signal=signal,
+                decision=risk_decision,
+            )
+            if next_pending_signal is not None and created_order_request is not None:
+                next_pending_signal = replace(
+                    next_pending_signal,
+                    order_request_id=created_order_request.order_request_id,
+                    order_request_idempotency_key=created_order_request.idempotency_key,
+                )
             next_state = replace(
-                result.state,
-                pending_signal=build_pending_signal_state(
-                    signal=signal,
-                    decision=risk_decision,
-                ),
+                execution_result.state,
+                pending_signal=next_pending_signal,
             )
             states[candle.symbol] = next_state
             await self.repository.save_engine_state(next_state)
@@ -155,6 +188,7 @@ class PaperTradingRunner:
             await self.repository.insert_risk_decision(
                 build_risk_decision_log_entry(
                     service_name=self.config.service_name,
+                    execution_mode=self.config.execution.mode,
                     candle=candle,
                     signal=signal,
                     decision=risk_decision,
@@ -167,9 +201,11 @@ class PaperTradingRunner:
                     "symbol": candle.symbol,
                     "interval_begin": to_rfc3339(candle.interval_begin),
                     "signal": signal.signal,
+                    "execution_mode": self.config.execution.mode,
                     "risk_outcome": risk_decision.outcome,
                     "risk_reason_codes": list(risk_decision.reason_codes),
                     "ledger_entries": len(ledger_entries),
+                    "order_request_created": created_order_request is not None,
                     "cash_balance": round(available_cash, 6),
                 },
             )
@@ -193,7 +229,7 @@ class PaperTradingRunner:
             )
         return sorted(candles, key=lambda row: (row.as_of_time, row.symbol, row.interval_begin))
 
-    async def _persist_result(
+    async def _persist_execution_result(
         self,
         result,
     ) -> tuple[PaperPosition | None, PaperPosition | None, tuple]:
@@ -222,11 +258,85 @@ class PaperTradingRunner:
 
         for entry in ledger_entries:
             await self.repository.insert_ledger_entry(entry)
+        for event in result.lifecycle_events:
+            await self.repository.insert_order_event_if_absent(event)
 
         return open_position, closed_position, ledger_entries
 
+    async def _hydrate_due_order_request(
+        self,
+        *,
+        candle: FeatureCandle,
+        state,
+    ) -> tuple[Any, OrderRequest | None]:
+        pending_signal = state.pending_signal
+        if pending_signal is None:
+            return state, None
+
+        order_request = None
+        if pending_signal.order_request_idempotency_key is not None:
+            order_request = await self.repository.load_order_request_by_idempotency_key(
+                idempotency_key=pending_signal.order_request_idempotency_key,
+            )
+
+        if order_request is None:
+            seeded_request = build_pending_order_request(
+                config=self.config,
+                candle=candle,
+                pending_signal=pending_signal,
+            )
+            order_request = await self.repository.ensure_order_request(seeded_request)
+            await self.repository.insert_order_event_if_absent(
+                build_created_event(
+                    order_request=order_request,
+                    event_time=pending_signal.signal_as_of_time,
+                )
+            )
+
+        updated_state = state
+        if (
+            pending_signal.order_request_id != order_request.order_request_id
+            or pending_signal.order_request_idempotency_key != order_request.idempotency_key
+        ):
+            updated_state = replace(
+                state,
+                pending_signal=replace(
+                    pending_signal,
+                    order_request_id=order_request.order_request_id,
+                    order_request_idempotency_key=order_request.idempotency_key,
+                ),
+            )
+        return updated_state, order_request
+
+    async def _create_next_order_request(
+        self,
+        *,
+        candle: FeatureCandle,
+        signal,
+        decision,
+    ) -> OrderRequest | None:
+        order_request = build_order_request(
+            config=self.config,
+            candle=candle,
+            signal=signal,
+            decision=decision,
+        )
+        if order_request is None:
+            return None
+        stored_request = await self.repository.ensure_order_request(order_request)
+        await self.repository.insert_order_event_if_absent(
+            build_created_event(
+                order_request=stored_request,
+                event_time=candle.as_of_time,
+            )
+        )
+        return stored_request
+
     async def _write_summaries(self, cash_balance: float) -> None:
-        positions = await self.repository.load_positions(service_name=self.config.service_name)
+        positions = await self.repository.load_positions(
+            service_name=self.config.service_name,
+            execution_mode=self.config.execution.mode,
+        )
         latest_prices = await self.repository.load_latest_prices(
             source_exchange=self.config.source_exchange,
             interval_minutes=self.config.interval_minutes,
@@ -260,6 +370,7 @@ def _positions_to_rows(positions: list[PaperPosition]) -> list[dict[str, Any]]:
             {
                 "position_id": position.position_id,
                 "service_name": position.service_name,
+                "execution_mode": position.execution_mode,
                 "symbol": position.symbol,
                 "status": position.status,
                 "entry_signal_interval_begin": to_rfc3339(position.entry_signal_interval_begin),
@@ -277,6 +388,7 @@ def _positions_to_rows(positions: list[PaperPosition]) -> list[dict[str, Any]]:
                 "entry_fee": position.entry_fee,
                 "stop_loss_price": position.stop_loss_price,
                 "take_profit_price": position.take_profit_price,
+                "entry_order_request_id": position.entry_order_request_id,
                 "entry_regime_label": position.entry_regime_label,
                 "exit_reason": position.exit_reason,
                 "exit_signal_interval_begin": None
@@ -301,6 +413,7 @@ def _positions_to_rows(positions: list[PaperPosition]) -> list[dict[str, Any]]:
                 "realized_pnl": position.realized_pnl,
                 "realized_return": position.realized_return,
                 "exit_regime_label": position.exit_regime_label,
+                "exit_order_request_id": position.exit_order_request_id,
                 "opened_at": None if position.opened_at is None else to_rfc3339(position.opened_at),
                 "closed_at": None if position.closed_at is None else to_rfc3339(position.closed_at),
             }
