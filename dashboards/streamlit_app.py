@@ -17,6 +17,7 @@ from dashboards.view_models import (
     build_equity_curve_rows,
     build_feature_snapshot_rows,
     build_latest_signal_rows,
+    build_live_status_rows,
     build_open_position_rows,
     build_overview_metrics,
     build_performance_by_regime_rows,
@@ -53,6 +54,12 @@ def main() -> None:
         st.write(f"Feature source table: `{settings.tables.feature_ohlc}`")
         st.write(f"Paper trader service: `{trading_config.service_name}`")
         st.write(f"Execution mode: `{trading_config.execution.mode}`")
+        if trading_config.execution.mode == "live":
+            st.write("Broker: `alpaca`")
+            st.write(
+                "Expected environment: "
+                f"`{trading_config.execution.live.expected_environment}`"
+            )
         st.write(f"Refresh target: `{settings.dashboard.refresh_seconds}s`")
         if st.button("Refresh now", width="stretch"):
             st.rerun()
@@ -63,6 +70,8 @@ def main() -> None:
             trading_config=trading_config,
         ).load_snapshot()
     )
+
+    _render_mode_banner(trading_config=trading_config, snapshot=snapshot)
 
     overview_tab, signals_tab, trading_tab = st.tabs(
         ["Overview", "Signals and Features", "Trading"]
@@ -256,16 +265,27 @@ def _render_trading(*, settings: Settings, trading_config, snapshot) -> None:
     recent_order_audit_rows = build_recent_order_audit_rows(
         snapshot.database.recent_order_events
     )
+    live_status_rows = build_live_status_rows(
+        trading_config=trading_config,
+        live_safety_state=snapshot.database.live_safety_state,
+    )
     by_regime_rows = build_performance_by_regime_rows(
         snapshot=snapshot,
         trading_config=trading_config,
     )
 
     st.caption(f"Execution mode: `{trading_config.execution.mode}`")
+    if trading_config.execution.mode == "live":
+        render_table("Live Status", live_status_rows)
     render_table("Open Positions", open_position_rows)
     render_table("Recent Closed Trades", recent_closed_rows)
     render_table("Recent Ledger Activity", recent_ledger_rows)
-    render_table("Recent Order Audit", recent_order_audit_rows)
+    render_table(
+        "Recent Live Order Audit"
+        if trading_config.execution.mode == "live"
+        else "Recent Order Audit",
+        recent_order_audit_rows,
+    )
     render_table("Performance By Regime", by_regime_rows)
 
     st.caption(
@@ -273,6 +293,20 @@ def _render_trading(*, settings: Settings, trading_config, snapshot) -> None:
         f"{settings.dashboard.recent_trades_limit}; "
         f"recent ledger limit: {settings.dashboard.recent_ledger_limit}"
     )
+
+
+def _render_mode_banner(*, trading_config, snapshot) -> None:
+    if trading_config.execution.mode == "live":
+        live_state = snapshot.database.live_safety_state
+        status_suffix = (
+            "startup checks passed"
+            if live_state is not None and live_state.startup_checks_passed
+            else "startup checks not passed"
+        )
+        st.error(f"LIVE MODE ENABLED: {status_suffix}")
+        return
+
+    st.info(f"Execution mode: {trading_config.execution.mode}")
 
 
 def _maybe_enable_auto_refresh(refresh_seconds: int) -> None:

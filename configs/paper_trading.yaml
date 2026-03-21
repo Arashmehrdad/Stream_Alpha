@@ -12,6 +12,19 @@ artifact_dir: artifacts/paper_trading
 execution:
   mode: paper
   idempotency_key_version: 1
+  live:
+    enabled: false
+    expected_account_id: null
+    expected_environment: paper
+    symbol_whitelist:
+      - BTC/USD
+      - ETH/USD
+      - SOL/USD
+    max_order_notional: 25.0
+    failure_hard_stop_threshold: 3
+    manual_disable_path: artifacts/live/manual_disable.flag
+    startup_checklist_path: artifacts/live/startup_checklist.json
+    live_status_path: artifacts/live/live_status.json
 risk:
   initial_cash: 10000.0
   position_fraction: 0.25

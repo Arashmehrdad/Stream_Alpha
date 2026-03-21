@@ -36,11 +36,27 @@ class RiskConfig:  # pylint: disable=too-many-instance-attributes
 
 
 @dataclass(frozen=True, slots=True)
+class LiveConfig:  # pylint: disable=too-many-instance-attributes
+    """Explicit M12 guarded-live settings."""
+
+    enabled: bool = False
+    expected_account_id: str | None = None
+    expected_environment: str = "paper"
+    symbol_whitelist: tuple[str, ...] = ()
+    max_order_notional: float = 0.0
+    failure_hard_stop_threshold: int = 1
+    manual_disable_path: str = "artifacts/live/manual_disable.flag"
+    startup_checklist_path: str = "artifacts/live/startup_checklist.json"
+    live_status_path: str = "artifacts/live/live_status.json"
+
+
+@dataclass(frozen=True, slots=True)
 class ExecutionConfig:
-    """Explicit M11 execution settings for paper and shadow modes."""
+    """Explicit M11 execution settings for paper, shadow, and live modes."""
 
     mode: str = "paper"
     idempotency_key_version: int = 1
+    live: LiveConfig = field(default_factory=LiveConfig)
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +80,7 @@ def load_paper_trading_config(config_path: Path) -> PaperTradingConfig:
     payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     risk_payload = dict(payload["risk"])
     execution_payload = dict(payload.get("execution", {}))
+    live_payload = dict(execution_payload.get("live", {}))
     symbols = tuple(str(symbol) for symbol in payload["symbols"])
     if not symbols:
         raise ValueError("Paper trading config must contain at least one symbol")
@@ -112,13 +129,54 @@ def load_paper_trading_config(config_path: Path) -> PaperTradingConfig:
             idempotency_key_version=int(
                 execution_payload.get("idempotency_key_version", 1)
             ),
+            live=LiveConfig(
+                enabled=bool(live_payload.get("enabled", False)),
+                expected_account_id=(
+                    None
+                    if live_payload.get("expected_account_id") in {None, ""}
+                    else str(live_payload["expected_account_id"])
+                ),
+                expected_environment=str(
+                    live_payload.get("expected_environment", "paper")
+                ),
+                symbol_whitelist=tuple(
+                    str(symbol)
+                    for symbol in live_payload.get("symbol_whitelist", [])
+                ),
+                max_order_notional=float(
+                    live_payload.get("max_order_notional", 0.0)
+                ),
+                failure_hard_stop_threshold=int(
+                    live_payload.get("failure_hard_stop_threshold", 1)
+                ),
+                manual_disable_path=str(
+                    live_payload.get(
+                        "manual_disable_path",
+                        "artifacts/live/manual_disable.flag",
+                    )
+                ),
+                startup_checklist_path=str(
+                    live_payload.get(
+                        "startup_checklist_path",
+                        "artifacts/live/startup_checklist.json",
+                    )
+                ),
+                live_status_path=str(
+                    live_payload.get(
+                        "live_status_path",
+                        "artifacts/live/live_status.json",
+                    )
+                ),
+            ),
         ),
     )
     _validate_config(config)
     return config
 
 
-def _validate_config(config: PaperTradingConfig) -> None:
+def _validate_config(  # pylint: disable=too-many-branches,too-many-statements
+    config: PaperTradingConfig,
+) -> None:
     if config.interval_minutes <= 0:
         raise ValueError("interval_minutes must be positive")
     if config.poll_interval_seconds <= 0:
@@ -133,8 +191,8 @@ def _validate_config(config: PaperTradingConfig) -> None:
         raise ValueError("max_total_exposure must be in (0, 1]")
     if config.risk.max_total_exposure < config.risk.max_exposure_per_asset:
         raise ValueError("max_total_exposure cannot be less than max_exposure_per_asset")
-    if config.execution.mode not in {"paper", "shadow"}:
-        raise ValueError("execution.mode must be 'paper' or 'shadow'")
+    if config.execution.mode not in {"paper", "shadow", "live"}:
+        raise ValueError("execution.mode must be 'paper', 'shadow', or 'live'")
     if config.execution.idempotency_key_version <= 0:
         raise ValueError("execution.idempotency_key_version must be positive")
     if config.risk.max_open_positions <= 0:
@@ -168,3 +226,24 @@ def _validate_config(config: PaperTradingConfig) -> None:
             raise ValueError(
                 f"regime_position_fraction_caps[{regime_label}] must be in (0, 1]"
             )
+
+    live_config = config.execution.live
+    if live_config.expected_environment not in {"paper", "live"}:
+        raise ValueError("execution.live.expected_environment must be 'paper' or 'live'")
+    if config.execution.mode == "live" or live_config.enabled:
+        if not live_config.symbol_whitelist:
+            raise ValueError("execution.live.symbol_whitelist must not be empty")
+        if live_config.max_order_notional <= 0.0:
+            raise ValueError("execution.live.max_order_notional must be positive")
+        if live_config.failure_hard_stop_threshold <= 0:
+            raise ValueError(
+                "execution.live.failure_hard_stop_threshold must be positive"
+            )
+        if not live_config.manual_disable_path.strip():
+            raise ValueError("execution.live.manual_disable_path must not be empty")
+        if not live_config.startup_checklist_path.strip():
+            raise ValueError(
+                "execution.live.startup_checklist_path must not be empty"
+            )
+        if not live_config.live_status_path.strip():
+            raise ValueError("execution.live.live_status_path must not be empty")

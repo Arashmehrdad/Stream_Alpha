@@ -13,6 +13,7 @@ import asyncpg
 from app.common.time import to_rfc3339
 from app.trading.schemas import (
     FeatureCandle,
+    LiveSafetyState,
     OrderLifecycleEvent,
     OrderRequest,
     PaperEngineState,
@@ -31,6 +32,7 @@ RISK_STATE_TABLE = "paper_risk_state"
 RISK_DECISIONS_TABLE = "paper_risk_decisions"
 ORDER_REQUESTS_TABLE = "execution_order_requests"
 ORDER_EVENTS_TABLE = "execution_order_events"
+LIVE_SAFETY_TABLE = "execution_live_safety_state"
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -56,7 +58,7 @@ def _table_basename(name: str) -> str:
     return name.split(".")[-1]
 
 
-class TradingRepository:  # pylint: disable=too-many-instance-attributes
+class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-many-public-methods
     """Repository for M5 state, positions, ledger rows, and canonical candles."""
 
     def __init__(self, dsn: str, source_table: str) -> None:
@@ -69,6 +71,7 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes
         self._risk_decisions_table = _quote_table_name(RISK_DECISIONS_TABLE)
         self._order_requests_table = _quote_table_name(ORDER_REQUESTS_TABLE)
         self._order_events_table = _quote_table_name(ORDER_EVENTS_TABLE)
+        self._live_safety_table = _quote_table_name(LIVE_SAFETY_TABLE)
         self._pool: asyncpg.Pool | None = None
 
     async def connect(self) -> None:
@@ -315,6 +318,80 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes
             entry.trade_allowed,
         )
 
+    async def load_live_safety_state(
+        self,
+        *,
+        service_name: str,
+        execution_mode: str,
+    ) -> LiveSafetyState | None:
+        """Load the persisted M12 live safety state, if present."""
+        pool = self._require_pool()
+        row = await pool.fetchrow(
+            f"""
+            SELECT *
+            FROM {self._live_safety_table}
+            WHERE service_name = $1 AND execution_mode = $2
+            """,
+            service_name,
+            execution_mode,
+        )
+        if row is None:
+            return None
+        return _live_safety_state_from_row(row)
+
+    async def save_live_safety_state(self, state: LiveSafetyState) -> None:
+        """Upsert the persisted M12 live safety state."""
+        pool = self._require_pool()
+        await pool.execute(
+            f"""
+            INSERT INTO {self._live_safety_table} (
+                service_name,
+                execution_mode,
+                broker_name,
+                live_enabled,
+                startup_checks_passed,
+                startup_checks_passed_at,
+                account_validated,
+                account_id,
+                environment_name,
+                manual_disable_active,
+                consecutive_live_failures,
+                failure_hard_stop_active,
+                last_failure_reason,
+                updated_at
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW()
+            )
+            ON CONFLICT (service_name, execution_mode)
+            DO UPDATE SET
+                broker_name = EXCLUDED.broker_name,
+                live_enabled = EXCLUDED.live_enabled,
+                startup_checks_passed = EXCLUDED.startup_checks_passed,
+                startup_checks_passed_at = EXCLUDED.startup_checks_passed_at,
+                account_validated = EXCLUDED.account_validated,
+                account_id = EXCLUDED.account_id,
+                environment_name = EXCLUDED.environment_name,
+                manual_disable_active = EXCLUDED.manual_disable_active,
+                consecutive_live_failures = EXCLUDED.consecutive_live_failures,
+                failure_hard_stop_active = EXCLUDED.failure_hard_stop_active,
+                last_failure_reason = EXCLUDED.last_failure_reason,
+                updated_at = NOW()
+            """,
+            state.service_name,
+            state.execution_mode,
+            state.broker_name,
+            state.live_enabled,
+            state.startup_checks_passed,
+            state.startup_checks_passed_at,
+            state.account_validated,
+            state.account_id,
+            state.environment_name,
+            state.manual_disable_active,
+            state.consecutive_live_failures,
+            state.failure_hard_stop_active,
+            state.last_failure_reason,
+        )
+
     async def ensure_order_request(self, order_request: OrderRequest) -> OrderRequest:
         """Insert one deterministic M11 order request or return the existing row."""
         pool = self._require_pool()
@@ -412,10 +489,15 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes
                 action,
                 lifecycle_state,
                 event_time,
+                external_order_id,
+                external_status,
+                account_id,
+                environment_name,
+                broker_name,
                 reason_code,
                 details
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
             )
             ON CONFLICT (order_request_id, lifecycle_state) DO NOTHING
             RETURNING *
@@ -427,6 +509,11 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes
             event.action,
             event.lifecycle_state,
             event.event_time,
+            event.external_order_id,
+            event.external_status,
+            event.account_id,
+            event.environment_name,
+            event.broker_name,
             event.reason_code,
             event.details,
         )
@@ -853,6 +940,9 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes
             _table_basename(ORDER_EVENTS_TABLE),
             "request_state_uidx",
         )
+        live_safety_primary_key = _quote_identifier(
+            f"{_table_basename(LIVE_SAFETY_TABLE)}_pkey"
+        )
         state_primary_key = _quote_identifier(f"{_table_basename(STATE_TABLE)}_pkey")
         risk_state_primary_key = _quote_identifier(
             f"{_table_basename(RISK_STATE_TABLE)}_pkey"
@@ -1266,10 +1356,45 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes
                     action TEXT NOT NULL,
                     lifecycle_state TEXT NOT NULL,
                     event_time TIMESTAMPTZ NOT NULL,
+                    external_order_id TEXT NULL,
+                    external_status TEXT NULL,
+                    account_id TEXT NULL,
+                    environment_name TEXT NULL,
+                    broker_name TEXT NULL,
                     reason_code TEXT NULL,
                     details TEXT NULL,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._order_events_table}
+                ADD COLUMN IF NOT EXISTS external_order_id TEXT NULL
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._order_events_table}
+                ADD COLUMN IF NOT EXISTS external_status TEXT NULL
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._order_events_table}
+                ADD COLUMN IF NOT EXISTS account_id TEXT NULL
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._order_events_table}
+                ADD COLUMN IF NOT EXISTS environment_name TEXT NULL
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._order_events_table}
+                ADD COLUMN IF NOT EXISTS broker_name TEXT NULL
                 """
             )
             await connection.execute(
@@ -1287,6 +1412,39 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes
                     event_time DESC,
                     id DESC
                 )
+                """
+            )
+            await connection.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {self._live_safety_table} (
+                    service_name TEXT NOT NULL,
+                    execution_mode TEXT NOT NULL,
+                    broker_name TEXT NOT NULL,
+                    live_enabled BOOLEAN NOT NULL,
+                    startup_checks_passed BOOLEAN NOT NULL,
+                    startup_checks_passed_at TIMESTAMPTZ NULL,
+                    account_validated BOOLEAN NOT NULL,
+                    account_id TEXT NULL,
+                    environment_name TEXT NULL,
+                    manual_disable_active BOOLEAN NOT NULL,
+                    consecutive_live_failures INTEGER NOT NULL,
+                    failure_hard_stop_active BOOLEAN NOT NULL,
+                    last_failure_reason TEXT NULL,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (service_name, execution_mode)
+                )
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._live_safety_table}
+                DROP CONSTRAINT IF EXISTS {live_safety_primary_key}
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._live_safety_table}
+                ADD PRIMARY KEY (service_name, execution_mode)
                 """
             )
 
@@ -1455,6 +1613,31 @@ def _service_risk_state_from_row(row: asyncpg.Record) -> ServiceRiskState:
     )
 
 
+def _live_safety_state_from_row(row: asyncpg.Record) -> LiveSafetyState:
+    return LiveSafetyState(
+        service_name=str(row["service_name"]),
+        execution_mode=str(row["execution_mode"]),
+        broker_name=str(row["broker_name"]),
+        live_enabled=bool(row["live_enabled"]),
+        startup_checks_passed=bool(row["startup_checks_passed"]),
+        startup_checks_passed_at=row["startup_checks_passed_at"],
+        account_validated=bool(row["account_validated"]),
+        account_id=None if row["account_id"] is None else str(row["account_id"]),
+        environment_name=(
+            None if row["environment_name"] is None else str(row["environment_name"])
+        ),
+        manual_disable_active=bool(row["manual_disable_active"]),
+        consecutive_live_failures=int(row["consecutive_live_failures"]),
+        failure_hard_stop_active=bool(row["failure_hard_stop_active"]),
+        last_failure_reason=(
+            None
+            if row["last_failure_reason"] is None
+            else str(row["last_failure_reason"])
+        ),
+        updated_at=row["updated_at"],
+    )
+
+
 def _order_request_from_row(row: asyncpg.Record) -> OrderRequest:
     return OrderRequest(
         service_name=str(row["service_name"]),
@@ -1490,6 +1673,19 @@ def _order_event_from_row(row: asyncpg.Record) -> OrderLifecycleEvent:
         event_time=row["event_time"],
         reason_code=None if row["reason_code"] is None else str(row["reason_code"]),
         details=None if row["details"] is None else str(row["details"]),
+        external_order_id=(
+            None
+            if row["external_order_id"] is None
+            else str(row["external_order_id"])
+        ),
+        external_status=(
+            None if row["external_status"] is None else str(row["external_status"])
+        ),
+        account_id=None if row["account_id"] is None else str(row["account_id"]),
+        environment_name=(
+            None if row["environment_name"] is None else str(row["environment_name"])
+        ),
+        broker_name=None if row["broker_name"] is None else str(row["broker_name"]),
         event_id=int(row["id"]),
         created_at=row["created_at"],
     )

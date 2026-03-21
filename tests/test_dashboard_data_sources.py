@@ -201,10 +201,17 @@ class _RecordingConnection:
     def __init__(self) -> None:
         self.fetch_calls: list[tuple[str, tuple]] = []
         self.fetchval_calls: list[tuple[str, tuple]] = []
+        self.fetchrow_calls: list[tuple[str, tuple]] = []
 
     async def fetch(self, query: str, *params):
         self.fetch_calls.append((query, params))
         return []
+
+    async def fetchrow(self, query: str, *params):
+        self.fetchrow_calls.append((query, params))
+        if "execution_live_safety_state" in query:
+            return None
+        return None
 
     async def fetchval(self, query: str, *params):
         self.fetchval_calls.append((query, params))
@@ -242,5 +249,52 @@ def test_dashboard_snapshot_filters_database_queries_by_execution_mode() -> None
         for _query, params in connection.fetchval_calls
         if len(params) >= 2 and params[0] == "paper-trader"
     )
+    mode_params.extend(
+        params[1]
+        for _query, params in connection.fetchrow_calls
+        if len(params) >= 2 and params[0] == "paper-trader"
+    )
     assert mode_params
     assert all(mode == "shadow" for mode in mode_params)
+
+
+def test_dashboard_snapshot_includes_live_safety_state_when_present() -> None:
+    class _LiveConnection(_RecordingConnection):
+        async def fetchrow(self, query: str, *params):
+            self.fetchrow_calls.append((query, params))
+            if "execution_live_safety_state" in query:
+                return {
+                    "service_name": "paper-trader",
+                    "execution_mode": "live",
+                    "broker_name": "alpaca",
+                    "live_enabled": True,
+                    "startup_checks_passed": True,
+                    "startup_checks_passed_at": datetime(2026, 3, 21, 12, 0, tzinfo=timezone.utc),
+                    "account_validated": True,
+                    "account_id": "PA12345",
+                    "environment_name": "paper",
+                    "manual_disable_active": False,
+                    "consecutive_live_failures": 0,
+                    "failure_hard_stop_active": False,
+                    "last_failure_reason": None,
+                    "updated_at": datetime(2026, 3, 21, 12, 0, tzinfo=timezone.utc),
+                }
+            return None
+
+    connection = _LiveConnection()
+
+    async def _db_connect(_dsn: str):
+        return connection
+
+    data_sources = DashboardDataSources(
+        settings=_settings(),
+        trading_config=_paper_config(execution_mode="live"),
+        http_client=_HealthyHttpClient(),
+        db_connect=_db_connect,
+    )
+
+    snapshot = asyncio.run(data_sources.load_snapshot())
+
+    assert snapshot.database.live_safety_state is not None
+    assert snapshot.database.live_safety_state.broker_name == "alpaca"
+    assert snapshot.database.live_safety_state.account_id == "PA12345"

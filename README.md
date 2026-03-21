@@ -22,6 +22,8 @@ Milestone `M9` adds a minimum regime-aware live signal foundation. It loads the 
 
 Milestone `M11` adds a minimum execution abstraction after M10 risk approval. It keeps M4 authoritative for signals, keeps M10 authoritative for risk and sizing, records deterministic idempotent order requests plus lifecycle events, and supports two local-only execution modes: `paper` and `shadow`.
 
+Milestone `M12` adds a guarded live trading foundation on top of the accepted execution layer. It adds a third `live` adapter mode for Alpaca Trading API account validation and order submission, requires explicit runtime arming plus local safety checks before any broker submission, keeps live orders tiny and whitelisted, and writes startup/live-status artifacts plus explicit live audit rows.
+
 ## Repository Tree
 
 ```text
@@ -64,9 +66,11 @@ Milestone `M11` adds a minimum execution abstraction after M10 risk approval. It
 |   |   `-- service.py
 |   |-- trading
 |   |   |-- __init__.py
+|   |   |-- alpaca.py
 |   |   |-- config.py
 |   |   |-- engine.py
 |   |   |-- execution.py
+|   |   |-- live.py
 |   |   |-- metrics.py
 |   |   |-- repository.py
 |   |   |-- risk.py
@@ -139,8 +143,10 @@ Milestone `M11` adds a minimum execution abstraction after M10 risk approval. It
     |-- test_training_splits.py
     |-- training_workflow_helpers.py
     `-- trading
+        |-- test_alpaca.py
         |-- test_execution.py
         |-- test_engine.py
+        |-- test_live.py
         |-- test_metrics.py
         |-- test_risk.py
         `-- test_runner_idempotency.py
@@ -154,7 +160,7 @@ Milestone `M11` adds a minimum execution abstraction after M10 risk approval. It
 - `producer`: Kraken public WebSocket v2 ingestion service from M1
 - `features`: OHLC-only feature consumer from M2
 - `inference`: FastAPI prediction API from M4, run directly from the repo with the accepted M3 artifact
-- `paper-trader`: long-only spot execution engine from M5/M9/M11, run directly from the repo against canonical features plus authoritative M4 signals, M9 regime decisions, and the configured paper or shadow execution mode
+- `paper-trader`: long-only spot execution engine from M5/M9/M11/M12, run directly from the repo against canonical features plus authoritative M4 signals, M9 regime decisions, the M10 risk engine, and the configured paper, shadow, or guarded live execution mode
 - `dashboard`: read-only Streamlit UI from M6, run directly from the repo against the accepted API and PostgreSQL sources, including additive M9 regime fields
 
 ## M2 Scope
@@ -299,6 +305,27 @@ M11 does not do:
 - change M4 API contracts or move signal logic out of M4
 - weaken accepted M1-M10 behavior to make execution abstraction easier
 
+## M12 Scope
+
+M12 does:
+- add `live` as a third execution adapter mode inside the accepted M11 execution layer
+- validate Alpaca account credentials with `GET /v2/account` using `APCA-API-KEY-ID` and `APCA-API-SECRET-KEY`
+- require both checked-in config gating and runtime arming before live mode can start
+- require `ALPACA_BASE_URL` to be the root domain only, then append paths like `/v2/account` and `/v2/orders` in code
+- keep live order size tiny with `execution.live.max_order_notional`
+- restrict live orders to the configured `execution.live.symbol_whitelist`
+- check a local manual-disable sentinel before every live broker submission
+- track consecutive live submit failures and activate a hard-stop when the configured threshold is reached
+- persist additive live safety state plus broker metadata on order lifecycle rows
+- write a redacted startup checklist artifact and a current live status artifact
+- surface live mode, live safety state, and recent live order audit rows in the existing dashboard
+
+M12 does not do:
+- add stale-data protection, circuit breakers, or recovery orchestration
+- add websocket streaming, advanced order types, or partial-fill management
+- add a live trading control plane, scheduler, or background recovery daemon
+- change M4 signal generation, M9 regime classification, or M10 risk sizing authority
+
 ## Environment Variables
 
 Copy `.env.example` to `.env` before running the stack.
@@ -341,6 +368,11 @@ Copy `.env.example` to `.env` before running the stack.
 | `DASHBOARD_REFRESH_SECONDS` | Browser refresh cadence for the M6 Streamlit UI | `15` |
 | `DASHBOARD_RECENT_TRADES_LIMIT` | Recent closed trades shown in the dashboard | `20` |
 | `DASHBOARD_RECENT_LEDGER_LIMIT` | Recent ledger rows shown in the dashboard | `20` |
+| `APCA_API_KEY_ID` | Alpaca Trading API key id used only by the M12 live adapter | empty |
+| `APCA_API_SECRET_KEY` | Alpaca Trading API secret key used only by the M12 live adapter | empty |
+| `ALPACA_BASE_URL` | Alpaca Trading API root URL only, for example `https://paper-api.alpaca.markets` | empty |
+| `STREAMALPHA_ENABLE_LIVE` | Explicit runtime live arming switch; must be set to `true` for M12 live startup | empty |
+| `STREAMALPHA_LIVE_CONFIRM` | Exact runtime confirmation phrase required for M12 live startup | empty |
 | `RECONNECT_INITIAL_DELAY_SECONDS` | First reconnect delay | `1` |
 | `RECONNECT_MAX_DELAY_SECONDS` | Reconnect delay cap | `30` |
 | `RECONNECT_BACKOFF_MULTIPLIER` | Backoff multiplier | `2.0` |
@@ -474,6 +506,50 @@ execution:
 ```
 
 Set `execution.mode: shadow` to run the same M4 and M10 path with isolated shadow rows and explicit order lifecycle audit events.
+
+For M12 guarded live, extend the same `execution` block with:
+
+```yaml
+execution:
+  mode: live
+  idempotency_key_version: 1
+  live:
+    enabled: true
+    expected_account_id: null
+    expected_environment: paper
+    symbol_whitelist:
+      - BTC/USD
+    max_order_notional: 25.0
+    failure_hard_stop_threshold: 3
+    manual_disable_path: artifacts/live/manual_disable.flag
+    startup_checklist_path: artifacts/live/startup_checklist.json
+    live_status_path: artifacts/live/live_status.json
+```
+
+M12 live startup still requires explicit runtime arming in addition to `mode: live`:
+
+```powershell
+$env:APCA_API_KEY_ID = "<alpaca key id>"
+$env:APCA_API_SECRET_KEY = "<alpaca secret key>"
+$env:ALPACA_BASE_URL = "https://paper-api.alpaca.markets"
+$env:STREAMALPHA_ENABLE_LIVE = "true"
+$env:STREAMALPHA_LIVE_CONFIRM = "I UNDERSTAND STREAM ALPHA LIVE TRADING IS ENABLED"
+python scripts\run_paper_trader.py --config configs\paper_trading.yaml --once
+```
+
+Keep `ALPACA_BASE_URL` at the root domain only. Do not include `/v2`; M12 appends `/v2/account` and `/v2/orders` internally.
+
+To disable live broker submission immediately without editing config, create the configured sentinel file:
+
+```powershell
+New-Item -ItemType File artifacts\live\manual_disable.flag -Force
+```
+
+M12 writes:
+- `artifacts/live/startup_checklist.json`
+- `artifacts/live/live_status.json`
+
+The dashboard shows the configured execution mode, a strong `LIVE` banner when `mode: live`, the current live safety state, and recent live order audit rows. This is a guarded live foundation only; stale-data protection and recovery maturity remain deferred.
 
 ### 13. Run the M6 Streamlit dashboard
 
@@ -700,6 +776,15 @@ docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELE
 docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT execution_mode, lifecycle_state, COUNT(*) AS event_rows FROM execution_order_events GROUP BY execution_mode, lifecycle_state ORDER BY execution_mode, lifecycle_state;"
 ```
 
+For M12 guarded-live checks:
+
+```powershell
+Get-Content artifacts\live\startup_checklist.json
+Get-Content artifacts\live\live_status.json
+docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT service_name, execution_mode, broker_name, startup_checks_passed, manual_disable_active, failure_hard_stop_active FROM execution_live_safety_state;"
+docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT execution_mode, lifecycle_state, broker_name, external_status, COUNT(*) AS event_rows FROM execution_order_events GROUP BY execution_mode, lifecycle_state, broker_name, external_status ORDER BY execution_mode, lifecycle_state, broker_name, external_status;"
+```
+
 ## Inspect Topics
 
 Open Redpanda Console at [http://localhost:8080](http://localhost:8080).
@@ -758,7 +843,39 @@ docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c \"SEL
 - M7 promotion is fully file-based and explicit; there is no scheduler daemon or automatic retraining loop.
 - M7 rollback only switches the promoted champion pointer and does not mutate old promoted snapshots.
 - M9 resolves regimes from the latest saved M8 thresholds artifact by default; there is no online threshold fitting or adaptive retuning.
+- M12 guarded live mirrors only the explicit due order-request path through the broker adapter. Stale-feed protection, recovery orchestration, and richer broker reconciliation are intentionally deferred.
 - This is still a single-broker local stack for development, not a highly available deployment.
+
+## M12 Guarded Live Validation
+
+Use Alpaca PAPER first.
+
+1. Set the required env vars:
+
+```powershell
+$env:APCA_API_KEY_ID = "<alpaca paper key id>"
+$env:APCA_API_SECRET_KEY = "<alpaca paper secret key>"
+$env:ALPACA_BASE_URL = "https://paper-api.alpaca.markets"
+$env:STREAMALPHA_ENABLE_LIVE = "true"
+$env:STREAMALPHA_LIVE_CONFIRM = "I UNDERSTAND STREAM ALPHA LIVE TRADING IS ENABLED"
+```
+
+2. Keep `execution.mode: live`, `execution.live.enabled: true`, and a tiny `max_order_notional` in `configs/paper_trading.yaml`.
+
+3. Run the trader once:
+
+```powershell
+python scripts\run_paper_trader.py --config configs\paper_trading.yaml --once
+```
+
+4. Inspect the artifacts and audit rows:
+
+```powershell
+Get-Content artifacts\live\startup_checklist.json
+Get-Content artifacts\live\live_status.json
+docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT * FROM execution_live_safety_state;"
+docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT execution_mode, lifecycle_state, reason_code, broker_name, external_status, account_id FROM execution_order_events ORDER BY id DESC LIMIT 10;"
+```
 
 ## References
 

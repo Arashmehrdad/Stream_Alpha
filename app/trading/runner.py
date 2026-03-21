@@ -21,6 +21,12 @@ from app.trading.execution import (
     build_order_request,
     build_pending_order_request,
 )
+from app.trading.live import (
+    assert_live_startup_passed,
+    validate_live_startup,
+    write_live_status_artifact,
+    write_startup_checklist_artifact,
+)
 from app.trading.metrics import build_summary
 from app.trading.repository import TradingRepository
 from app.trading.risk_engine import (
@@ -44,19 +50,59 @@ class PaperTradingRunner:
         config: PaperTradingConfig,
         repository: TradingRepository,
         signal_client: SignalClient,
+        broker_client=None,
     ) -> None:
         self.config = config
         self.repository = repository
         self.signal_client = signal_client
-        self.execution_adapter = build_execution_adapter(config.execution.mode)
+        self.execution_adapter = build_execution_adapter(
+            config.execution.mode,
+            broker_client=broker_client,
+        )
+        self.live_safety_state = None
         self.logger = logging.getLogger(f"{config.service_name}.runner")
 
     async def startup(self) -> None:
         """Connect the repository before polling."""
         await self.repository.connect()
+        if self.config.execution.mode != "live":
+            return
+
+        existing_live_state = await self.repository.load_live_safety_state(
+            service_name=self.config.service_name,
+            execution_mode=self.config.execution.mode,
+        )
+        checklist, live_safety_state, resolved_broker_client = await validate_live_startup(
+            config=self.config,
+            broker_client=getattr(self.execution_adapter, "broker_client", None),
+        )
+        if resolved_broker_client is not None and hasattr(
+            self.execution_adapter,
+            "set_broker_client",
+        ):
+            self.execution_adapter.set_broker_client(resolved_broker_client)
+        if existing_live_state is not None:
+            live_safety_state = replace(
+                live_safety_state,
+                consecutive_live_failures=existing_live_state.consecutive_live_failures,
+                failure_hard_stop_active=existing_live_state.failure_hard_stop_active,
+                last_failure_reason=existing_live_state.last_failure_reason,
+            )
+        self.live_safety_state = live_safety_state
+        await self.repository.save_live_safety_state(live_safety_state)
+        write_startup_checklist_artifact(
+            checklist=checklist,
+            artifact_path=self.config.execution.live.startup_checklist_path,
+        )
+        write_live_status_artifact(
+            state=live_safety_state,
+            config=self.config,
+        )
+        assert_live_startup_passed(checklist)
 
     async def shutdown(self) -> None:
         """Close the signal client and repository."""
+        await self.execution_adapter.close()
         await self.signal_client.close()
         await self.repository.close()
 
@@ -118,7 +164,7 @@ class PaperTradingRunner:
                 candle=candle,
                 state=state,
             )
-            execution_result = self.execution_adapter.execute_candle(
+            execution_result = await self.execution_adapter.execute_candle(
                 config=self.config,
                 candle=candle,
                 state=state,
@@ -126,12 +172,20 @@ class PaperTradingRunner:
                 signal=signal,
                 portfolio=pre_execution_portfolio,
                 order_request=due_order_request,
+                live_safety_state=self.live_safety_state,
             )
             (
                 persisted_open,
                 persisted_closed,
                 ledger_entries,
             ) = await self._persist_execution_result(execution_result)
+            if execution_result.live_safety_state is not None:
+                self.live_safety_state = execution_result.live_safety_state
+                await self.repository.save_live_safety_state(self.live_safety_state)
+                write_live_status_artifact(
+                    state=self.live_safety_state,
+                    config=self.config,
+                )
             available_cash += execution_result.cash_delta
             if persisted_open is None:
                 open_positions.pop(candle.symbol, None)

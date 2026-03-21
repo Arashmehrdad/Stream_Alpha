@@ -19,6 +19,7 @@ from dashboards.data_sources import (
     EngineStateSnapshot,
     LatestFeatureSnapshot,
     LedgerEntrySnapshot,
+    LiveSafetySnapshot,
     OrderAuditSnapshot,
     SignalSnapshot,
 )
@@ -309,8 +310,60 @@ def build_recent_order_audit_rows(
             "event_time": to_rfc3339(entry.event_time),
             "reason_code": entry.reason_code,
             "details": entry.details,
+            "broker_name": entry.broker_name,
+            "external_status": entry.external_status,
         }
         for entry in entries
+    ]
+
+
+def build_live_status_rows(
+    *,
+    trading_config: PaperTradingConfig,
+    live_safety_state: LiveSafetySnapshot | None,
+) -> list[dict[str, Any]]:
+    """Build a compact guarded-live status table for the dashboard."""
+    if live_safety_state is None:
+        return [
+            {
+                "execution_mode": trading_config.execution.mode,
+                "broker_name": "alpaca",
+                "startup_checks_passed": False,
+                "startup_checks_passed_at": None,
+                "manual_disable_active": None,
+                "failure_hard_stop_active": None,
+                "consecutive_live_failures": None,
+                "expected_environment": trading_config.execution.live.expected_environment,
+                "validated_environment": None,
+                "expected_account_id": trading_config.execution.live.expected_account_id,
+                "validated_account_id": None,
+                "symbol_whitelist": ",".join(trading_config.execution.live.symbol_whitelist),
+                "live_max_order_notional": trading_config.execution.live.max_order_notional,
+                "last_failure_reason": None,
+            }
+        ]
+
+    return [
+        {
+            "execution_mode": live_safety_state.execution_mode,
+            "broker_name": live_safety_state.broker_name,
+            "startup_checks_passed": live_safety_state.startup_checks_passed,
+            "startup_checks_passed_at": (
+                None
+                if live_safety_state.startup_checks_passed_at is None
+                else to_rfc3339(live_safety_state.startup_checks_passed_at)
+            ),
+            "manual_disable_active": live_safety_state.manual_disable_active,
+            "failure_hard_stop_active": live_safety_state.failure_hard_stop_active,
+            "consecutive_live_failures": live_safety_state.consecutive_live_failures,
+            "expected_environment": trading_config.execution.live.expected_environment,
+            "validated_environment": live_safety_state.environment_name,
+            "expected_account_id": trading_config.execution.live.expected_account_id,
+            "validated_account_id": live_safety_state.account_id,
+            "symbol_whitelist": ",".join(trading_config.execution.live.symbol_whitelist),
+            "live_max_order_notional": trading_config.execution.live.max_order_notional,
+            "last_failure_reason": live_safety_state.last_failure_reason,
+        }
     ]
 
 

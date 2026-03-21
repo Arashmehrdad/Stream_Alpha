@@ -18,6 +18,7 @@ from app.common.time import parse_rfc3339, utc_now
 from app.trading.config import PaperTradingConfig
 from app.trading.repository import (
     LEDGER_TABLE,
+    LIVE_SAFETY_TABLE,
     ORDER_EVENTS_TABLE,
     POSITIONS_TABLE,
     STATE_TABLE,
@@ -139,6 +140,31 @@ class OrderAuditSnapshot:
     event_time: datetime
     reason_code: str | None
     details: str | None
+    external_order_id: str | None = None
+    external_status: str | None = None
+    account_id: str | None = None
+    environment_name: str | None = None
+    broker_name: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class LiveSafetySnapshot:
+    """Read-only guarded-live execution safety state."""
+
+    service_name: str
+    execution_mode: str
+    broker_name: str
+    live_enabled: bool
+    startup_checks_passed: bool
+    startup_checks_passed_at: datetime | None
+    account_validated: bool
+    account_id: str | None
+    environment_name: str | None
+    manual_disable_active: bool
+    consecutive_live_failures: int
+    failure_hard_stop_active: bool
+    last_failure_reason: str | None
+    updated_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,6 +193,7 @@ class DatabaseSnapshot:
     recent_ledger_entries: tuple[LedgerEntrySnapshot, ...] = field(default_factory=tuple)
     recent_order_events: tuple[OrderAuditSnapshot, ...] = field(default_factory=tuple)
     engine_states: tuple[EngineStateSnapshot, ...] = field(default_factory=tuple)
+    live_safety_state: LiveSafetySnapshot | None = None
     latest_prices: dict[str, float] = field(default_factory=dict)
     cash_balance: float | None = None
     error: str | None = None
@@ -201,6 +228,7 @@ class DashboardDataSources:
         self._ledger_table = _quote_table_name(LEDGER_TABLE)
         self._state_table = _quote_table_name(STATE_TABLE)
         self._order_events_table = _quote_table_name(ORDER_EVENTS_TABLE)
+        self._live_safety_table = _quote_table_name(LIVE_SAFETY_TABLE)
 
     async def load_snapshot(self) -> DashboardSnapshot:
         """Load one point-in-time dashboard snapshot from API and PostgreSQL."""
@@ -357,7 +385,8 @@ class DashboardDataSources:
             recent_order_rows = await connection.fetch(
                 f"""
                 SELECT id, order_request_id, symbol, action, lifecycle_state, event_time,
-                       reason_code, details
+                       reason_code, details, external_order_id, external_status,
+                       account_id, environment_name, broker_name
                 FROM {self._order_events_table}
                 WHERE service_name = $1 AND execution_mode = $2
                 ORDER BY event_time DESC, id DESC
@@ -376,6 +405,19 @@ class DashboardDataSources:
                 FROM {self._state_table}
                 WHERE service_name = $1 AND execution_mode = $2
                 ORDER BY symbol ASC
+                """,
+                self._trading_config.service_name,
+                self._trading_config.execution.mode,
+            )
+            live_safety_row = await connection.fetchrow(
+                f"""
+                SELECT service_name, execution_mode, broker_name, live_enabled,
+                       startup_checks_passed, startup_checks_passed_at,
+                       account_validated, account_id, environment_name,
+                       manual_disable_active, consecutive_live_failures,
+                       failure_hard_stop_active, last_failure_reason, updated_at
+                FROM {self._live_safety_table}
+                WHERE service_name = $1 AND execution_mode = $2
                 """,
                 self._trading_config.service_name,
                 self._trading_config.execution.mode,
@@ -414,6 +456,9 @@ class DashboardDataSources:
             _order_audit_from_row(row) for row in recent_order_rows
         )
         engine_states = tuple(_engine_state_from_row(row) for row in engine_state_rows)
+        live_safety_state = (
+            None if live_safety_row is None else _live_safety_from_row(live_safety_row)
+        )
         latest_prices = {row.symbol: row.close_price for row in latest_features}
         return DatabaseSnapshot(
             available=True,
@@ -424,6 +469,7 @@ class DashboardDataSources:
             recent_ledger_entries=recent_ledger_entries,
             recent_order_events=recent_order_events,
             engine_states=engine_states,
+            live_safety_state=live_safety_state,
             latest_prices=latest_prices,
             cash_balance=self._trading_config.risk.initial_cash + cash_delta,
         )
@@ -614,4 +660,42 @@ def _order_audit_from_row(row: Mapping[str, Any]) -> OrderAuditSnapshot:
         event_time=row["event_time"],
         reason_code=None if row["reason_code"] is None else str(row["reason_code"]),
         details=None if row["details"] is None else str(row["details"]),
+        external_order_id=(
+            None
+            if row["external_order_id"] is None
+            else str(row["external_order_id"])
+        ),
+        external_status=(
+            None if row["external_status"] is None else str(row["external_status"])
+        ),
+        account_id=None if row["account_id"] is None else str(row["account_id"]),
+        environment_name=(
+            None if row["environment_name"] is None else str(row["environment_name"])
+        ),
+        broker_name=None if row["broker_name"] is None else str(row["broker_name"]),
+    )
+
+
+def _live_safety_from_row(row: Mapping[str, Any]) -> LiveSafetySnapshot:
+    return LiveSafetySnapshot(
+        service_name=str(row["service_name"]),
+        execution_mode=str(row["execution_mode"]),
+        broker_name=str(row["broker_name"]),
+        live_enabled=bool(row["live_enabled"]),
+        startup_checks_passed=bool(row["startup_checks_passed"]),
+        startup_checks_passed_at=row["startup_checks_passed_at"],
+        account_validated=bool(row["account_validated"]),
+        account_id=None if row["account_id"] is None else str(row["account_id"]),
+        environment_name=(
+            None if row["environment_name"] is None else str(row["environment_name"])
+        ),
+        manual_disable_active=bool(row["manual_disable_active"]),
+        consecutive_live_failures=int(row["consecutive_live_failures"]),
+        failure_hard_stop_active=bool(row["failure_hard_stop_active"]),
+        last_failure_reason=(
+            None
+            if row["last_failure_reason"] is None
+            else str(row["last_failure_reason"])
+        ),
+        updated_at=row["updated_at"],
     )

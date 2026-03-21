@@ -16,7 +16,7 @@ PositionStatus = Literal["OPEN", "CLOSED"]
 ExitReason = Literal["SELL_SIGNAL", "STOP_LOSS", "TAKE_PROFIT"]
 TradeAction = Literal["BUY", "SELL"]
 RiskOutcome = Literal["APPROVED", "MODIFIED", "BLOCKED"]
-ExecutionMode = Literal["paper", "shadow"]
+ExecutionMode = Literal["paper", "shadow", "live"]
 OrderLifecycleState = Literal["CREATED", "ACCEPTED", "FILLED", "REJECTED"]
 
 
@@ -229,6 +229,58 @@ class ServiceRiskState:
 
 
 @dataclass(frozen=True, slots=True)
+class LiveStartupCheck:
+    """One explicit M12 startup validation check."""
+
+    name: str
+    passed: bool
+    detail: str
+
+
+@dataclass(frozen=True, slots=True)
+class LiveStartupChecklist:
+    """Redacted M12 startup checklist artifact payload."""
+
+    service_name: str
+    execution_mode: ExecutionMode
+    broker_name: str
+    checked_at: datetime
+    passed: bool
+    expected_account_id: str | None
+    validated_account_id: str | None
+    expected_environment: str
+    validated_environment: str | None
+    live_enabled: bool
+    runtime_armed: bool
+    runtime_confirmation_phrase: str
+    manual_disable_path: str
+    symbol_whitelist: tuple[str, ...]
+    max_order_notional: float
+    failure_hard_stop_threshold: int
+    checks: tuple[LiveStartupCheck, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class LiveSafetyState:
+    """Persisted M12 live execution safety state."""
+
+    service_name: str
+    execution_mode: ExecutionMode
+    broker_name: str
+    live_enabled: bool
+    startup_checks_passed: bool
+    startup_checks_passed_at: datetime | None
+    account_validated: bool
+    account_id: str | None
+    environment_name: str | None
+    manual_disable_active: bool
+    consecutive_live_failures: int
+    failure_hard_stop_active: bool
+    last_failure_reason: str | None = None
+    updated_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class RiskDecisionLogEntry:
     """Persisted audit row for one evaluated M4 signal."""
 
@@ -253,6 +305,28 @@ class RiskDecisionLogEntry:
     regime_run_id: str | None = None
     trade_allowed: bool | None = None
     created_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BrokerAccount:
+    """Normalized broker-account validation payload for guarded live startup."""
+
+    broker_name: str
+    account_id: str
+    environment_name: str
+    status: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BrokerSubmitResult:
+    """Normalized broker submit response used by the live execution adapter."""
+
+    broker_name: str
+    external_order_id: str
+    external_status: str
+    account_id: str
+    environment_name: str
+    details: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -293,6 +367,11 @@ class OrderLifecycleEvent:
     event_time: datetime
     reason_code: str | None = None
     details: str | None = None
+    external_order_id: str | None = None
+    external_status: str | None = None
+    account_id: str | None = None
+    environment_name: str | None = None
+    broker_name: str | None = None
     event_id: int | None = None
     created_at: datetime | None = None
 
@@ -308,6 +387,7 @@ class ExecutionResult:
     closed_position: PaperPosition | None = None
     ledger_entries: tuple[TradeLedgerEntry, ...] = field(default_factory=tuple)
     cash_delta: float = 0.0
+    live_safety_state: LiveSafetyState | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,6 +1,6 @@
 """Dashboard view-model tests for Stream Alpha M6."""
 
-# pylint: disable=duplicate-code
+# pylint: disable=duplicate-code,missing-function-docstring
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from dashboards.data_sources import (
     DashboardSnapshot,
     DatabaseSnapshot,
     EngineStateSnapshot,
+    LiveSafetySnapshot,
     OrderAuditSnapshot,
     SignalSnapshot,
 )
@@ -20,6 +21,7 @@ from dashboards.view_models import (
     build_drawdown_curve_rows,
     build_equity_curve_rows,
     build_latest_signal_rows,
+    build_live_status_rows,
     build_overview_metrics,
     build_performance_by_regime_rows,
     build_recent_order_audit_rows,
@@ -270,6 +272,8 @@ def test_recent_order_audit_rows_and_execution_mode_are_available_for_rendering(
                 event_time=checked_at,
                 reason_code="PAPER_ORDER_FILLED",
                 details="filled at next open",
+                broker_name="alpaca",
+                external_status="filled",
             ),
         )
     )
@@ -285,5 +289,33 @@ def test_recent_order_audit_rows_and_execution_mode_are_available_for_rendering(
             "event_time": "2026-03-21T12:00:00Z",
             "reason_code": "PAPER_ORDER_FILLED",
             "details": "filled at next open",
+            "broker_name": "alpaca",
+            "external_status": "filled",
         }
     ]
+
+
+def test_live_status_rows_surface_guarded_live_fields() -> None:
+    rows = build_live_status_rows(
+        trading_config=_config(execution_mode="live"),
+        live_safety_state=LiveSafetySnapshot(
+            service_name="paper-trader",
+            execution_mode="live",
+            broker_name="alpaca",
+            live_enabled=True,
+            startup_checks_passed=True,
+            startup_checks_passed_at=datetime(2026, 3, 21, 12, 0, tzinfo=timezone.utc),
+            account_validated=True,
+            account_id="PA12345",
+            environment_name="paper",
+            manual_disable_active=False,
+            consecutive_live_failures=0,
+            failure_hard_stop_active=False,
+            last_failure_reason=None,
+            updated_at=datetime(2026, 3, 21, 12, 1, tzinfo=timezone.utc),
+        ),
+    )
+
+    assert rows[0]["execution_mode"] == "live"
+    assert rows[0]["broker_name"] == "alpaca"
+    assert rows[0]["validated_environment"] == "paper"

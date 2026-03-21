@@ -39,34 +39,19 @@ def process_candle(  # pylint: disable=too-many-arguments
     next_pending_signal: PendingSignalState | None | object = _USE_SIGNAL_PENDING,
 ) -> EngineResult:
     """Process one newly finalized candle exactly once."""
-    working_position = open_position
-    created_position: PaperPosition | None = None
-    closed_position: PaperPosition | None = None
-    ledger_entries: list[TradeLedgerEntry] = []
-    cash_delta = 0.0
-    next_state = PaperEngineState(
-        service_name=state.service_name,
-        symbol=state.symbol,
-        execution_mode=state.execution_mode,
-        last_processed_interval_begin=candle.interval_begin,
-        cooldown_until_interval_begin=state.cooldown_until_interval_begin,
-        pending_signal=state.pending_signal,
+    execution = execute_pending_signal_only(
+        config=config,
+        candle=candle,
+        state=state,
+        open_position=open_position,
+        portfolio=portfolio,
     )
-
-    if state.pending_signal is not None:
-        execution = _execute_pending_signal(
-            config=config,
-            candle=candle,
-            state=next_state,
-            open_position=working_position,
-            portfolio=portfolio,
-        )
-        working_position = execution.open_position
-        created_position = execution.created_position
-        closed_position = execution.closed_position
-        ledger_entries.extend(execution.ledger_entries)
-        cash_delta += execution.cash_delta
-        next_state = execution.state
+    working_position = execution.open_position
+    created_position = execution.created_position
+    closed_position = execution.closed_position
+    ledger_entries = list(execution.ledger_entries)
+    cash_delta = execution.cash_delta
+    next_state = execution.state
 
     barrier_reason = evaluate_barrier_exit(working_position, candle)
     if barrier_reason is not None and working_position is not None:
@@ -104,6 +89,54 @@ def process_candle(  # pylint: disable=too-many-arguments
             else next_pending_signal
         ),
     )
+
+    return EngineResult(
+        state=next_state,
+        open_position=working_position,
+        created_position=created_position,
+        closed_position=closed_position,
+        ledger_entries=tuple(ledger_entries),
+        cash_delta=cash_delta,
+    )
+
+
+def execute_pending_signal_only(  # pylint: disable=too-many-arguments
+    *,
+    config: PaperTradingConfig,
+    candle: FeatureCandle,
+    state: PaperEngineState,
+    open_position: PaperPosition | None,
+    portfolio: PortfolioContext,
+) -> EngineResult:
+    """Execute only the due pending signal and advance state for this candle."""
+    working_position = open_position
+    created_position: PaperPosition | None = None
+    closed_position: PaperPosition | None = None
+    ledger_entries: list[TradeLedgerEntry] = []
+    cash_delta = 0.0
+    next_state = PaperEngineState(
+        service_name=state.service_name,
+        symbol=state.symbol,
+        execution_mode=state.execution_mode,
+        last_processed_interval_begin=candle.interval_begin,
+        cooldown_until_interval_begin=state.cooldown_until_interval_begin,
+        pending_signal=state.pending_signal,
+    )
+
+    if state.pending_signal is not None:
+        execution = _execute_pending_signal(
+            config=config,
+            candle=candle,
+            state=next_state,
+            open_position=working_position,
+            portfolio=portfolio,
+        )
+        working_position = execution.open_position
+        created_position = execution.created_position
+        closed_position = execution.closed_position
+        ledger_entries.extend(execution.ledger_entries)
+        cash_delta += execution.cash_delta
+        next_state = execution.state
 
     return EngineResult(
         state=next_state,
