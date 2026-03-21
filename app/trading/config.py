@@ -36,6 +36,18 @@ class RiskConfig:  # pylint: disable=too-many-instance-attributes
 
 
 @dataclass(frozen=True, slots=True)
+class PaperProbeConfig:
+    """Optional Alpaca PAPER-only broker validation settings."""
+
+    enabled: bool = False
+    symbol_whitelist: tuple[str, ...] = ()
+    integer_qty_only: bool = True
+    min_order_value_usd: float = 0.0
+    fixed_qty: int = 0
+    max_probe_orders_per_run: int = 1
+
+
+@dataclass(frozen=True, slots=True)
 class LiveConfig:  # pylint: disable=too-many-instance-attributes
     """Explicit M12 guarded-live settings."""
 
@@ -48,6 +60,7 @@ class LiveConfig:  # pylint: disable=too-many-instance-attributes
     manual_disable_path: str = "artifacts/live/manual_disable.flag"
     startup_checklist_path: str = "artifacts/live/startup_checklist.json"
     live_status_path: str = "artifacts/live/live_status.json"
+    paper_probe: PaperProbeConfig = field(default_factory=PaperProbeConfig)
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +94,7 @@ def load_paper_trading_config(config_path: Path) -> PaperTradingConfig:
     risk_payload = dict(payload["risk"])
     execution_payload = dict(payload.get("execution", {}))
     live_payload = dict(execution_payload.get("live", {}))
+    paper_probe_payload = dict(live_payload.get("paper_probe", {}))
     symbols = tuple(str(symbol) for symbol in payload["symbols"])
     if not symbols:
         raise ValueError("Paper trading config must contain at least one symbol")
@@ -167,6 +181,23 @@ def load_paper_trading_config(config_path: Path) -> PaperTradingConfig:
                         "artifacts/live/live_status.json",
                     )
                 ),
+                paper_probe=PaperProbeConfig(
+                    enabled=bool(paper_probe_payload.get("enabled", False)),
+                    symbol_whitelist=tuple(
+                        str(symbol)
+                        for symbol in paper_probe_payload.get("symbol_whitelist", [])
+                    ),
+                    integer_qty_only=bool(
+                        paper_probe_payload.get("integer_qty_only", True)
+                    ),
+                    min_order_value_usd=float(
+                        paper_probe_payload.get("min_order_value_usd", 0.0)
+                    ),
+                    fixed_qty=int(paper_probe_payload.get("fixed_qty", 0)),
+                    max_probe_orders_per_run=int(
+                        paper_probe_payload.get("max_probe_orders_per_run", 1)
+                    ),
+                ),
             ),
         ),
     )
@@ -247,3 +278,19 @@ def _validate_config(  # pylint: disable=too-many-branches,too-many-statements
             )
         if not live_config.live_status_path.strip():
             raise ValueError("execution.live.live_status_path must not be empty")
+    paper_probe = live_config.paper_probe
+    if paper_probe.enabled:
+        if not paper_probe.symbol_whitelist:
+            raise ValueError(
+                "execution.live.paper_probe.symbol_whitelist must not be empty"
+            )
+        if paper_probe.min_order_value_usd <= 0.0:
+            raise ValueError(
+                "execution.live.paper_probe.min_order_value_usd must be positive"
+            )
+        if paper_probe.fixed_qty <= 0:
+            raise ValueError("execution.live.paper_probe.fixed_qty must be positive")
+        if paper_probe.max_probe_orders_per_run <= 0:
+            raise ValueError(
+                "execution.live.paper_probe.max_probe_orders_per_run must be positive"
+            )

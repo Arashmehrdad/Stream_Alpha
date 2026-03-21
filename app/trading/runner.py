@@ -114,6 +114,8 @@ class PaperTradingRunner:
 
     async def run_once(self) -> None:  # pylint: disable=too-many-locals
         """Process all newly observed finalized candles exactly once."""
+        if hasattr(self.execution_adapter, "begin_run"):
+            self.execution_adapter.begin_run()
         states = await self.repository.load_engine_states(
             service_name=self.config.service_name,
             execution_mode=self.config.execution.mode,

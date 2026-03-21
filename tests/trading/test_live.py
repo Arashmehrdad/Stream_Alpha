@@ -15,12 +15,21 @@ import pytest
 
 from app.common.time import to_rfc3339
 from app.trading.alpaca import AlpacaOrderConstraintError, AlpacaResponseError
-from app.trading.config import ExecutionConfig, LiveConfig, PaperTradingConfig, RiskConfig
+from app.trading.config import (
+    ExecutionConfig,
+    LiveConfig,
+    PaperProbeConfig,
+    PaperTradingConfig,
+    RiskConfig,
+)
 from app.trading.execution import LiveExecutionAdapter, build_order_request
 from app.trading.live import (
     LIVE_CONFIRMATION_PHRASE,
     LIVE_MANUAL_DISABLE_ACTIVE,
     LIVE_MAX_ORDER_NOTIONAL_EXCEEDED,
+    LIVE_PAPER_PROBE_INTEGER_QTY_REQUIRED,
+    LIVE_PAPER_PROBE_MAX_ORDERS_PER_RUN_REACHED,
+    LIVE_PAPER_PROBE_MIN_ORDER_VALUE_REQUIRED,
     LIVE_STARTUP_CHECKS_NOT_PASSED,
     LIVE_SYMBOL_NOT_WHITELISTED,
     validate_live_startup,
@@ -44,12 +53,17 @@ from app.trading.schemas import (
 )
 
 
-def _live_config(
+def _live_config(  # pylint: disable=too-many-arguments
     tmp_path: Path,
     *,
     symbol_whitelist: tuple[str, ...] = ("BTC/USD",),
     max_order_notional: float = 25.0,
     failure_hard_stop_threshold: int = 2,
+    paper_probe_enabled: bool = False,
+    paper_probe_symbol_whitelist: tuple[str, ...] = ("DOGE/USD",),
+    paper_probe_min_order_value_usd: float = 10.0,
+    paper_probe_fixed_qty: int = 500,
+    paper_probe_max_orders_per_run: int = 1,
 ) -> PaperTradingConfig:
     live_dir = tmp_path / "live"
     return PaperTradingConfig(
@@ -97,6 +111,14 @@ def _live_config(
                 manual_disable_path=str(live_dir / "manual_disable.flag"),
                 startup_checklist_path=str(live_dir / "startup_checklist.json"),
                 live_status_path=str(live_dir / "live_status.json"),
+                paper_probe=PaperProbeConfig(
+                    enabled=paper_probe_enabled,
+                    symbol_whitelist=paper_probe_symbol_whitelist,
+                    integer_qty_only=True,
+                    min_order_value_usd=paper_probe_min_order_value_usd,
+                    fixed_qty=paper_probe_fixed_qty,
+                    max_probe_orders_per_run=paper_probe_max_orders_per_run,
+                ),
             ),
         ),
     )
@@ -208,6 +230,7 @@ def _live_safety_state(
     manual_disable_active: bool = False,
     consecutive_live_failures: int = 0,
     failure_hard_stop_active: bool = False,
+    environment_name: str = "paper",
 ) -> LiveSafetyState:
     return LiveSafetyState(
         service_name="live-trader",
@@ -218,7 +241,7 @@ def _live_safety_state(
         startup_checks_passed_at=datetime(2026, 3, 21, 8, 55, tzinfo=timezone.utc),
         account_validated=True,
         account_id="PA12345",
-        environment_name="paper",
+        environment_name=environment_name,
         manual_disable_active=manual_disable_active,
         consecutive_live_failures=consecutive_live_failures,
         failure_hard_stop_active=failure_hard_stop_active,
@@ -260,20 +283,34 @@ class FakeBrokerClient:
         self.submit_results = list(submit_results or [])
         self.submit_error = submit_error
         self.validate_calls = 0
-        self.submit_calls: list[tuple[OrderRequest, object, FeatureCandle]] = []
+        self.submit_calls: list[tuple[OrderRequest, object, FeatureCandle, dict[str, object]]] = []
 
     async def validate_account(self) -> BrokerAccount:
         self.validate_calls += 1
         return self.account
 
-    async def submit_order(
+    async def submit_order(  # pylint: disable=too-many-arguments
         self,
         *,
         order_request: OrderRequest,
         open_position,
         candle: FeatureCandle,
+        probe_policy_active: bool = False,
+        probe_symbol: str | None = None,
+        probe_qty: int | None = None,
     ) -> BrokerSubmitResult:
-        self.submit_calls.append((order_request, open_position, candle))
+        self.submit_calls.append(
+            (
+                order_request,
+                open_position,
+                candle,
+                {
+                    "probe_policy_active": probe_policy_active,
+                    "probe_symbol": probe_symbol,
+                    "probe_qty": probe_qty,
+                },
+            )
+        )
         if self.submit_error is not None:
             raise self.submit_error
         if self.submit_results:
@@ -285,6 +322,9 @@ class FakeBrokerClient:
             account_id="PA12345",
             environment_name="paper",
             details='{"type":"market"}',
+            probe_policy_active=probe_policy_active,
+            probe_symbol=probe_symbol,
+            probe_qty=probe_qty,
         )
 
     async def close(self) -> None:
@@ -452,6 +492,227 @@ def test_live_mode_config_validation_accepts_guarded_live_mode(tmp_path: Path) -
     assert config.execution.mode == "live"
     assert config.execution.live.enabled is True
     assert config.execution.live.expected_environment == "paper"
+
+
+def test_paper_probe_policy_activates_only_in_paper_environment(tmp_path: Path) -> None:
+    config = _live_config(tmp_path, paper_probe_enabled=True)
+    order_request = _order_request(config, approved_notional=20.0)
+    broker_client = FakeBrokerClient()
+    adapter = LiveExecutionAdapter(broker_client=broker_client)
+
+    paper_result = asyncio.run(
+        adapter.execute_candle(
+            config=config,
+            candle=_candle(1),
+            state=_pending_state(candle=_candle(1), order_request=order_request),
+            open_position=None,
+            signal=_hold_signal(_candle(1).interval_begin),
+            portfolio=_portfolio(),
+            order_request=order_request,
+            live_safety_state=_live_safety_state(environment_name="paper"),
+        )
+    )
+
+    assert broker_client.submit_calls[0][3]["probe_policy_active"] is True
+    assert paper_result.created_position is None
+    assert paper_result.lifecycle_events[0].probe_policy_active is True
+
+    live_broker_client = FakeBrokerClient()
+    live_adapter = LiveExecutionAdapter(broker_client=live_broker_client)
+    live_result = asyncio.run(
+        live_adapter.execute_candle(
+            config=config,
+            candle=_candle(1),
+            state=_pending_state(candle=_candle(1), order_request=order_request),
+            open_position=None,
+            signal=_hold_signal(_candle(1).interval_begin),
+            portfolio=_portfolio(),
+            order_request=order_request,
+            live_safety_state=_live_safety_state(environment_name="live"),
+        )
+    )
+
+    assert live_broker_client.submit_calls[0][3]["probe_policy_active"] is False
+    assert live_result.created_position is not None
+    assert live_result.lifecycle_events[0].probe_policy_active is False
+
+
+def test_paper_probe_symbol_whitelist_enforcement_uses_configured_probe_symbol(
+    tmp_path: Path,
+) -> None:
+    config = _live_config(
+        tmp_path,
+        paper_probe_enabled=True,
+        paper_probe_symbol_whitelist=("DOGE/USD",),
+    )
+    order_request = _order_request(config, approved_notional=20.0)
+    broker_client = FakeBrokerClient()
+    adapter = LiveExecutionAdapter(broker_client=broker_client)
+    result = asyncio.run(
+        adapter.execute_candle(
+            config=config,
+            candle=_candle(1),
+            state=_pending_state(candle=_candle(1), order_request=order_request),
+            open_position=None,
+            signal=_hold_signal(_candle(1).interval_begin),
+            portfolio=_portfolio(),
+            order_request=order_request,
+            live_safety_state=_live_safety_state(environment_name="paper"),
+        )
+    )
+
+    assert broker_client.submit_calls[0][3]["probe_symbol"] == "DOGE/USD"
+    assert result.lifecycle_events[0].probe_symbol == "DOGE/USD"
+
+
+def test_paper_probe_integer_qty_enforcement_blocks_invalid_probe_config(
+    tmp_path: Path,
+) -> None:
+    config = _live_config(
+        tmp_path,
+        paper_probe_enabled=True,
+        paper_probe_fixed_qty=0,
+    )
+    order_request = _order_request(config, approved_notional=20.0)
+    broker_client = FakeBrokerClient()
+    adapter = LiveExecutionAdapter(broker_client=broker_client)
+    result = asyncio.run(
+        adapter.execute_candle(
+            config=config,
+            candle=_candle(1),
+            state=_pending_state(candle=_candle(1), order_request=order_request),
+            open_position=None,
+            signal=_hold_signal(_candle(1).interval_begin),
+            portfolio=_portfolio(),
+            order_request=order_request,
+            live_safety_state=_live_safety_state(environment_name="paper"),
+        )
+    )
+
+    assert broker_client.submit_calls == []
+    assert result.lifecycle_events[0].reason_code == LIVE_PAPER_PROBE_INTEGER_QTY_REQUIRED
+
+
+def test_paper_probe_min_order_value_enforcement_blocks_small_approved_notional(
+    tmp_path: Path,
+) -> None:
+    config = _live_config(
+        tmp_path,
+        paper_probe_enabled=True,
+        paper_probe_min_order_value_usd=15.0,
+    )
+    order_request = _order_request(config, approved_notional=10.0)
+    broker_client = FakeBrokerClient()
+    adapter = LiveExecutionAdapter(broker_client=broker_client)
+    result = asyncio.run(
+        adapter.execute_candle(
+            config=config,
+            candle=_candle(1),
+            state=_pending_state(candle=_candle(1), order_request=order_request),
+            open_position=None,
+            signal=_hold_signal(_candle(1).interval_begin),
+            portfolio=_portfolio(),
+            order_request=order_request,
+            live_safety_state=_live_safety_state(environment_name="paper"),
+        )
+    )
+
+    assert broker_client.submit_calls == []
+    assert result.lifecycle_events[0].reason_code == LIVE_PAPER_PROBE_MIN_ORDER_VALUE_REQUIRED
+    assert result.live_safety_state is not None
+    assert result.live_safety_state.consecutive_live_failures == 0
+
+
+def test_paper_probe_max_one_order_per_run_is_enforced(tmp_path: Path) -> None:
+    config = _live_config(
+        tmp_path,
+        paper_probe_enabled=True,
+        paper_probe_max_orders_per_run=1,
+    )
+    first_request = _order_request(config, approved_notional=20.0)
+    second_request = replace(first_request, order_request_id=2, signal_row_id="BTC/USD|second")
+    broker_client = FakeBrokerClient()
+    adapter = LiveExecutionAdapter(broker_client=broker_client)
+    adapter.begin_run()
+
+    first_result = asyncio.run(
+        adapter.execute_candle(
+            config=config,
+            candle=_candle(1),
+            state=_pending_state(candle=_candle(1), order_request=first_request),
+            open_position=None,
+            signal=_hold_signal(_candle(1).interval_begin),
+            portfolio=_portfolio(),
+            order_request=first_request,
+            live_safety_state=_live_safety_state(environment_name="paper"),
+        )
+    )
+    second_result = asyncio.run(
+        adapter.execute_candle(
+            config=config,
+            candle=_candle(2),
+            state=_pending_state(candle=_candle(2), order_request=second_request),
+            open_position=None,
+            signal=_hold_signal(_candle(2).interval_begin),
+            portfolio=_portfolio(),
+            order_request=second_request,
+            live_safety_state=first_result.live_safety_state,
+        )
+    )
+
+    assert len(broker_client.submit_calls) == 1
+    assert second_result.lifecycle_events[0].reason_code == LIVE_PAPER_PROBE_MAX_ORDERS_PER_RUN_REACHED
+
+
+def test_canonical_live_path_is_unchanged_when_probe_is_disabled(tmp_path: Path) -> None:
+    config = _live_config(tmp_path, paper_probe_enabled=False)
+    order_request = _order_request(config, approved_notional=20.0)
+    broker_client = FakeBrokerClient()
+    adapter = LiveExecutionAdapter(broker_client=broker_client)
+    result = asyncio.run(
+        adapter.execute_candle(
+            config=config,
+            candle=_candle(1),
+            state=_pending_state(candle=_candle(1), order_request=order_request),
+            open_position=None,
+            signal=_hold_signal(_candle(1).interval_begin),
+            portfolio=_portfolio(),
+            order_request=order_request,
+            live_safety_state=_live_safety_state(environment_name="paper"),
+        )
+    )
+
+    assert broker_client.submit_calls[0][3]["probe_policy_active"] is False
+    assert result.created_position is not None
+    assert len(result.ledger_entries) == 1
+
+
+def test_paper_probe_orders_are_explicitly_tagged_in_audit(tmp_path: Path) -> None:
+    config = _live_config(
+        tmp_path,
+        paper_probe_enabled=True,
+        paper_probe_symbol_whitelist=("DOGE/USD",),
+        paper_probe_fixed_qty=500,
+    )
+    order_request = _order_request(config, approved_notional=20.0)
+    broker_client = FakeBrokerClient()
+    adapter = LiveExecutionAdapter(broker_client=broker_client)
+    result = asyncio.run(
+        adapter.execute_candle(
+            config=config,
+            candle=_candle(1),
+            state=_pending_state(candle=_candle(1), order_request=order_request),
+            open_position=None,
+            signal=_hold_signal(_candle(1).interval_begin),
+            portfolio=_portfolio(),
+            order_request=order_request,
+            live_safety_state=_live_safety_state(environment_name="paper"),
+        )
+    )
+
+    assert result.lifecycle_events[0].probe_policy_active is True
+    assert result.lifecycle_events[0].probe_symbol == "DOGE/USD"
+    assert result.lifecycle_events[0].probe_qty == 500
 
 
 def test_startup_validation_missing_apca_api_key_id(

@@ -124,22 +124,34 @@ class AlpacaTradingClient:
             status=status,
         )
 
-    async def submit_order(
+    async def submit_order(  # pylint: disable=too-many-arguments
         self,
         *,
         order_request: OrderRequest,
         open_position: PaperPosition | None,
         candle: FeatureCandle,
+        probe_policy_active: bool = False,
+        probe_symbol: str | None = None,
+        probe_qty: int | None = None,
     ) -> BrokerSubmitResult:
         """Submit one minimal market order to Alpaca."""
         environment_name = infer_alpaca_environment(self.base_url)
         payload = {
-            "symbol": normalize_alpaca_symbol(order_request.symbol),
+            "symbol": normalize_alpaca_symbol(
+                order_request.symbol if probe_symbol is None else probe_symbol
+            ),
             "side": "buy" if order_request.action == "BUY" else "sell",
             "type": "market",
             "time_in_force": "gtc",
         }
-        if order_request.action == "BUY":
+        if probe_policy_active:
+            if probe_qty is None or probe_qty <= 0:
+                raise AlpacaOrderConstraintError(
+                    ALPACA_CRYPTO_INTEGER_QTY_REQUIRED,
+                    "Alpaca PAPER probe orders require a positive integer quantity",
+                )
+            payload["qty"] = str(probe_qty)
+        elif order_request.action == "BUY":
             if candle.open_price <= 0.0:
                 raise AlpacaResponseError("BUY submission requires a positive candle open_price")
             payload["qty"] = _build_buy_quantity(
@@ -176,6 +188,9 @@ class AlpacaTradingClient:
                 "qty": payload.get("qty"),
                 "approved_notional": _round_decimal(order_request.approved_notional),
                 "reference_price": _round_decimal(candle.open_price),
+                "probe_policy_active": probe_policy_active,
+                "probe_symbol": probe_symbol,
+                "probe_qty": probe_qty,
             },
             sort_keys=True,
         )
@@ -190,6 +205,9 @@ class AlpacaTradingClient:
             ),
             environment_name=environment_name,
             details=redacted_details,
+            probe_policy_active=probe_policy_active,
+            probe_symbol=probe_symbol,
+            probe_qty=probe_qty,
         )
 
     async def _request(

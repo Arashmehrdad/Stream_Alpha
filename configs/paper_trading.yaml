@@ -25,6 +25,14 @@ execution:
     manual_disable_path: artifacts/live/manual_disable.flag
     startup_checklist_path: artifacts/live/startup_checklist.json
     live_status_path: artifacts/live/live_status.json
+    paper_probe:
+      enabled: false
+      symbol_whitelist:
+        - DOGE/USD
+      integer_qty_only: true
+      min_order_value_usd: 10.0
+      fixed_qty: 500
+      max_probe_orders_per_run: 1
 risk:
   initial_cash: 10000.0
   position_fraction: 0.25

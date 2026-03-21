@@ -145,6 +145,9 @@ class OrderAuditSnapshot:
     account_id: str | None = None
     environment_name: str | None = None
     broker_name: str | None = None
+    probe_policy_active: bool = False
+    probe_symbol: str | None = None
+    probe_qty: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -386,7 +389,8 @@ class DashboardDataSources:
                 f"""
                 SELECT id, order_request_id, symbol, action, lifecycle_state, event_time,
                        reason_code, details, external_order_id, external_status,
-                       account_id, environment_name, broker_name
+                       account_id, environment_name, broker_name,
+                       probe_policy_active, probe_symbol, probe_qty
                 FROM {self._order_events_table}
                 WHERE service_name = $1 AND execution_mode = $2
                 ORDER BY event_time DESC, id DESC
@@ -673,6 +677,13 @@ def _order_audit_from_row(row: Mapping[str, Any]) -> OrderAuditSnapshot:
             None if row["environment_name"] is None else str(row["environment_name"])
         ),
         broker_name=None if row["broker_name"] is None else str(row["broker_name"]),
+        probe_policy_active=bool(row.get("probe_policy_active", False)),
+        probe_symbol=(
+            None
+            if row.get("probe_symbol") is None
+            else str(row.get("probe_symbol"))
+        ),
+        probe_qty=None if row.get("probe_qty") is None else int(row.get("probe_qty")),
     )
 
 

@@ -18,6 +18,10 @@ from app.trading.live import (
     LIVE_ORDER_ACCEPTED,
     LIVE_ORDER_FILLED,
     LIVE_ORDER_REJECTED,
+    LIVE_PAPER_PROBE_INTEGER_QTY_REQUIRED,
+    LIVE_PAPER_PROBE_MAX_ORDERS_PER_RUN_REACHED,
+    LIVE_PAPER_PROBE_MIN_ORDER_VALUE_REQUIRED,
+    LIVE_PAPER_PROBE_SYMBOL_NOT_WHITELISTED,
     LIVE_STARTUP_CHECKS_NOT_PASSED,
     LIVE_SYMBOL_NOT_WHITELISTED,
     record_live_failure,
@@ -58,12 +62,15 @@ class BrokerClient(Protocol):  # pylint: disable=too-few-public-methods
     async def validate_account(self) -> BrokerAccount:
         """Validate broker credentials and return normalized account details."""
 
-    async def submit_order(
+    async def submit_order(  # pylint: disable=too-many-arguments
         self,
         *,
         order_request: OrderRequest,
         open_position: PaperPosition | None,
         candle: FeatureCandle,
+        probe_policy_active: bool = False,
+        probe_symbol: str | None = None,
+        probe_qty: int | None = None,
     ) -> BrokerSubmitResult:
         """Submit one minimal broker order."""
 
@@ -350,12 +357,17 @@ class LiveExecutionAdapter:  # pylint: disable=too-few-public-methods
 
     def __init__(self, *, broker_client: BrokerClient | None = None) -> None:
         self.broker_client = broker_client
+        self._probe_orders_submitted_this_run = 0
 
     def set_broker_client(self, broker_client: BrokerClient) -> None:
         """Set the validated broker client resolved during live startup."""
         self.broker_client = broker_client
 
-    async def execute_candle(  # pylint: disable=too-many-arguments,too-many-locals
+    def begin_run(self) -> None:
+        """Reset run-scoped probe counters before each runner pass."""
+        self._probe_orders_submitted_this_run = 0
+
+    async def execute_candle(  # pylint: disable=too-many-arguments,too-many-locals,too-many-return-statements
         self,
         *,
         config: PaperTradingConfig,
@@ -413,11 +425,34 @@ class LiveExecutionAdapter:  # pylint: disable=too-few-public-methods
                 details="Live broker client was not initialized",
             )
 
+        probe_context = _resolve_paper_probe_context(
+            config=config,
+            order_request=order_request,
+            live_safety_state=refreshed_live_state,
+            probe_orders_submitted_this_run=self._probe_orders_submitted_this_run,
+        )
+        if probe_context["active"] and probe_context["reason_code"] is not None:
+            return _build_live_rejection_result(
+                candle=candle,
+                state=state,
+                open_position=open_position,
+                order_request=order_request,
+                live_safety_state=refreshed_live_state,
+                reason_code=probe_context["reason_code"],
+                details=probe_context["details"],
+                probe_policy_active=True,
+                probe_symbol=probe_context["probe_symbol"],
+                probe_qty=probe_context["probe_qty"],
+            )
+
         try:
             submit_result = await self.broker_client.submit_order(
                 order_request=order_request,
                 open_position=open_position,
                 candle=candle,
+                probe_policy_active=bool(probe_context["active"]),
+                probe_symbol=probe_context["probe_symbol"],
+                probe_qty=probe_context["probe_qty"],
             )
         except AlpacaOrderConstraintError as error:
             return _build_live_rejection_result(
@@ -428,6 +463,9 @@ class LiveExecutionAdapter:  # pylint: disable=too-few-public-methods
                 live_safety_state=refreshed_live_state,
                 reason_code=error.reason_code,
                 details=str(error),
+                probe_policy_active=bool(probe_context["active"]),
+                probe_symbol=probe_context["probe_symbol"],
+                probe_qty=probe_context["probe_qty"],
             )
         except AlpacaClientError as error:
             return _build_live_rejection_result(
@@ -442,6 +480,26 @@ class LiveExecutionAdapter:  # pylint: disable=too-few-public-methods
                 ),
                 reason_code=LIVE_BROKER_SUBMIT_FAILED,
                 details=str(error),
+                probe_policy_active=bool(probe_context["active"]),
+                probe_symbol=probe_context["probe_symbol"],
+                probe_qty=probe_context["probe_qty"],
+            )
+
+        if probe_context["active"]:
+            self._probe_orders_submitted_this_run += 1
+            return ExecutionResult(
+                state=_advance_state(state=state, candle=candle, clear_pending=True),
+                open_position=open_position,
+                lifecycle_events=(
+                    _build_live_broker_event(
+                        order_request=order_request,
+                        event_time=candle.interval_begin,
+                        lifecycle_state="ACCEPTED",
+                        reason_code=LIVE_ORDER_ACCEPTED,
+                        submit_result=submit_result,
+                    ),
+                ),
+                live_safety_state=record_live_success(refreshed_live_state),
             )
 
         execution = execute_pending_signal_only(
@@ -565,6 +623,80 @@ def _live_precheck_failure(
     return None
 
 
+def _resolve_paper_probe_context(  # pylint: disable=too-many-return-statements,too-many-branches
+    *,
+    config: PaperTradingConfig,
+    order_request: OrderRequest,
+    live_safety_state: LiveSafetyState,
+    probe_orders_submitted_this_run: int,
+) -> dict[str, object]:
+    paper_probe = config.execution.live.paper_probe
+    if (
+        config.execution.mode != "live"
+        or live_safety_state.environment_name != "paper"
+        or not paper_probe.enabled
+        or order_request.action != "BUY"
+    ):
+        return {
+            "active": False,
+            "reason_code": None,
+            "details": None,
+            "probe_symbol": None,
+            "probe_qty": None,
+        }
+
+    probe_symbol = (
+        order_request.symbol
+        if order_request.symbol in paper_probe.symbol_whitelist
+        else paper_probe.symbol_whitelist[0]
+    )
+    if probe_symbol not in paper_probe.symbol_whitelist:
+        return {
+            "active": True,
+            "reason_code": LIVE_PAPER_PROBE_SYMBOL_NOT_WHITELISTED,
+            "details": f"Probe symbol {probe_symbol} is not in the paper probe whitelist",
+            "probe_symbol": probe_symbol,
+            "probe_qty": None,
+        }
+    if paper_probe.integer_qty_only and paper_probe.fixed_qty <= 0:
+        return {
+            "active": True,
+            "reason_code": LIVE_PAPER_PROBE_INTEGER_QTY_REQUIRED,
+            "details": "Paper probe orders require a positive integer fixed_qty",
+            "probe_symbol": probe_symbol,
+            "probe_qty": paper_probe.fixed_qty,
+        }
+    if order_request.approved_notional < paper_probe.min_order_value_usd:
+        return {
+            "active": True,
+            "reason_code": LIVE_PAPER_PROBE_MIN_ORDER_VALUE_REQUIRED,
+            "details": (
+                "Approved notional is below the paper probe minimum order value: "
+                f"{order_request.approved_notional} < {paper_probe.min_order_value_usd}"
+            ),
+            "probe_symbol": probe_symbol,
+            "probe_qty": paper_probe.fixed_qty,
+        }
+    if probe_orders_submitted_this_run >= paper_probe.max_probe_orders_per_run:
+        return {
+            "active": True,
+            "reason_code": LIVE_PAPER_PROBE_MAX_ORDERS_PER_RUN_REACHED,
+            "details": (
+                "Paper probe order limit reached for this runner pass: "
+                f"{probe_orders_submitted_this_run} >= {paper_probe.max_probe_orders_per_run}"
+            ),
+            "probe_symbol": probe_symbol,
+            "probe_qty": paper_probe.fixed_qty,
+        }
+    return {
+        "active": True,
+        "reason_code": None,
+        "details": None,
+        "probe_symbol": probe_symbol,
+        "probe_qty": paper_probe.fixed_qty,
+    }
+
+
 def _build_live_rejection_result(  # pylint: disable=too-many-arguments
     *,
     candle: FeatureCandle,
@@ -574,6 +706,9 @@ def _build_live_rejection_result(  # pylint: disable=too-many-arguments
     live_safety_state: LiveSafetyState,
     reason_code: str,
     details: str | None = None,
+    probe_policy_active: bool = False,
+    probe_symbol: str | None = None,
+    probe_qty: int | None = None,
 ) -> ExecutionResult:
     lifecycle_event = OrderLifecycleEvent(
         order_request_id=_require_order_request_id(order_request),
@@ -588,6 +723,9 @@ def _build_live_rejection_result(  # pylint: disable=too-many-arguments
         broker_name=live_safety_state.broker_name,
         account_id=live_safety_state.account_id,
         environment_name=live_safety_state.environment_name,
+        probe_policy_active=probe_policy_active,
+        probe_symbol=probe_symbol,
+        probe_qty=probe_qty,
     )
     return ExecutionResult(
         state=_advance_state(state=state, candle=candle, clear_pending=True),
@@ -620,6 +758,9 @@ def _build_live_broker_event(
         account_id=submit_result.account_id,
         environment_name=submit_result.environment_name,
         broker_name=submit_result.broker_name,
+        probe_policy_active=submit_result.probe_policy_active,
+        probe_symbol=submit_result.probe_symbol,
+        probe_qty=submit_result.probe_qty,
     )
 
 

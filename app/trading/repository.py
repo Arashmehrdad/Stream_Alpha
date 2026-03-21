@@ -495,9 +495,13 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                 environment_name,
                 broker_name,
                 reason_code,
-                details
+                details,
+                probe_policy_active,
+                probe_symbol,
+                probe_qty
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+                $16, $17
             )
             ON CONFLICT (order_request_id, lifecycle_state) DO NOTHING
             RETURNING *
@@ -516,6 +520,9 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
             event.broker_name,
             event.reason_code,
             event.details,
+            event.probe_policy_active,
+            event.probe_symbol,
+            event.probe_qty,
         )
         if row is None:
             existing_row = await pool.fetchrow(
@@ -1363,6 +1370,9 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                     broker_name TEXT NULL,
                     reason_code TEXT NULL,
                     details TEXT NULL,
+                    probe_policy_active BOOLEAN NOT NULL DEFAULT FALSE,
+                    probe_symbol TEXT NULL,
+                    probe_qty INTEGER NULL,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
                 """
@@ -1395,6 +1405,24 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                 f"""
                 ALTER TABLE {self._order_events_table}
                 ADD COLUMN IF NOT EXISTS broker_name TEXT NULL
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._order_events_table}
+                ADD COLUMN IF NOT EXISTS probe_policy_active BOOLEAN NOT NULL DEFAULT FALSE
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._order_events_table}
+                ADD COLUMN IF NOT EXISTS probe_symbol TEXT NULL
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._order_events_table}
+                ADD COLUMN IF NOT EXISTS probe_qty INTEGER NULL
                 """
             )
             await connection.execute(
@@ -1686,6 +1714,9 @@ def _order_event_from_row(row: asyncpg.Record) -> OrderLifecycleEvent:
             None if row["environment_name"] is None else str(row["environment_name"])
         ),
         broker_name=None if row["broker_name"] is None else str(row["broker_name"]),
+        probe_policy_active=bool(row["probe_policy_active"]),
+        probe_symbol=None if row["probe_symbol"] is None else str(row["probe_symbol"]),
+        probe_qty=None if row["probe_qty"] is None else int(row["probe_qty"]),
         event_id=int(row["id"]),
         created_at=row["created_at"],
     )

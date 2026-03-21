@@ -327,6 +327,9 @@ class BrokerSubmitResult:
     account_id: str
     environment_name: str
     details: str | None = None
+    probe_policy_active: bool = False
+    probe_symbol: str | None = None
+    probe_qty: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -372,6 +375,9 @@ class OrderLifecycleEvent:
     account_id: str | None = None
     environment_name: str | None = None
     broker_name: str | None = None
+    probe_policy_active: bool = False
+    probe_symbol: str | None = None
+    probe_qty: int | None = None
     event_id: int | None = None
     created_at: datetime | None = None
 
