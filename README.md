@@ -26,6 +26,8 @@ Milestone `M12` adds a guarded live trading foundation on top of the accepted ex
 
 Milestone `M13` foundation adds explicit reliability and recovery state around the accepted runtime paths. Packet 1 adds checked-in reliability config, typed freshness and breaker primitives, and additive PostgreSQL reliability tables. Packet 2 wires heartbeats, exact-row freshness evaluation, a trader-side inference breaker, stale pending-signal recovery, reliability artifacts, and compact dashboard reliability views. Packet 3 finalizes M13 with explicit feature-consumer lag detection, canonical cross-service health aggregation, feed-freshness visibility, and one unified operator-facing reliability summary without changing M4, M10, M11, or M12 authority boundaries.
 
+Milestone `M14` Packet 1 adds an M4-side explainability foundation only. It keeps M4 authoritative for prediction and signal generation, exposes `model_version` on decisions, adds deterministic top-feature contributions from one-at-a-time reference ablation against a persisted reference vector, and extends `/predict` plus `/signal` with additive explanation payloads without changing M10, M11, M12, or M13 behavior.
+
 ## Repository Tree
 
 ```text
@@ -42,6 +44,11 @@ Milestone `M13` foundation adds explicit reliability and recovery state around t
 |   |   |-- models.py
 |   |   |-- serialization.py
 |   |   `-- time.py
+|   |-- explainability
+|   |   |-- __init__.py
+|   |   |-- config.py
+|   |   |-- schemas.py
+|   |   `-- service.py
 |   |-- features
 |   |   |-- __init__.py
 |   |   |-- __main__.py
@@ -109,6 +116,7 @@ Milestone `M13` foundation adds explicit reliability and recovery state around t
 |       |-- publisher.py
 |       `-- service.py
 |-- configs
+|   |-- explainability.yaml
 |   |-- paper_trading.yaml
 |   |-- reliability.yaml
 |   |-- regime.m8.json
@@ -376,6 +384,27 @@ M13 Packet 3 does not do:
 - change M11/M12 execution routing or live safety controls
 - add alert routing, deployment profiles, explainability, RL, sentiment/news, or strategy rewrites
 
+## M14 Scope
+
+M14 Packet 1 does:
+- keep M4 authoritative for prediction and signal generation
+- add checked-in `configs/explainability.yaml`
+- add shared explainability config, schemas, and service helpers under `app/explainability/`
+- expose `model_version` and stable `model_version_source` on the loaded model metadata
+- resolve a persisted reference vector from `artifacts/explainability/<model_version>/reference.json`
+- build the reference vector deterministically from canonical `feature_ohlc` medians when the artifact is missing, then persist it
+- compute top-feature contributions with one-at-a-time reference ablation against `prob_up`
+- extend `GET /predict` with additive `model_version`, `top_features`, and `prediction_explanation`
+- extend `GET /signal` with additive `model_version`, `top_features`, `threshold_snapshot`, `regime_reason`, and `signal_explanation`
+- add explicit regime-reason codes `REGIME_HIGH_VOL`, `REGIME_TREND_UP`, `REGIME_TREND_DOWN`, and `REGIME_RANGE`
+
+M14 Packet 1 does not do:
+- add a new API service
+- change M10 risk approval or sizing authority
+- change M11/M12 execution routing, live safety, or audit behavior
+- change M13 reliability HOLD behavior
+- add SHAP, external explainability dependencies, threshold rewrites, or dashboard redesigns
+
 ## Environment Variables
 
 Copy `.env.example` to `.env` before running the stack.
@@ -628,6 +657,9 @@ M13 writes:
 - `artifacts/reliability/recovery_events.jsonl`
 - `artifacts/reliability/system_health.json`
 - `artifacts/reliability/lag_summary.json`
+
+M14 writes:
+- `artifacts/explainability/<model_version>/reference.json`
 
 The dashboard shows the configured execution mode, a strong `LIVE` banner when `mode: live`, the current live safety state, recent live order audit rows, and the canonical M13 reliability summary. This remains a guarded live foundation; alert routing and automatic recovery orchestration are still intentionally deferred.
 
@@ -935,6 +967,39 @@ docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELE
 ```
 
 Expect one explicit overall status in `HEALTHY`, `DEGRADED`, or `UNAVAILABLE`, explicit aggregate reason codes, producer feed-freshness visibility, per-service heartbeat status, lag breach state, and the latest recovery event. The dashboard should show the same system-level summary in `Reliability Status`, `Per-Service Health`, and `Feature Consumer Lag`.
+
+## M14 Explainability Validation
+
+1. Verify additive explainability on `/predict`.
+Call `GET /predict` for a live symbol and confirm the response now includes `model_version`, `top_features`, and `prediction_explanation` without changing the existing prediction contract.
+
+```powershell
+Get-Content configs\explainability.yaml
+curl "http://127.0.0.1:8000/predict?symbol=BTC/USD"
+Get-ChildItem artifacts\explainability
+Get-Content artifacts\explainability\<model_version>\reference.json
+```
+
+Expect `prediction_explanation.method=ONE_AT_A_TIME_REFERENCE_ABLATION`, a persisted `reference.json`, and `top_features` sorted by absolute `signed_contribution` descending.
+
+2. Verify additive explainability on `/signal`.
+Call `GET /signal` for a fresh symbol and confirm the response now includes `model_version`, `top_features`, `threshold_snapshot`, `regime_reason`, and `signal_explanation`.
+
+```powershell
+curl "http://127.0.0.1:8000/signal?symbol=BTC/USD"
+curl "http://127.0.0.1:8000/regime?symbol=BTC/USD"
+```
+
+Expect `threshold_snapshot` to show the active regime thresholds, `regime_reason.reason_code` to be one of `REGIME_HIGH_VOL`, `REGIME_TREND_UP`, `REGIME_TREND_DOWN`, or `REGIME_RANGE`, and `signal_explanation.decision_source=model`.
+
+3. Verify the M13 reliability HOLD path still wins when inputs are stale or missing.
+Use an older exact candle or a missing exact candle and confirm the response is still an explicit reliability `HOLD` while the additive M14 fields remain present.
+
+```powershell
+curl "http://127.0.0.1:8000/signal?symbol=BTC/USD&interval_begin=<older interval_begin>"
+```
+
+Expect `signal=HOLD`, `decision_source=reliability`, the existing M13 `reason_code`, and additive `threshold_snapshot` plus `signal_explanation` fields without any change to the underlying HOLD behavior.
 
 ## Inspect Topics
 

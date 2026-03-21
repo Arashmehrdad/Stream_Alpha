@@ -46,6 +46,23 @@ class SerializableProbabilityModel:
         return [[1.0 - self._prob_up, self._prob_up] for _ in rows]
 
 
+class SerializableFeatureAwareModel:
+    """Serializable model stub whose probabilities move with numeric features."""
+
+    def predict_proba(self, rows: list[dict]) -> list[list[float]]:
+        """Return deterministic binary probabilities from a few explainable inputs."""
+        payload: list[list[float]] = []
+        for row in rows:
+            prob_up = (
+                0.50
+                + (0.50 * float(row["momentum_3"]))
+                - (0.20 * float(row["realized_vol_12"]))
+                + (0.05 * float(row["volume_zscore_12"]))
+            )
+            payload.append([1.0 - prob_up, prob_up])
+        return payload
+
+
 class FakeDatabase:
     """Minimal async database stub for service and API tests."""
 
@@ -53,10 +70,12 @@ class FakeDatabase:
         self,
         *,
         row: dict | None = None,
+        reference_vector: dict[str, float] | None = None,
         healthy: bool = True,
         fetch_error: Exception | None = None,
     ) -> None:
         self.row = row
+        self.reference_vector = {} if reference_vector is None else reference_vector
         self.healthy = healthy
         self.fetch_error = fetch_error
         self.last_interval_begin = None
@@ -92,6 +111,32 @@ class FakeDatabase:
         ):
             return None
         return self.row
+
+    async def fetch_feature_reference_vector(
+        self,
+        *,
+        feature_names: tuple[str, ...],
+        interval_minutes: int,
+    ) -> dict[str, float]:
+        """Return configured or row-derived reference values for explainability tests."""
+        del interval_minutes
+        if self.fetch_error is not None:
+            raise self.fetch_error
+        if self.reference_vector:
+            return {
+                feature_name: float(self.reference_vector[feature_name])
+                for feature_name in feature_names
+                if feature_name in self.reference_vector
+            }
+        if self.row is None:
+            return {}
+        return {
+            feature_name: float(self.row[feature_name])
+            for feature_name in feature_names
+            if feature_name in self.row
+            and isinstance(self.row[feature_name], (int, float))
+            and not isinstance(self.row[feature_name], bool)
+        }
 
 
 class FakeReliabilityStore:
@@ -313,6 +358,32 @@ def _write_artifact(tmp_path: Path, *, prob_up: float) -> Path:
     return artifact_path
 
 
+def _write_feature_aware_artifact(tmp_path: Path) -> Path:
+    artifact_path = tmp_path / "artifacts" / "training" / "m3" / "20260321T120000Z" / "model.joblib"
+    artifact_path.parent.mkdir(parents=True, exist_ok=False)
+    joblib.dump(
+        {
+            "model_name": "logistic_regression",
+            "trained_at": "2026-03-21T12:00:00Z",
+            "feature_columns": [
+                "symbol",
+                "momentum_3",
+                "realized_vol_12",
+                "volume_zscore_12",
+            ],
+            "expanded_feature_names": [
+                "symbol=BTC/USD",
+                "momentum_3",
+                "realized_vol_12",
+                "volume_zscore_12",
+            ],
+            "model": SerializableFeatureAwareModel(),
+        },
+        artifact_path,
+    )
+    return artifact_path
+
+
 def _feature_row(
     symbol: str = "BTC/USD",
     *,
@@ -368,13 +439,19 @@ def _feature_row(
 def _build_client(
     tmp_path: Path,
     *,
-    prob_up: float,
+    prob_up: float = 0.7,
     database: FakeDatabase,
     reliability_store: FakeReliabilityStore | None = None,
+    artifact_path: Path | None = None,
 ) -> TestClient:
-    artifact = load_model_artifact(str(_write_artifact(tmp_path, prob_up=prob_up)))
+    resolved_artifact_path = (
+        _write_artifact(tmp_path, prob_up=prob_up)
+        if artifact_path is None
+        else artifact_path
+    )
+    artifact = load_model_artifact(str(resolved_artifact_path))
     service = InferenceService(
-        _build_settings(str(_write_artifact(tmp_path, prob_up=prob_up))),
+        _build_settings(str(resolved_artifact_path)),
         database=database,
         model_artifact=artifact,
         regime_runtime=_build_regime_runtime(tmp_path),
@@ -539,8 +616,51 @@ def test_predict_happy_path(tmp_path: Path) -> None:
     assert payload["row_id"].startswith("BTC/USD|")
     assert payload["regime_label"] == "TREND_UP"
     assert payload["regime_run_id"] == "20260320T120000Z"
+    assert payload["model_version"] == "model-0.70"
     assert payload["freshness_status"] == "FRESH"
     assert payload["health_overall_status"] == "HEALTHY"
+    assert payload["prediction_explanation"]["available"] is True
+    assert payload["prediction_explanation"]["method"] == "ONE_AT_A_TIME_REFERENCE_ABLATION"
+    assert isinstance(payload["top_features"], list)
+
+
+def test_predict_and_signal_include_m14_explainability_fields(tmp_path: Path) -> None:
+    """`/predict` and `/signal` should expose additive M14 explanation fields."""
+    row = _feature_row(
+        realized_vol_12=0.03,
+        momentum_3=0.08,
+        macd_line_12_26=1.2,
+    )
+    database = FakeDatabase(
+        row=row,
+        reference_vector={
+            "momentum_3": 0.02,
+            "realized_vol_12": 0.04,
+            "volume_zscore_12": 0.0,
+        },
+    )
+    client = _build_client(
+        tmp_path,
+        database=database,
+        artifact_path=_write_feature_aware_artifact(tmp_path),
+    )
+
+    predict_payload = client.get("/predict", params={"symbol": "BTC/USD"}).json()
+    signal_payload = client.get("/signal", params={"symbol": "BTC/USD"}).json()
+
+    assert predict_payload["model_version"] == "m3-20260321T120000Z"
+    assert predict_payload["top_features"][0]["feature_name"] == "volume_zscore_12"
+    assert predict_payload["prediction_explanation"]["available"] is True
+    assert predict_payload["prediction_explanation"]["reference_vector_path"].endswith(
+        "artifacts\\explainability\\m3-20260321T120000Z\\reference.json"
+    )
+    assert signal_payload["model_version"] == "m3-20260321T120000Z"
+    assert signal_payload["top_features"][0]["feature_name"] == "volume_zscore_12"
+    assert signal_payload["threshold_snapshot"]["buy_prob_up"] == 0.54
+    assert signal_payload["threshold_snapshot"]["allow_new_long_entries"] is True
+    assert signal_payload["regime_reason"]["reason_code"] == "REGIME_TREND_UP"
+    assert signal_payload["signal_explanation"]["decision_source"] == "model"
+    assert signal_payload["signal_explanation"]["available"] is True
 
 
 def test_signal_accepts_exact_interval_begin_selector(tmp_path: Path) -> None:
@@ -661,10 +781,14 @@ def test_invalid_symbol_and_missing_row_behaviour(tmp_path: Path) -> None:
     assert invalid_response.status_code == 400
     assert missing_response.status_code == 404
     assert missing_signal_response.status_code == 200
-    assert missing_signal_response.json()["signal"] == "HOLD"
-    assert missing_signal_response.json()["decision_source"] == "reliability"
-    assert missing_signal_response.json()["reason_code"] == "RELIABILITY_HOLD_MISSING_FEATURE_ROW"
-    assert missing_signal_response.json()["row_id"] == "BTC/USD|2026-03-21T12:00:00Z"
+    missing_signal_payload = missing_signal_response.json()
+    assert missing_signal_payload["signal"] == "HOLD"
+    assert missing_signal_payload["decision_source"] == "reliability"
+    assert missing_signal_payload["reason_code"] == "RELIABILITY_HOLD_MISSING_FEATURE_ROW"
+    assert missing_signal_payload["row_id"] == "BTC/USD|2026-03-21T12:00:00Z"
+    assert missing_signal_payload["top_features"] == []
+    assert missing_signal_payload["signal_explanation"]["decision_source"] == "reliability"
+    assert missing_signal_payload["threshold_snapshot"]["regime_label"] is None
 
 
 def test_metrics_increment_after_requests(tmp_path: Path) -> None:
@@ -718,6 +842,10 @@ def test_signal_degrades_to_reliability_hold_when_feature_row_is_stale(tmp_path:
     assert payload["signal_status"] == "RELIABILITY_HOLD"
     assert payload["freshness_status"] == "STALE"
     assert payload["reason_code"] == "RELIABILITY_HOLD_STALE_FEATURE_ROW"
+    assert payload["top_features"] == []
+    assert payload["threshold_snapshot"]["regime_label"] == "TREND_UP"
+    assert payload["regime_reason"]["reason_code"] == "REGIME_TREND_UP"
+    assert payload["signal_explanation"]["decision_source"] == "reliability"
 
 
 def test_freshness_endpoint_returns_exact_row_status(tmp_path: Path) -> None:

@@ -77,3 +77,31 @@ def test_fetch_latest_feature_row_accepts_exact_interval_begin() -> None:
     assert row == {"id": 1, "interval_begin": interval_begin}
     assert fake_pool.args == ("BTC/USD", 5, interval_begin)
     assert "AND interval_begin = $3" in (fake_pool.query or "")
+
+
+def test_fetch_feature_reference_vector_queries_medians_for_requested_columns() -> None:
+    """The reference-vector query should compute deterministic medians per feature."""
+    database = InferenceDatabase("postgresql://ignored", "feature_ohlc")
+    fake_pool = FakePool(
+        {
+            "close_price": 70250.0,
+            "momentum_3": 0.015,
+        }
+    )
+    database._pool = fake_pool  # pylint: disable=protected-access
+
+    reference_values = asyncio.run(
+        database.fetch_feature_reference_vector(
+            feature_names=("close_price", "momentum_3"),
+            interval_minutes=5,
+        )
+    )
+
+    assert reference_values == {
+        "close_price": 70250.0,
+        "momentum_3": 0.015,
+    }
+    assert fake_pool.args == (5,)
+    assert "percentile_cont(0.5)" in (fake_pool.query or "")
+    assert '"close_price"' in (fake_pool.query or "")
+    assert '"momentum_3"' in (fake_pool.query or "")

@@ -1,0 +1,63 @@
+"""Shared M14 explainability primitives for the authoritative M4 path."""
+
+from app.explainability.config import (
+    ExplainabilityConfig,
+    ExplainabilityReferenceConfig,
+    default_explainability_config_path,
+    load_explainability_config,
+)
+from app.explainability.schemas import (
+    PredictionExplanation,
+    ReferenceVectorArtifact,
+    RegimeObservedMetrics,
+    RegimeReason,
+    RegimeThresholds,
+    ResolvedReferenceVector,
+    SignalExplanation,
+    ThresholdSnapshot,
+    TopFeatureContribution,
+)
+from app.explainability.service import (
+    EXPLAINABILITY_AVAILABLE,
+    EXPLAINABILITY_NO_NUMERIC_FEATURES,
+    EXPLAINABILITY_REFERENCE_UNAVAILABLE,
+    REFERENCE_ABLATION_METHOD,
+    REGIME_HIGH_VOL,
+    REGIME_RANGE,
+    REGIME_TREND_DOWN,
+    REGIME_TREND_UP,
+    SIGNAL_EXPLANATION_MODEL_DECISION,
+    SIGNAL_EXPLANATION_RELIABILITY_HOLD,
+    ExplainabilityService,
+    build_regime_reason,
+    compute_top_feature_contributions,
+)
+
+__all__ = [
+    "EXPLAINABILITY_AVAILABLE",
+    "EXPLAINABILITY_NO_NUMERIC_FEATURES",
+    "EXPLAINABILITY_REFERENCE_UNAVAILABLE",
+    "REFERENCE_ABLATION_METHOD",
+    "REGIME_HIGH_VOL",
+    "REGIME_RANGE",
+    "REGIME_TREND_DOWN",
+    "REGIME_TREND_UP",
+    "SIGNAL_EXPLANATION_MODEL_DECISION",
+    "SIGNAL_EXPLANATION_RELIABILITY_HOLD",
+    "ExplainabilityConfig",
+    "ExplainabilityReferenceConfig",
+    "ExplainabilityService",
+    "PredictionExplanation",
+    "ReferenceVectorArtifact",
+    "RegimeObservedMetrics",
+    "RegimeReason",
+    "RegimeThresholds",
+    "ResolvedReferenceVector",
+    "SignalExplanation",
+    "ThresholdSnapshot",
+    "TopFeatureContribution",
+    "build_regime_reason",
+    "compute_top_feature_contributions",
+    "default_explainability_config_path",
+    "load_explainability_config",
+]

@@ -6,7 +6,15 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+
+from app.explainability.schemas import (
+    PredictionExplanation,
+    RegimeReason,
+    SignalExplanation,
+    ThresholdSnapshot,
+    TopFeatureContribution,
+)
 
 
 class HealthResponse(BaseModel):
@@ -74,6 +82,7 @@ class PredictionResponse(BaseModel):
     model_name: str
     model_trained_at: str
     model_artifact_path: str
+    model_version: str
     row_id: str
     interval_begin: str
     as_of_time: str
@@ -87,6 +96,8 @@ class PredictionResponse(BaseModel):
     reason_code: str | None = None
     freshness_status: str | None = None
     health_overall_status: str | None = None
+    top_features: list[TopFeatureContribution] = Field(default_factory=list)
+    prediction_explanation: PredictionExplanation
 
 
 class ThresholdsResponse(BaseModel):
@@ -110,6 +121,7 @@ class SignalResponse(BaseModel):
     row_id: str
     as_of_time: str
     model_name: str
+    model_version: str
     regime_label: str | None
     regime_run_id: str | None
     trade_allowed: bool
@@ -118,6 +130,10 @@ class SignalResponse(BaseModel):
     reason_code: str | None = None
     freshness_status: str | None = None
     health_overall_status: str | None = None
+    top_features: list[TopFeatureContribution] = Field(default_factory=list)
+    threshold_snapshot: ThresholdSnapshot
+    regime_reason: RegimeReason | None = None
+    signal_explanation: SignalExplanation
 
 
 class RegimeResponse(BaseModel):

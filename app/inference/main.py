@@ -40,7 +40,7 @@ def create_app(
         service = InferenceService(settings)
 
     logger = logging.getLogger(f"{service.settings.app_name}.inference")
-    app = FastAPI(title="Stream Alpha Inference API", version="m9")
+    app = FastAPI(title="Stream Alpha Inference API", version="m14")
     app.state.service = service
 
     @app.on_event("startup")
@@ -125,7 +125,7 @@ def create_app(
                 symbol=symbol,
                 interval_begin=parsed_interval_begin,
             )
-            return service.predict_from_row(row, freshness=freshness)
+            return await service.predict_from_row(row, freshness=freshness)
         except ArtifactSchemaMismatchError as error:
             raise HTTPException(status_code=500, detail=str(error)) from error
 

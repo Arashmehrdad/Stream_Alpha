@@ -1,0 +1,28 @@
+schema_version: m14_explainability_v1
+reference:
+  artifact_root: artifacts/explainability
+  reference_filename: reference.json
+  top_feature_count: 5
+  explainable_numeric_features:
+    - open_price
+    - high_price
+    - low_price
+    - close_price
+    - vwap
+    - trade_count
+    - volume
+    - log_return_1
+    - log_return_3
+    - momentum_3
+    - return_mean_12
+    - return_std_12
+    - realized_vol_12
+    - rsi_14
+    - macd_line_12_26
+    - volume_mean_12
+    - volume_std_12
+    - volume_zscore_12
+    - close_zscore_12
+    - lag_log_return_1
+    - lag_log_return_2
+    - lag_log_return_3

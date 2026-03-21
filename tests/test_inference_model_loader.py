@@ -10,6 +10,7 @@ import joblib
 import pytest
 
 from app.inference.service import load_model_artifact
+from app.training.registry import write_json_atomic
 
 
 class SerializableProbabilityModel:
@@ -24,7 +25,9 @@ class SerializableProbabilityModel:
 
 
 def _write_artifact(tmp_path: Path) -> Path:
-    artifact_path = tmp_path / "model.joblib"
+    run_dir = tmp_path / "artifacts" / "training" / "m3" / "20260319T223002Z"
+    run_dir.mkdir(parents=True, exist_ok=False)
+    artifact_path = run_dir / "model.joblib"
     joblib.dump(
         {
             "model_name": "logistic_regression",
@@ -43,8 +46,30 @@ def test_load_model_artifact_successfully(tmp_path: Path) -> None:
     artifact = load_model_artifact(str(_write_artifact(tmp_path)))
 
     assert artifact.model_name == "logistic_regression"
+    assert artifact.model_version == "m3-20260319T223002Z"
+    assert artifact.model_version_source == "RUN_DIR_DERIVED"
     assert artifact.feature_columns == ("symbol", "close_price")
     assert artifact.model_artifact_path.endswith("model.joblib")
+
+
+def test_load_model_artifact_uses_registry_current_metadata_when_override_is_empty(
+    tmp_path: Path,
+) -> None:
+    """Registry-backed loading should expose the promoted model version metadata."""
+    artifact_path = _write_artifact(tmp_path)
+    registry_root = tmp_path / "registry"
+    write_json_atomic(
+        registry_root / "current.json",
+        {
+            "model_version": "m7-20260320T010101Z",
+            "model_artifact_path": str(artifact_path.resolve()),
+        },
+    )
+
+    artifact = load_model_artifact("", registry_root=registry_root)
+
+    assert artifact.model_version == "m7-20260320T010101Z"
+    assert artifact.model_version_source == "REGISTRY_CURRENT"
 
 
 def test_load_model_artifact_rejects_bad_path(tmp_path: Path) -> None:

@@ -14,6 +14,12 @@ import joblib
 
 from app.common.config import Settings
 from app.common.time import parse_rfc3339, to_rfc3339, utc_now
+from app.explainability.config import (
+    default_explainability_config_path,
+    load_explainability_config,
+)
+from app.explainability.schemas import PredictionExplanation, TopFeatureContribution
+from app.explainability.service import ExplainabilityService, build_regime_reason
 from app.inference.db import InferenceDatabase
 from app.inference.schemas import (
     FreshnessResponse,
@@ -51,9 +57,9 @@ from app.reliability.service import (
     evaluate_regime_freshness,
 )
 from app.reliability.store import ReliabilityStore
-from app.regime.live import LiveRegimeRuntime, load_live_regime_runtime
+from app.regime.live import LiveRegimeRuntime, ResolvedRegime, load_live_regime_runtime
 from app.trading.config import load_paper_trading_config
-from app.training.registry import resolve_inference_model_path
+from app.training.registry import resolve_inference_model_metadata
 
 
 _PAPER_TRADING_CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "paper_trading.yaml"
@@ -68,15 +74,25 @@ class ArtifactSchemaMismatchError(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
-class LoadedModelArtifact:
+class LoadedModelArtifact:  # pylint: disable=too-many-instance-attributes
     """Validated saved M3 model artifact for direct online reuse."""
 
     model_name: str
     trained_at: str
+    model_version: str
+    model_version_source: str
     feature_columns: tuple[str, ...]
     expanded_feature_names: tuple[str, ...]
     model_artifact_path: str
     model: Any
+
+
+@dataclass(frozen=True, slots=True)
+class PredictionContext:
+    """Internal prediction build bundle that preserves resolved regime details."""
+
+    prediction: PredictionResponse
+    resolved_regime: ResolvedRegime
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,9 +156,17 @@ class MetricsState:
         self.latency.record(latency_ms)
 
 
-def load_model_artifact(model_path: str) -> LoadedModelArtifact:
+def load_model_artifact(
+    model_path: str,
+    *,
+    registry_root: Path | None = None,
+) -> LoadedModelArtifact:
     """Load and validate the saved M3 model artifact."""
-    artifact_path = Path(resolve_inference_model_path(model_path)).resolve()
+    metadata = resolve_inference_model_metadata(
+        model_path,
+        registry_root=registry_root,
+    )
+    artifact_path = Path(metadata["model_artifact_path"]).resolve()
 
     payload = joblib.load(artifact_path)
     if not isinstance(payload, dict):
@@ -168,6 +192,8 @@ def load_model_artifact(model_path: str) -> LoadedModelArtifact:
     return LoadedModelArtifact(
         model_name=str(payload["model_name"]),
         trained_at=str(payload["trained_at"]),
+        model_version=metadata["model_version"],
+        model_version_source=metadata["model_version_source"],
         feature_columns=feature_columns,
         expanded_feature_names=expanded_feature_names,
         model_artifact_path=str(artifact_path),
@@ -192,6 +218,9 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
         self.started_at = utc_now()
         self.metrics = MetricsState(started_at=self.started_at)
         self.reliability_config = load_reliability_config(default_reliability_config_path())
+        self.explainability_config = load_explainability_config(
+            default_explainability_config_path()
+        )
         self.database = database or InferenceDatabase(
             settings.postgres.dsn,
             settings.tables.feature_ohlc,
@@ -206,6 +235,7 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
             thresholds_path=settings.inference.regime_thresholds_path,
             signal_policy_path=settings.inference.regime_signal_policy_path,
         )
+        self.explainability_service = ExplainabilityService(self.explainability_config)
         self.trading_config = load_paper_trading_config(_PAPER_TRADING_CONFIG_PATH)
         self._symbols = set(settings.kraken.symbols)
         self._last_heartbeat_at: datetime | None = None
@@ -324,13 +354,26 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
             interval_begin=interval_begin,
         )
 
-    def predict_from_row(
+    async def predict_from_row(
         self,
         row: dict[str, Any],
         *,
         freshness: FreshnessEvaluation | None = None,
     ) -> PredictionResponse:
         """Run predict_proba against one canonical feature row."""
+        prediction_context = await self._build_prediction_context(
+            row,
+            freshness=freshness,
+        )
+        return prediction_context.prediction
+
+    async def _build_prediction_context(
+        self,
+        row: dict[str, Any],
+        *,
+        freshness: FreshnessEvaluation | None = None,
+    ) -> PredictionContext:
+        """Build the prediction payload plus resolved regime details for reuse."""
         feature_input = self._build_feature_input(row)
         resolved_regime = self._resolve_regime(row)
         probabilities = self.model_artifact.model.predict_proba([feature_input])
@@ -342,32 +385,43 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
         prob_down = float(probabilities[0][0])
         prob_up = float(probabilities[0][1])
         predicted_class = "UP" if prob_up >= prob_down else "DOWN"
-        return PredictionResponse(
-            symbol=str(row["symbol"]),
-            model_name=self.model_artifact.model_name,
-            model_trained_at=self.model_artifact.trained_at,
-            model_artifact_path=self.model_artifact.model_artifact_path,
-            row_id=f"{row['symbol']}|{to_rfc3339(row['interval_begin'])}",
-            interval_begin=to_rfc3339(row["interval_begin"]),
-            as_of_time=to_rfc3339(row["as_of_time"]),
+        top_features, prediction_explanation = await self._build_prediction_explainability(
+            feature_input=feature_input,
             prob_up=prob_up,
-            prob_down=prob_down,
-            predicted_class=predicted_class,
-            confidence=max(prob_up, prob_down),
-            regime_label=resolved_regime.regime_label,
-            regime_run_id=resolved_regime.regime_run_id,
-            decision_source="model",
-            reason_code=None if freshness is None else freshness.reason_code,
-            freshness_status=None if freshness is None else freshness.freshness_status,
-            health_overall_status=(
-                None if freshness is None else freshness.health_overall_status
+        )
+        return PredictionContext(
+            prediction=PredictionResponse(
+                symbol=str(row["symbol"]),
+                model_name=self.model_artifact.model_name,
+                model_trained_at=self.model_artifact.trained_at,
+                model_artifact_path=self.model_artifact.model_artifact_path,
+                model_version=self.model_artifact.model_version,
+                row_id=f"{row['symbol']}|{to_rfc3339(row['interval_begin'])}",
+                interval_begin=to_rfc3339(row["interval_begin"]),
+                as_of_time=to_rfc3339(row["as_of_time"]),
+                prob_up=prob_up,
+                prob_down=prob_down,
+                predicted_class=predicted_class,
+                confidence=max(prob_up, prob_down),
+                regime_label=resolved_regime.regime_label,
+                regime_run_id=resolved_regime.regime_run_id,
+                decision_source="model",
+                reason_code=None if freshness is None else freshness.reason_code,
+                freshness_status=None if freshness is None else freshness.freshness_status,
+                health_overall_status=(
+                    None if freshness is None else freshness.health_overall_status
+                ),
+                top_features=top_features,
+                prediction_explanation=prediction_explanation,
             ),
+            resolved_regime=resolved_regime,
         )
 
-    def signal_from_prediction(
+    def signal_from_prediction(  # pylint: disable=too-many-locals
         self,
         prediction: PredictionResponse,
         *,
+        resolved_regime: ResolvedRegime,
         freshness: FreshnessEvaluation | None = None,
     ) -> SignalResponse:
         """Convert one prediction into BUY, SELL, or HOLD."""
@@ -404,6 +458,23 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
             )
             signal_status = "MODEL_HOLD"
         trade_allowed = signal in {"BUY", "SELL"}
+        threshold_snapshot = self.explainability_service.build_threshold_snapshot(
+            buy_prob_up=buy_threshold,
+            sell_prob_up=sell_threshold,
+            allow_new_long_entries=policy.allow_new_long_entries,
+            resolved_regime=resolved_regime,
+        )
+        regime_reason = build_regime_reason(
+            resolved_regime=resolved_regime,
+            trade_allowed=policy.allow_new_long_entries,
+        )
+        signal_explanation = self.explainability_service.build_signal_explanation(
+            signal=signal,
+            decision_source=decision_source,
+            reason=reason,
+            trade_allowed=trade_allowed,
+            regime_reason=regime_reason,
+        )
 
         return SignalResponse(
             symbol=prediction.symbol,
@@ -420,6 +491,7 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
             row_id=prediction.row_id,
             as_of_time=prediction.as_of_time,
             model_name=prediction.model_name,
+            model_version=prediction.model_version,
             regime_label=prediction.regime_label,
             regime_run_id=prediction.regime_run_id,
             trade_allowed=trade_allowed,
@@ -430,7 +502,38 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
             health_overall_status=(
                 None if freshness is None else freshness.health_overall_status
             ),
+            top_features=prediction.top_features,
+            threshold_snapshot=threshold_snapshot,
+            regime_reason=regime_reason,
+            signal_explanation=signal_explanation,
         )
+
+    async def _build_prediction_explainability(
+        self,
+        *,
+        feature_input: dict[str, Any],
+        prob_up: float,
+    ) -> tuple[list[TopFeatureContribution], PredictionExplanation]:
+        """Build additive M14 prediction explainability without weakening M4 serving."""
+        try:
+            return await self.explainability_service.build_prediction_details(
+                model_artifact=self.model_artifact,
+                database=self.database,
+                feature_input=feature_input,
+                interval_minutes=self.settings.kraken.ohlc_interval_minutes,
+                source_table=self.settings.tables.feature_ohlc,
+                prob_up=prob_up,
+            )
+        except Exception as error:  # pylint: disable=broad-exception-caught
+            return (
+                [],
+                self.explainability_service.build_prediction_unavailable(
+                    summary_text=(
+                        "Explainability was unavailable for this prediction: "
+                        f"{error}"
+                    )
+                ),
+            )
 
     def regime_from_row(
         self,
@@ -726,20 +829,19 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
                 symbol=symbol,
                 as_of_time=None,
                 row_id=freshness.row_id or _fallback_row_id(symbol, interval_begin),
-                regime_label=None,
-                regime_run_id=None,
+                resolved_regime=None,
                 freshness=freshness,
                 reason_code=RELIABILITY_HOLD_MISSING_FEATURE_ROW,
                 reason="No canonical feature row was found for the requested candle",
             )
 
         if freshness.feature_freshness.freshness_status != "FRESH":
+            resolved_regime = self._try_resolve_regime(row)
             return self._build_reliability_hold(
                 symbol=symbol,
                 as_of_time=row["as_of_time"],
                 row_id=f"{row['symbol']}|{to_rfc3339(row['interval_begin'])}",
-                regime_label=freshness.regime_label,
-                regime_run_id=freshness.regime_run_id,
+                resolved_regime=resolved_regime,
                 freshness=freshness,
                 reason_code=RELIABILITY_HOLD_STALE_FEATURE_ROW,
                 reason=(
@@ -748,15 +850,21 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
             )
 
         try:
-            prediction = self.predict_from_row(row, freshness=freshness)
-            return self.signal_from_prediction(prediction, freshness=freshness)
+            prediction_context = await self._build_prediction_context(
+                row,
+                freshness=freshness,
+            )
+            return self.signal_from_prediction(
+                prediction_context.prediction,
+                resolved_regime=prediction_context.resolved_regime,
+                freshness=freshness,
+            )
         except ArtifactSchemaMismatchError as error:
             return self._build_reliability_hold(
                 symbol=symbol,
                 as_of_time=row["as_of_time"],
                 row_id=f"{row['symbol']}|{to_rfc3339(row['interval_begin'])}",
-                regime_label=freshness.regime_label,
-                regime_run_id=freshness.regime_run_id,
+                resolved_regime=self._try_resolve_regime(row),
                 freshness=freshness,
                 reason_code=(
                     REGIME_ROW_INCOMPATIBLE
@@ -791,11 +899,17 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
         if sell_threshold > buy_threshold:
             raise ValueError("SELL threshold cannot be greater than BUY threshold")
 
-    def _resolve_regime(self, row: dict[str, Any]):
+    def _resolve_regime(self, row: dict[str, Any]) -> ResolvedRegime:
         try:
             return self.regime_runtime.resolve_feature_row_regime(row)
         except ValueError as error:
             raise ArtifactSchemaMismatchError(str(error)) from error
+
+    def _try_resolve_regime(self, row: dict[str, Any]) -> ResolvedRegime | None:
+        try:
+            return self._resolve_regime(row)
+        except ArtifactSchemaMismatchError:
+            return None
 
     async def _freshness_summary_rows(
         self,
@@ -1110,19 +1224,50 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
         )
 
     # pylint: disable=too-many-arguments
-    def _build_reliability_hold(
+    def _build_reliability_hold(  # pylint: disable=too-many-locals
         self,
         *,
         symbol: str,
         as_of_time: datetime | None,
         row_id: str,
-        regime_label: str | None,
-        regime_run_id: str | None,
+        resolved_regime: ResolvedRegime | None,
         freshness: FreshnessEvaluation,
         reason_code: str,
         reason: str,
     ) -> SignalResponse:
+        regime_label = (
+            None if resolved_regime is None else resolved_regime.regime_label
+        )
+        regime_run_id = (
+            None if resolved_regime is None else resolved_regime.regime_run_id
+        )
         buy_threshold, sell_threshold = self._default_thresholds(regime_label)
+        allow_new_long_entries = (
+            False
+            if regime_label is None
+            else self.regime_runtime.policy_for(regime_label).allow_new_long_entries
+        )
+        threshold_snapshot = self.explainability_service.build_threshold_snapshot(
+            buy_prob_up=buy_threshold,
+            sell_prob_up=sell_threshold,
+            allow_new_long_entries=allow_new_long_entries,
+            resolved_regime=resolved_regime,
+        )
+        regime_reason = (
+            None
+            if resolved_regime is None
+            else build_regime_reason(
+                resolved_regime=resolved_regime,
+                trade_allowed=allow_new_long_entries,
+            )
+        )
+        signal_explanation = self.explainability_service.build_signal_explanation(
+            signal="HOLD",
+            decision_source="reliability",
+            reason=reason,
+            trade_allowed=False,
+            regime_reason=regime_reason,
+        )
         effective_as_of_time = (
             utc_now()
             if as_of_time is None
@@ -1143,6 +1288,7 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
             row_id=row_id,
             as_of_time=to_rfc3339(effective_as_of_time),
             model_name=self.model_artifact.model_name,
+            model_version=self.model_artifact.model_version,
             regime_label=regime_label,
             regime_run_id=regime_run_id,
             trade_allowed=False,
@@ -1151,6 +1297,10 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
             reason_code=reason_code,
             freshness_status=freshness.freshness_status,
             health_overall_status=freshness.health_overall_status,
+            top_features=[],
+            threshold_snapshot=threshold_snapshot,
+            regime_reason=regime_reason,
+            signal_explanation=signal_explanation,
         )
     # pylint: enable=too-many-arguments
 

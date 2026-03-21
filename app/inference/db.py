@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import re
-from typing import Any
+from typing import Any, Sequence
 
 import asyncpg
 
@@ -104,6 +104,46 @@ class InferenceDatabase:
         except Exception as error:  # pylint: disable=broad-exception-caught
             raise DatabaseUnavailableError(f"Could not query PostgreSQL: {error}") from error
         return None if row is None else dict(row)
+
+    async def fetch_feature_reference_vector(
+        self,
+        *,
+        feature_names: Sequence[str],
+        interval_minutes: int,
+    ) -> dict[str, float]:
+        """Fetch deterministic median reference values for explainable numeric features."""
+        requested_features = tuple(feature_names)
+        if not requested_features:
+            return {}
+
+        select_columns = ", ".join(
+            (
+                "percentile_cont(0.5) WITHIN GROUP (ORDER BY "
+                f"{_quote_identifier(feature_name)}) AS {_quote_identifier(feature_name)}"
+            )
+            for feature_name in requested_features
+        )
+        try:
+            pool = await self._require_pool()
+            row = await pool.fetchrow(
+                f"""
+                SELECT {select_columns}
+                FROM {self._feature_table}
+                WHERE source_exchange = 'kraken'
+                  AND interval_minutes = $1
+                """,
+                interval_minutes,
+            )
+        except Exception as error:  # pylint: disable=broad-exception-caught
+            raise DatabaseUnavailableError(f"Could not query PostgreSQL: {error}") from error
+
+        if row is None:
+            return {}
+        return {
+            feature_name: float(row[feature_name])
+            for feature_name in requested_features
+            if row[feature_name] is not None
+        }
 
     async def _require_pool(self) -> asyncpg.Pool | Any:
         if self._pool is None:

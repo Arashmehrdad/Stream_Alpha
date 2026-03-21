@@ -165,11 +165,30 @@ def resolve_inference_model_path(
     registry_root: Path | None = None,
 ) -> str:
     """Resolve the model path from an explicit override or the current registry champion."""
+    return str(
+        resolve_inference_model_metadata(
+            model_override,
+            registry_root=registry_root,
+        )["model_artifact_path"]
+    )
+
+
+def resolve_inference_model_metadata(
+    model_override: str,
+    *,
+    registry_root: Path | None = None,
+) -> dict[str, str]:
+    """Resolve the active inference model path plus stable version metadata."""
     if model_override.strip():
         override_path = Path(model_override).expanduser().resolve()
         if not override_path.is_file():
             raise ValueError(f"INFERENCE_MODEL_PATH does not exist: {override_path}")
-        return str(override_path)
+        model_version, model_version_source = _derive_override_model_version(override_path)
+        return {
+            "model_artifact_path": str(override_path),
+            "model_version": model_version,
+            "model_version_source": model_version_source,
+        }
 
     current_entry = load_current_registry_entry(registry_root)
     if current_entry is None:
@@ -181,7 +200,15 @@ def resolve_inference_model_path(
     model_path = Path(str(current_entry["model_artifact_path"])).expanduser().resolve()
     if not model_path.is_file():
         raise ValueError(f"Registry champion model artifact does not exist: {model_path}")
-    return str(model_path)
+
+    model_version = str(current_entry.get("model_version", "")).strip()
+    if not model_version:
+        model_version, _ = _derive_override_model_version(model_path)
+    return {
+        "model_artifact_path": str(model_path),
+        "model_version": model_version,
+        "model_version_source": "REGISTRY_CURRENT",
+    }
 
 
 def load_current_registry_entry(registry_root: Path | None = None) -> dict[str, Any] | None:
@@ -335,3 +362,22 @@ def _load_model_payload(model_path: Path) -> dict[str, Any]:
             str(name) for name in payload["expanded_feature_names"]
         ),
     }
+
+
+def _derive_override_model_version(artifact_path: Path) -> tuple[str, str]:
+    """Derive a stable model version from a direct model override path."""
+    registry_entry_path = artifact_path.parent / "registry_entry.json"
+    if registry_entry_path.is_file():
+        registry_entry = read_json(registry_entry_path)
+        model_version = str(registry_entry.get("model_version", "")).strip()
+        if model_version:
+            return model_version, "REGISTRY_ENTRY"
+
+    parent = artifact_path.parent.resolve()
+    grandparent_name = parent.parent.name.lower()
+    if artifact_path.name == "model.joblib" and grandparent_name in {"m3", "m7"}:
+        return derive_model_version(parent), "RUN_DIR_DERIVED"
+
+    if artifact_path.stem == "model":
+        return parent.name, "MODEL_OVERRIDE_PATH"
+    return artifact_path.stem, "MODEL_OVERRIDE_PATH"
