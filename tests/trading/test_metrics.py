@@ -123,6 +123,11 @@ def test_metrics_math_is_deterministic() -> None:
     )
 
     overall = summary["overall"]
+    assert overall["execution_mode"] == "paper"
+    assert overall["data_source_exchange"] == "kraken"
+    assert overall["execution_context"]["execution_contract"] == "LOCAL_PAPER_SIMULATION"
+    assert overall["execution_context"]["portfolio_truth_source"] == "LOCAL_SIMULATION"
+    assert overall["execution_context"]["cross_venue_context"]["execution_venue"] is None
     assert round(overall["cumulative_pnl_realized"], 6) == 3.0
     assert overall["win_rate"] == 0.5
     assert round(overall["turnover"], 6) > 0.0

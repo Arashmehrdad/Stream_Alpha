@@ -453,9 +453,13 @@ def _sorted_lifecycle_events(
 ) -> list[OrderLifecycleEvent]:
     order = {
         "CREATED": 0,
-        "ACCEPTED": 1,
-        "FILLED": 2,
-        "REJECTED": 3,
+        "SUBMITTED": 1,
+        "ACCEPTED": 2,
+        "PARTIALLY_FILLED": 3,
+        "FILLED": 4,
+        "REJECTED": 5,
+        "CANCELED": 6,
+        "FAILED": 7,
     }
     return sorted(
         lifecycle_events,

@@ -25,7 +25,16 @@ ExitReason = Literal["SELL_SIGNAL", "STOP_LOSS", "TAKE_PROFIT"]
 TradeAction = Literal["BUY", "SELL"]
 RiskOutcome = Literal["APPROVED", "MODIFIED", "BLOCKED"]
 ExecutionMode = Literal["paper", "shadow", "live"]
-OrderLifecycleState = Literal["CREATED", "ACCEPTED", "FILLED", "REJECTED"]
+OrderLifecycleState = Literal[
+    "CREATED",
+    "SUBMITTED",
+    "ACCEPTED",
+    "PARTIALLY_FILLED",
+    "FILLED",
+    "REJECTED",
+    "CANCELED",
+    "FAILED",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -315,7 +324,87 @@ class LiveSafetyState:
     consecutive_live_failures: int
     failure_hard_stop_active: bool
     last_failure_reason: str | None = None
+    system_health_status: str = "UNKNOWN"
+    system_health_reason_code: str | None = None
+    system_health_checked_at: datetime | None = None
+    health_gate_status: str = "UNKNOWN"
+    health_gate_reason_code: str | None = None
+    health_gate_detail: str | None = None
+    broker_cash: float | None = None
+    broker_equity: float | None = None
+    reconciliation_status: str = "UNKNOWN"
+    reconciliation_reason_code: str | None = None
+    reconciliation_checked_at: datetime | None = None
+    unresolved_incident_count: int = 0
     updated_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CanonicalRecoveryEvent:
+    """Canonical recovery event summary from the M13 system-health endpoint."""
+
+    service_name: str
+    component_name: str
+    event_type: str
+    event_time: datetime
+    reason_code: str
+    health_overall_status: str | None = None
+    freshness_status: str | None = None
+    breaker_state: str | None = None
+    detail: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CanonicalServiceHealth:
+    """Per-service canonical health summary used by the live health gate."""
+
+    service_name: str
+    component_name: str
+    checked_at: datetime
+    heartbeat_at: datetime | None
+    heartbeat_age_seconds: float | None
+    heartbeat_freshness_status: str
+    health_overall_status: str
+    reason_code: str
+    detail: str | None = None
+    feed_freshness_status: str | None = None
+    feed_reason_code: str | None = None
+    feed_age_seconds: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CanonicalFeatureLag:
+    """Per-symbol canonical feature lag summary used by the live health gate."""
+
+    service_name: str
+    component_name: str
+    symbol: str
+    evaluated_at: datetime
+    latest_raw_event_received_at: datetime | None
+    latest_feature_interval_begin: datetime | None
+    latest_feature_as_of_time: datetime | None
+    time_lag_seconds: float | None
+    processing_lag_seconds: float | None
+    time_lag_reason_code: str
+    processing_lag_reason_code: str
+    lag_breach: bool
+    health_overall_status: str
+    reason_code: str
+    detail: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CanonicalSystemReliability:
+    """Canonical M13 system-health snapshot consumed by the live gate."""
+
+    service_name: str
+    checked_at: datetime
+    health_overall_status: str
+    reason_codes: tuple[str, ...] = field(default_factory=tuple)
+    lag_breach_active: bool = False
+    services: tuple[CanonicalServiceHealth, ...] = field(default_factory=tuple)
+    lag_by_symbol: tuple[CanonicalFeatureLag, ...] = field(default_factory=tuple)
+    latest_recovery_event: CanonicalRecoveryEvent | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -355,6 +444,40 @@ class BrokerAccount:
     account_id: str
     environment_name: str
     status: str | None = None
+    cash: float | None = None
+    equity: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BrokerOrderSnapshot:
+    """Minimal broker-truth order snapshot used by live reconciliation."""
+
+    broker_name: str
+    external_order_id: str
+    symbol: str
+    side: str
+    status: str
+    account_id: str | None = None
+    environment_name: str | None = None
+    submitted_at: datetime | None = None
+    filled_at: datetime | None = None
+    qty: float | None = None
+    filled_qty: float | None = None
+    filled_avg_price: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BrokerPositionSnapshot:
+    """Minimal broker-truth open-position snapshot used by live reconciliation."""
+
+    broker_name: str
+    symbol: str
+    quantity: float
+    avg_entry_price: float | None = None
+    market_value: float | None = None
+    account_id: str | None = None
+    environment_name: str | None = None
+    side: str = "long"
 
 
 @dataclass(frozen=True, slots=True)

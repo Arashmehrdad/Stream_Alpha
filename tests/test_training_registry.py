@@ -8,7 +8,11 @@ from pathlib import Path
 
 from app.training.compare import compare_run_to_current, write_comparison_artifact
 from app.training.promote import promote_run
-from app.training.registry import load_current_registry_entry, resolve_inference_model_path
+from app.training.registry import (
+    build_run_manifest,
+    load_current_registry_entry,
+    resolve_inference_model_path,
+)
 from app.training.rollback import rollback_to_model_version
 from tests.training_workflow_helpers import write_run_dir, write_workflow_config
 
@@ -18,7 +22,7 @@ def test_promote_run_updates_current_registry_pointer(tmp_path: Path) -> None:
     run_dir = write_run_dir(
         tmp_path / "m3",
         "20260319T223002Z",
-        mean_net_value_proxy=0.001,
+        mean_long_only_net_value_proxy=0.001,
         directional_accuracy=0.55,
         brier_score=0.24,
     )
@@ -40,7 +44,7 @@ def test_rollback_restores_the_previous_champion(tmp_path: Path) -> None:
     champion_run = write_run_dir(
         tmp_path / "m3",
         "20260319T223002Z",
-        mean_net_value_proxy=0.001,
+        mean_long_only_net_value_proxy=0.001,
         directional_accuracy=0.55,
         brier_score=0.24,
     )
@@ -52,7 +56,7 @@ def test_rollback_restores_the_previous_champion(tmp_path: Path) -> None:
     challenger_run = write_run_dir(
         tmp_path / "m7",
         "20260320T010101Z",
-        mean_net_value_proxy=0.002,
+        mean_long_only_net_value_proxy=0.002,
         directional_accuracy=0.555,
         brier_score=0.245,
     )
@@ -85,7 +89,7 @@ def test_inference_model_resolution_uses_registry_when_override_is_empty(
     run_dir = write_run_dir(
         tmp_path / "m3",
         "20260319T223002Z",
-        mean_net_value_proxy=0.001,
+        mean_long_only_net_value_proxy=0.001,
         directional_accuracy=0.55,
         brier_score=0.24,
     )
@@ -105,7 +109,7 @@ def test_inference_model_resolution_prefers_direct_override(tmp_path: Path) -> N
     run_dir = write_run_dir(
         tmp_path / "m3",
         "20260319T223002Z",
-        mean_net_value_proxy=0.001,
+        mean_long_only_net_value_proxy=0.001,
         directional_accuracy=0.55,
         brier_score=0.24,
     )
@@ -122,3 +126,22 @@ def test_inference_model_resolution_prefers_direct_override(tmp_path: Path) -> N
     )
 
     assert resolved == str(override_path.resolve())
+
+
+def test_run_manifest_carries_economics_contract_and_acceptance(tmp_path: Path) -> None:
+    """Run manifests should expose the long-only economics contract explicitly."""
+    run_dir = write_run_dir(
+        tmp_path / "m7",
+        "20260320T010101Z",
+        mean_long_only_net_value_proxy=-0.0002,
+        directional_accuracy=0.56,
+        brier_score=0.24,
+        persistence_mean_long_only_net_value_proxy=-0.0003,
+        dummy_mean_long_only_net_value_proxy=-0.0004,
+    )
+
+    manifest = build_run_manifest(run_dir)
+
+    assert manifest["economics_contract"]["name"] == "LONG_ONLY_AFTER_COST_PROXY"
+    assert manifest["acceptance"]["winner_after_cost_positive"] is False
+    assert manifest["acceptance"]["meets_acceptance_target"] is False

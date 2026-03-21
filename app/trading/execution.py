@@ -9,20 +9,27 @@ from typing import Protocol
 from app.common.time import to_rfc3339
 from app.trading.alpaca import AlpacaClientError, AlpacaOrderConstraintError
 from app.trading.config import PaperTradingConfig
-from app.trading.engine import execute_pending_signal_only, process_candle
+from app.trading.engine import process_candle
 from app.trading.live import (
     LIVE_BROKER_SUBMIT_FAILED,
     LIVE_FAILURE_HARD_STOP_ACTIVE,
     LIVE_MANUAL_DISABLE_ACTIVE,
     LIVE_MAX_ORDER_NOTIONAL_EXCEEDED,
     LIVE_ORDER_ACCEPTED,
+    LIVE_ORDER_CANCELED,
+    LIVE_ORDER_FAILED,
     LIVE_ORDER_FILLED,
+    LIVE_ORDER_PARTIALLY_FILLED,
     LIVE_ORDER_REJECTED,
+    LIVE_ORDER_SUBMITTED,
     LIVE_PAPER_PROBE_INTEGER_QTY_REQUIRED,
     LIVE_PAPER_PROBE_MAX_ORDERS_PER_RUN_REACHED,
     LIVE_PAPER_PROBE_MIN_ORDER_VALUE_REQUIRED,
     LIVE_PAPER_PROBE_SYMBOL_NOT_WHITELISTED,
+    LIVE_RECONCILIATION_BLOCKED,
+    LIVE_SIGNAL_STALE,
     LIVE_STARTUP_CHECKS_NOT_PASSED,
+    LIVE_SYSTEM_HEALTH_UNAVAILABLE,
     LIVE_SYMBOL_NOT_WHITELISTED,
     record_live_failure,
     record_live_success,
@@ -30,6 +37,8 @@ from app.trading.live import (
 )
 from app.trading.schemas import (
     BrokerAccount,
+    BrokerOrderSnapshot,
+    BrokerPositionSnapshot,
     BrokerSubmitResult,
     ExecutionMode,
     ExecutionResult,
@@ -61,6 +70,12 @@ class BrokerClient(Protocol):  # pylint: disable=too-few-public-methods
 
     async def validate_account(self) -> BrokerAccount:
         """Validate broker credentials and return normalized account details."""
+
+    async def list_open_orders(self) -> list[BrokerOrderSnapshot]:
+        """Return open broker orders for reconciliation."""
+
+    async def list_open_positions(self) -> list[BrokerPositionSnapshot]:
+        """Return open broker positions for reconciliation."""
 
     async def submit_order(  # pylint: disable=too-many-arguments
         self,
@@ -388,7 +403,7 @@ class LiveExecutionAdapter:  # pylint: disable=too-few-public-methods
         live_safety_state: LiveSafetyState | None = None,
     ) -> ExecutionResult:
         """Execute one due live order after the M10 risk path has approved it."""
-        del signal
+        del signal, portfolio
         if live_safety_state is None:
             raise ValueError("Live execution requires a live safety state")
 
@@ -405,6 +420,7 @@ class LiveExecutionAdapter:  # pylint: disable=too-few-public-methods
 
         precheck_failure = _live_precheck_failure(
             config=config,
+            candle=candle,
             order_request=order_request,
             live_safety_state=refreshed_live_state,
         )
@@ -419,7 +435,7 @@ class LiveExecutionAdapter:  # pylint: disable=too-few-public-methods
             )
 
         if self.broker_client is None:
-            return _build_live_rejection_result(
+            return _build_live_failed_result(
                 candle=candle,
                 state=state,
                 open_position=open_position,
@@ -476,7 +492,7 @@ class LiveExecutionAdapter:  # pylint: disable=too-few-public-methods
                 probe_qty=probe_context["probe_qty"],
             )
         except AlpacaClientError as error:
-            return _build_live_rejection_result(
+            return _build_live_failed_result(
                 candle=candle,
                 state=state,
                 open_position=open_position,
@@ -493,72 +509,27 @@ class LiveExecutionAdapter:  # pylint: disable=too-few-public-methods
                 probe_qty=probe_context["probe_qty"],
             )
 
+        mapped_state, mapped_reason_code = _map_live_submit_status(
+            submit_result.external_status
+        )
         if probe_context["active"]:
             self._probe_orders_submitted_this_run += 1
-            return ExecutionResult(
-                state=_advance_state(state=state, candle=candle, clear_pending=True),
-                open_position=open_position,
-                lifecycle_events=(
-                    _build_live_broker_event(
-                        order_request=order_request,
-                        event_time=candle.interval_begin,
-                        lifecycle_state="ACCEPTED",
-                        reason_code=LIVE_ORDER_ACCEPTED,
-                        submit_result=submit_result,
-                    ),
-                ),
-                live_safety_state=record_live_success(refreshed_live_state),
-            )
-
-        execution = execute_pending_signal_only(
-            config=config,
-            candle=candle,
-            state=state,
-            open_position=open_position,
-            portfolio=portfolio,
-        )
-        terminal_state = _live_terminal_state(
-            order_request=order_request,
-            created_position=execution.created_position,
-            closed_position=execution.closed_position,
-        )
-        next_live_state = (
-            record_live_success(refreshed_live_state)
-            if terminal_state == "FILLED"
-            else record_live_failure(
-                state=refreshed_live_state,
-                threshold=config.execution.live.failure_hard_stop_threshold,
-                reason_code=LIVE_ORDER_REJECTED,
-            )
-        )
-        terminal_reason = (
-            LIVE_ORDER_FILLED if terminal_state == "FILLED" else LIVE_ORDER_REJECTED
-        )
-        lifecycle_events = (
-            _build_live_broker_event(
-                order_request=order_request,
-                event_time=candle.interval_begin,
-                lifecycle_state="ACCEPTED",
-                reason_code=LIVE_ORDER_ACCEPTED,
-                submit_result=submit_result,
-            ),
-            _build_live_broker_event(
-                order_request=order_request,
-                event_time=candle.interval_begin,
-                lifecycle_state=terminal_state,
-                reason_code=terminal_reason,
-                submit_result=submit_result,
-            ),
-        )
         return ExecutionResult(
-            state=replace(execution.state, execution_mode=config.execution.mode),
-            open_position=execution.open_position,
-            lifecycle_events=lifecycle_events,
-            created_position=execution.created_position,
-            closed_position=execution.closed_position,
-            ledger_entries=execution.ledger_entries,
-            cash_delta=execution.cash_delta,
-            live_safety_state=next_live_state,
+            state=_advance_state(state=state, candle=candle, clear_pending=True),
+            open_position=open_position,
+            lifecycle_events=_build_live_submit_events(
+                order_request=order_request,
+                event_time=candle.interval_begin,
+                submit_result=submit_result,
+                mapped_state=mapped_state,
+                mapped_reason_code=mapped_reason_code,
+            ),
+            live_safety_state=_next_live_state_after_submit(
+                state=refreshed_live_state,
+                config=config,
+                reason_code=mapped_reason_code,
+                mapped_state=mapped_state,
+            ),
         )
 
     async def close(self) -> None:
@@ -614,9 +585,11 @@ def _terminal_lifecycle_events(  # pylint: disable=too-many-arguments
     return (accepted_event, terminal_event)
 
 
+# pylint: disable=too-many-return-statements
 def _live_precheck_failure(
     *,
     config: PaperTradingConfig,
+    candle: FeatureCandle,
     order_request: OrderRequest,
     live_safety_state: LiveSafetyState,
 ) -> str | None:
@@ -626,6 +599,19 @@ def _live_precheck_failure(
         return LIVE_MANUAL_DISABLE_ACTIVE
     if live_safety_state.failure_hard_stop_active:
         return LIVE_FAILURE_HARD_STOP_ACTIVE
+    if live_safety_state.reconciliation_status != "CLEAR":
+        return (
+            live_safety_state.reconciliation_reason_code
+            or LIVE_RECONCILIATION_BLOCKED
+        )
+    if live_safety_state.health_gate_status != "CLEAR":
+        return (
+            live_safety_state.health_gate_reason_code
+            or live_safety_state.system_health_reason_code
+            or LIVE_SYSTEM_HEALTH_UNAVAILABLE
+        )
+    if order_request.target_fill_interval_begin < candle.interval_begin:
+        return LIVE_SIGNAL_STALE
     if order_request.symbol not in config.execution.live.symbol_whitelist:
         return LIVE_SYMBOL_NOT_WHITELISTED
     if order_request.approved_notional > config.execution.live.max_order_notional:
@@ -746,6 +732,45 @@ def _build_live_rejection_result(  # pylint: disable=too-many-arguments
     )
 
 
+def _build_live_failed_result(  # pylint: disable=too-many-arguments
+    *,
+    candle: FeatureCandle,
+    state: PaperEngineState,
+    open_position: PaperPosition | None,
+    order_request: OrderRequest,
+    live_safety_state: LiveSafetyState,
+    reason_code: str,
+    details: str | None = None,
+    probe_policy_active: bool = False,
+    probe_symbol: str | None = None,
+    probe_qty: int | None = None,
+) -> ExecutionResult:
+    lifecycle_event = OrderLifecycleEvent(
+        order_request_id=_require_order_request_id(order_request),
+        service_name=order_request.service_name,
+        execution_mode=order_request.execution_mode,
+        symbol=order_request.symbol,
+        action=order_request.action,
+        lifecycle_state="FAILED",
+        event_time=candle.interval_begin,
+        reason_code=reason_code,
+        details=details,
+        broker_name=live_safety_state.broker_name,
+        account_id=live_safety_state.account_id,
+        environment_name=live_safety_state.environment_name,
+        probe_policy_active=probe_policy_active,
+        probe_symbol=probe_symbol,
+        probe_qty=probe_qty,
+        decision_trace_id=order_request.decision_trace_id,
+    )
+    return ExecutionResult(
+        state=_advance_state(state=state, candle=candle, clear_pending=True),
+        open_position=open_position,
+        lifecycle_events=(lifecycle_event,),
+        live_safety_state=live_safety_state,
+    )
+
+
 def _build_live_broker_event(
     *,
     order_request: OrderRequest,
@@ -776,18 +801,73 @@ def _build_live_broker_event(
     )
 
 
-def _live_terminal_state(
+def _build_live_submit_events(
     *,
     order_request: OrderRequest,
-    created_position: PaperPosition | None,
-    closed_position: PaperPosition | None,
-) -> str:
-    was_filled = (
-        created_position is not None
-        if order_request.action == "BUY"
-        else closed_position is not None
+    event_time,
+    submit_result: BrokerSubmitResult,
+    mapped_state: str,
+    mapped_reason_code: str,
+) -> tuple[OrderLifecycleEvent, ...]:
+    submitted_event = _build_live_broker_event(
+        order_request=order_request,
+        event_time=event_time,
+        lifecycle_state="SUBMITTED",
+        reason_code=LIVE_ORDER_SUBMITTED,
+        submit_result=submit_result,
     )
-    return "FILLED" if was_filled else "REJECTED"
+    if mapped_state == "SUBMITTED":
+        return (submitted_event,)
+    return (
+        submitted_event,
+        _build_live_broker_event(
+            order_request=order_request,
+            event_time=event_time,
+            lifecycle_state=mapped_state,
+            reason_code=mapped_reason_code,
+            submit_result=submit_result,
+        ),
+    )
+
+
+def _next_live_state_after_submit(
+    *,
+    state: LiveSafetyState,
+    config: PaperTradingConfig,
+    reason_code: str,
+    mapped_state: str,
+) -> LiveSafetyState:
+    if mapped_state in {"REJECTED", "CANCELED", "FAILED"}:
+        return record_live_failure(
+            state=state,
+            threshold=config.execution.live.failure_hard_stop_threshold,
+            reason_code=reason_code,
+        )
+    return record_live_success(state)
+
+
+# pylint: disable=too-many-return-statements
+def _map_live_submit_status(external_status: str) -> tuple[str, str]:
+    normalized = external_status.strip().lower()
+    if normalized in {"new", "pending_new", "accepted", "held"}:
+        return "SUBMITTED", LIVE_ORDER_SUBMITTED
+    if normalized in {
+        "accepted_for_bidding",
+        "pending_replace",
+        "replaced",
+        "stopped",
+        "calculated",
+    }:
+        return "ACCEPTED", LIVE_ORDER_ACCEPTED
+    if normalized == "partially_filled":
+        return "PARTIALLY_FILLED", LIVE_ORDER_PARTIALLY_FILLED
+    if normalized == "filled":
+        return "FILLED", LIVE_ORDER_FILLED
+    if normalized in {"canceled", "expired", "done_for_day"}:
+        return "CANCELED", LIVE_ORDER_CANCELED
+    if normalized in {"rejected", "suspended"}:
+        return "REJECTED", LIVE_ORDER_REJECTED
+    return "FAILED", LIVE_ORDER_FAILED
 
 
 def _advance_state(

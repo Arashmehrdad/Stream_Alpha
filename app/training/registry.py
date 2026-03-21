@@ -110,6 +110,8 @@ def build_run_manifest(run_dir: Path) -> dict[str, Any]:
             "run_id": Path(run_dir).resolve().name,
             "run_dir": str(Path(run_dir).resolve()),
             "source_run_kind": Path(run_dir).resolve().parent.name,
+            "economics_contract": dict(summary.get("economics_contract", {})),
+            "acceptance": dict(summary.get("acceptance", {})),
             "winner": {
                 "model_name": winner_name,
                 "trained_at": model_payload["trained_at"],

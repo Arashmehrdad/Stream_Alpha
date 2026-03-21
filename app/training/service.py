@@ -22,6 +22,14 @@ from sklearn.pipeline import Pipeline
 
 from app.common.serialization import make_json_safe
 from app.common.time import to_rfc3339, utc_now
+from app.regime.config import load_regime_config
+from app.regime.dataset import RegimeSourceRow
+from app.regime.service import (
+    REGIME_LABELS,
+    SymbolThresholds,
+    classify_row,
+    compute_percentile,
+)
 from app.training.baselines import PersistenceBaseline, build_dummy_classifier
 from app.training.dataset import (
     DatasetSample,
@@ -31,6 +39,11 @@ from app.training.dataset import (
 )
 from app.training.splits import WalkForwardFold, build_walk_forward_splits
 from app.training.splits import minimum_required_unique_timestamps
+
+
+_REGIME_CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "regime.m8.json"
+_REQUIRED_PROMOTION_BASELINES = ("persistence_3", "dummy_most_frequent")
+_LEARNED_MODEL_NAMES = ("logistic_regression", "hist_gradient_boosting")
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,9 +60,11 @@ class PredictionRecord:  # pylint: disable=too-many-instance-attributes
     y_pred: int
     prob_up: float
     confidence: float
+    regime_label: str
+    long_trade_taken: int
     future_return_3: float
-    gross_value_proxy: float
-    net_value_proxy: float
+    long_only_gross_value_proxy: float
+    long_only_net_value_proxy: float
 
     def to_csv_row(self) -> dict[str, Any]:
         """Return a CSV-friendly representation for artifact persistence."""
@@ -64,10 +79,23 @@ class PredictionRecord:  # pylint: disable=too-many-instance-attributes
             "y_pred": self.y_pred,
             "prob_up": self.prob_up,
             "confidence": self.confidence,
+            "regime_label": self.regime_label,
+            "long_trade_taken": self.long_trade_taken,
             "future_return_3": self.future_return_3,
-            "gross_value_proxy": self.gross_value_proxy,
-            "net_value_proxy": self.net_value_proxy,
+            "long_only_gross_value_proxy": self.long_only_gross_value_proxy,
+            "long_only_net_value_proxy": self.long_only_net_value_proxy,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class TrainingRegimeContext:
+    """Deterministic M8-style regime labels used for training economics slices."""
+
+    config_path: str
+    high_vol_percentile: float
+    trend_abs_momentum_percentile: float
+    thresholds_by_symbol: dict[str, SymbolThresholds]
+    labels_by_row_id: dict[str, str]
 
 
 def run_training(config_path: Path) -> Path:  # pylint: disable=too-many-locals
@@ -75,6 +103,7 @@ def run_training(config_path: Path) -> Path:  # pylint: disable=too-many-locals
     config = load_training_config(config_path)
     dataset = load_training_dataset(config)
     _validate_split_readiness(dataset, config)
+    regime_context = _build_training_regime_context(dataset.samples, config)
     folds = build_walk_forward_splits(
         dataset.timestamps,
         first_train_fraction=config.first_train_fraction,
@@ -105,6 +134,7 @@ def run_training(config_path: Path) -> Path:  # pylint: disable=too-many-locals
             fold=fold,
             model_factories=model_factories,
             fee_rate=config.round_trip_fee_rate,
+            regime_labels_by_row_id=regime_context.labels_by_row_id,
         )
         fold_metric_rows.extend(fold_metrics)
         all_prediction_rows.extend(fold_predictions)
@@ -146,6 +176,7 @@ def run_training(config_path: Path) -> Path:  # pylint: disable=too-many-locals
         config=config,
         dataset_manifest=dataset.manifest,
         aggregate_summary=aggregate_summary,
+        regime_context=regime_context,
         winner_name=winner_name,
         model_path=model_path,
     )
@@ -221,6 +252,7 @@ def _partition_samples(
     return train_samples, test_samples
 
 
+# pylint: disable=too-many-arguments
 def _evaluate_fold(
     *,
     train_samples: list[DatasetSample],
@@ -228,7 +260,9 @@ def _evaluate_fold(
     fold: WalkForwardFold,
     model_factories: dict[str, Callable[[], Any]],
     fee_rate: float,
+    regime_labels_by_row_id: dict[str, str],
 ) -> tuple[list[dict[str, Any]], list[PredictionRecord]]:
+    # The explicit inputs keep the fold evaluation contract inspectable for M3/M7.
     fold_metrics: list[dict[str, Any]] = []
     prediction_rows: list[PredictionRecord] = []
     for model_name, factory in model_factories.items():
@@ -245,6 +279,7 @@ def _evaluate_fold(
             predicted_labels=predicted_labels,
             probabilities=probabilities,
             fee_rate=fee_rate,
+            regime_labels_by_row_id=regime_labels_by_row_id,
         )
         metrics = _compute_metrics(model_predictions)
         fold_metrics.append(
@@ -297,12 +332,15 @@ def _build_prediction_records(
     predicted_labels: list[int],
     probabilities: list[float],
     fee_rate: float,
+    regime_labels_by_row_id: dict[str, str],
 ) -> list[PredictionRecord]:
     records: list[PredictionRecord] = []
     for sample, label, prob_up in zip(test_samples, predicted_labels, probabilities, strict=True):
-        position = 1.0 if label == 1 else -1.0
-        gross_value_proxy = position * sample.future_return_3
-        net_value_proxy = gross_value_proxy - fee_rate
+        long_trade_taken = 1 if label == 1 else 0
+        long_only_gross_value_proxy = sample.future_return_3 if long_trade_taken else 0.0
+        long_only_net_value_proxy = (
+            long_only_gross_value_proxy - fee_rate if long_trade_taken else 0.0
+        )
         records.append(
             PredictionRecord(
                 model_name=model_name,
@@ -315,9 +353,11 @@ def _build_prediction_records(
                 y_pred=label,
                 prob_up=prob_up,
                 confidence=max(prob_up, 1.0 - prob_up),
+                regime_label=regime_labels_by_row_id[sample.row_id],
+                long_trade_taken=long_trade_taken,
                 future_return_3=sample.future_return_3,
-                gross_value_proxy=gross_value_proxy,
-                net_value_proxy=net_value_proxy,
+                long_only_gross_value_proxy=long_only_gross_value_proxy,
+                long_only_net_value_proxy=long_only_net_value_proxy,
             )
         )
     return records
@@ -339,11 +379,15 @@ def _compute_metrics(predictions: list[PredictionRecord]) -> dict[str, Any]:
         y_pred,
         labels=[0, 1],
     ).ravel()
-    mean_gross_value_proxy = sum(prediction.gross_value_proxy for prediction in predictions) / len(
-        predictions
+    trade_count = sum(prediction.long_trade_taken for prediction in predictions)
+    trade_rate = trade_count / len(predictions)
+    mean_long_only_gross_value_proxy = (
+        sum(prediction.long_only_gross_value_proxy for prediction in predictions)
+        / len(predictions)
     )
-    mean_net_value_proxy = sum(prediction.net_value_proxy for prediction in predictions) / len(
-        predictions
+    mean_long_only_net_value_proxy = (
+        sum(prediction.long_only_net_value_proxy for prediction in predictions)
+        / len(predictions)
     )
     return {
         "metrics": {
@@ -357,8 +401,10 @@ def _compute_metrics(predictions: list[PredictionRecord]) -> dict[str, Any]:
             "false_negative": int(false_negative),
             "true_positive": int(true_positive),
             "brier_score": brier_score_loss(y_true, prob_up),
-            "mean_gross_value_proxy": mean_gross_value_proxy,
-            "mean_net_value_proxy": mean_net_value_proxy,
+            "trade_count": trade_count,
+            "trade_rate": trade_rate,
+            "mean_long_only_gross_value_proxy": mean_long_only_gross_value_proxy,
+            "mean_long_only_net_value_proxy": mean_long_only_net_value_proxy,
         },
         "confidence_analysis": _confidence_analysis(predictions),
     }
@@ -407,6 +453,7 @@ def _build_aggregate_summary(
             "prediction_count": len(rows),
             **metrics["metrics"],
             "confidence_analysis": metrics["confidence_analysis"],
+            "economics_by_regime": _build_regime_economics(rows),
         }
     return aggregate_summary
 
@@ -415,14 +462,14 @@ def _select_winner(aggregate_summary: dict[str, dict[str, Any]]) -> str:
     learned_models = {
         name: metrics
         for name, metrics in aggregate_summary.items()
-        if name in {"logistic_regression", "hist_gradient_boosting"}
+        if name in _LEARNED_MODEL_NAMES
     }
     if not learned_models:
         raise ValueError("No learned models were available for winner selection")
     return sorted(
         learned_models.items(),
         key=lambda item: (
-            -item[1]["mean_net_value_proxy"],
+            -item[1]["mean_long_only_net_value_proxy"],
             -item[1]["directional_accuracy"],
             item[1]["brier_score"],
         ),
@@ -472,38 +519,233 @@ def _build_summary_payload(
     config: TrainingConfig,
     dataset_manifest: dict[str, Any],
     aggregate_summary: dict[str, dict[str, Any]],
+    regime_context: TrainingRegimeContext,
     winner_name: str,
     model_path: Path,
 ) -> dict[str, Any]:
-    persistence_metrics = aggregate_summary["persistence_3"]
-    learned_beating_persistence = [
+    winner_metrics = aggregate_summary[winner_name]
+    learned_models_positive_after_costs = [
         model_name
-        for model_name in ("logistic_regression", "hist_gradient_boosting")
-        if aggregate_summary[model_name]["directional_accuracy"]
-        > persistence_metrics["directional_accuracy"]
-        and aggregate_summary[model_name]["mean_net_value_proxy"]
-        > persistence_metrics["mean_net_value_proxy"]
+        for model_name in _LEARNED_MODEL_NAMES
+        if aggregate_summary[model_name]["mean_long_only_net_value_proxy"] > 0.0
     ]
+    learned_models_beating_persistence = _learned_models_beating_after_costs(
+        aggregate_summary,
+        baseline_name="persistence_3",
+    )
+    learned_models_beating_dummy = _learned_models_beating_after_costs(
+        aggregate_summary,
+        baseline_name="dummy_most_frequent",
+    )
+    learned_models_beating_all_baselines = [
+        model_name
+        for model_name in _LEARNED_MODEL_NAMES
+        if all(
+            aggregate_summary[model_name]["mean_long_only_net_value_proxy"]
+            > aggregate_summary[baseline_name]["mean_long_only_net_value_proxy"]
+            for baseline_name in _REQUIRED_PROMOTION_BASELINES
+        )
+    ]
+    meets_acceptance_target = (
+        winner_metrics["mean_long_only_net_value_proxy"] > 0.0
+        and winner_name in learned_models_beating_all_baselines
+    )
     return {
         "generated_at": to_rfc3339(utc_now()),
         "source_table": config.source_table,
         "dataset_manifest": dataset_manifest,
+        "economics_contract": {
+            "name": "LONG_ONLY_AFTER_COST_PROXY",
+            "description": (
+                "Predicted UP enters one long for the 3-candle horizon; "
+                "predicted DOWN stays flat; the configured round-trip fee is "
+                "only charged when a long trade is taken."
+            ),
+            "primary_metric": "mean_long_only_net_value_proxy",
+            "fee_rate": config.round_trip_fee_rate,
+        },
+        "regime_economics": {
+            "source": "M8_PERCENTILE_RULES_REFIT_ON_TRAINING_SOURCE",
+            "config_path": regime_context.config_path,
+            "high_vol_percentile": regime_context.high_vol_percentile,
+            "trend_abs_momentum_percentile": (
+                regime_context.trend_abs_momentum_percentile
+            ),
+            "thresholds_by_symbol": {
+                symbol: threshold.to_dict()
+                for symbol, threshold in sorted(regime_context.thresholds_by_symbol.items())
+            },
+        },
         "models": aggregate_summary,
         "official_baseline": "persistence_3",
+        "promotion_baselines": list(_REQUIRED_PROMOTION_BASELINES),
         "winner": {
             "model_name": winner_name,
             "model_path": str(model_path),
             "selection_rule": {
-                "primary": "mean_net_value_proxy",
+                "primary": "mean_long_only_net_value_proxy",
                 "tie_break_1": "directional_accuracy",
                 "tie_break_2": "lower_brier_score",
             },
         },
         "acceptance": {
-            "learned_models_beating_persistence": learned_beating_persistence,
-            "meets_acceptance_target": bool(learned_beating_persistence),
+            "winner_after_cost_positive": winner_metrics["mean_long_only_net_value_proxy"]
+            > 0.0,
+            "learned_models_positive_after_costs": learned_models_positive_after_costs,
+            "learned_models_beating_persistence_after_costs": (
+                learned_models_beating_persistence
+            ),
+            "learned_models_beating_dummy_after_costs": learned_models_beating_dummy,
+            "learned_models_beating_all_baselines_after_costs": (
+                learned_models_beating_all_baselines
+            ),
+            "meets_acceptance_target": meets_acceptance_target,
         },
     }
+
+
+def _build_training_regime_context(
+    samples: tuple[DatasetSample, ...],
+    config: TrainingConfig,
+) -> TrainingRegimeContext:
+    regime_config = load_regime_config(_REGIME_CONFIG_PATH)
+    missing_symbols = sorted(set(config.symbols) - set(regime_config.symbols))
+    if missing_symbols:
+        raise ValueError(
+            "M8 regime config is missing training symbols required for regime-sliced "
+            f"economics: {missing_symbols}"
+        )
+    regime_rows = [_sample_to_regime_row(sample) for sample in samples]
+    thresholds_by_symbol = _fit_training_regime_thresholds(
+        regime_rows,
+        symbols=config.symbols,
+        high_vol_percentile=regime_config.thresholds.high_vol_percentile,
+        trend_abs_momentum_percentile=(
+            regime_config.thresholds.trend_abs_momentum_percentile
+        ),
+    )
+    labels_by_row_id = {
+        sample.row_id: classify_row(
+            _sample_to_regime_row(sample),
+            thresholds_by_symbol,
+        )
+        for sample in samples
+    }
+    return TrainingRegimeContext(
+        config_path=str(_REGIME_CONFIG_PATH.resolve()),
+        high_vol_percentile=regime_config.thresholds.high_vol_percentile,
+        trend_abs_momentum_percentile=(
+            regime_config.thresholds.trend_abs_momentum_percentile
+        ),
+        thresholds_by_symbol=thresholds_by_symbol,
+        labels_by_row_id=labels_by_row_id,
+    )
+
+
+def _sample_to_regime_row(sample: DatasetSample) -> RegimeSourceRow:
+    missing_inputs = [
+        column
+        for column in ("realized_vol_12", "momentum_3", "macd_line_12_26")
+        if column not in sample.features or sample.features[column] is None
+    ]
+    if missing_inputs:
+        raise ValueError(
+            "Training samples are missing required regime inputs for regime-sliced "
+            f"economics: {missing_inputs}"
+        )
+    return RegimeSourceRow(
+        symbol=sample.symbol,
+        interval_begin=sample.interval_begin,
+        as_of_time=sample.as_of_time,
+        realized_vol_12=float(sample.features["realized_vol_12"]),
+        momentum_3=float(sample.features["momentum_3"]),
+        macd_line_12_26=float(sample.features["macd_line_12_26"]),
+    )
+
+
+def _build_regime_economics(
+    predictions: list[PredictionRecord],
+) -> dict[str, dict[str, Any]]:
+    rows_by_regime: dict[str, list[PredictionRecord]] = {}
+    for prediction in predictions:
+        rows_by_regime.setdefault(prediction.regime_label, []).append(prediction)
+    ordered_regimes = list(REGIME_LABELS) + sorted(set(rows_by_regime) - set(REGIME_LABELS))
+    return {
+        regime_label: _build_regime_economics_row(rows_by_regime[regime_label])
+        for regime_label in ordered_regimes
+        if regime_label in rows_by_regime
+    }
+
+
+def _build_regime_economics_row(predictions: list[PredictionRecord]) -> dict[str, Any]:
+    prediction_count = len(predictions)
+    trade_count = sum(prediction.long_trade_taken for prediction in predictions)
+    mean_long_only_gross_value_proxy = (
+        sum(prediction.long_only_gross_value_proxy for prediction in predictions)
+        / prediction_count
+    )
+    mean_long_only_net_value_proxy = (
+        sum(prediction.long_only_net_value_proxy for prediction in predictions)
+        / prediction_count
+    )
+    return {
+        "prediction_count": prediction_count,
+        "trade_count": trade_count,
+        "trade_rate": trade_count / prediction_count,
+        "mean_long_only_gross_value_proxy": mean_long_only_gross_value_proxy,
+        "mean_long_only_net_value_proxy": mean_long_only_net_value_proxy,
+        "after_cost_positive": mean_long_only_net_value_proxy > 0.0,
+    }
+
+
+def _fit_training_regime_thresholds(
+    rows: list[RegimeSourceRow],
+    *,
+    symbols: tuple[str, ...],
+    high_vol_percentile: float,
+    trend_abs_momentum_percentile: float,
+) -> dict[str, SymbolThresholds]:
+    rows_by_symbol: dict[str, list[RegimeSourceRow]] = {symbol: [] for symbol in symbols}
+    for row in rows:
+        rows_by_symbol.setdefault(row.symbol, []).append(row)
+
+    thresholds_by_symbol: dict[str, SymbolThresholds] = {}
+    for symbol in symbols:
+        symbol_rows = sorted(
+            rows_by_symbol.get(symbol, []),
+            key=lambda row: (row.interval_begin, row.as_of_time),
+        )
+        if not symbol_rows:
+            raise ValueError(
+                "Training data does not contain rows for regime-sliced economics "
+                f"symbol {symbol}"
+            )
+        thresholds_by_symbol[symbol] = SymbolThresholds(
+            symbol=symbol,
+            fitted_row_count=len(symbol_rows),
+            high_vol_threshold=compute_percentile(
+                [row.realized_vol_12 for row in symbol_rows],
+                high_vol_percentile,
+            ),
+            trend_abs_threshold=compute_percentile(
+                [abs(row.momentum_3) for row in symbol_rows],
+                trend_abs_momentum_percentile,
+            ),
+        )
+    return thresholds_by_symbol
+
+
+def _learned_models_beating_after_costs(
+    aggregate_summary: dict[str, dict[str, Any]],
+    *,
+    baseline_name: str,
+) -> list[str]:
+    baseline_metric = aggregate_summary[baseline_name]["mean_long_only_net_value_proxy"]
+    return [
+        model_name
+        for model_name in _LEARNED_MODEL_NAMES
+        if aggregate_summary[model_name]["mean_long_only_net_value_proxy"] > baseline_metric
+    ]
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:

@@ -2,6 +2,7 @@
 
 # pylint: disable=missing-class-docstring,missing-function-docstring
 # pylint: disable=line-too-long,too-many-lines,use-implicit-booleaness-not-comparison
+# pylint: disable=too-many-public-methods
 
 from __future__ import annotations
 
@@ -11,9 +12,10 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import httpx
 import pytest
 
-from app.common.time import to_rfc3339
+from app.common.time import to_rfc3339, utc_now
 from app.reliability.schemas import RecoveryEvent, ReliabilityState, ServiceHeartbeat
 from app.trading.alpaca import AlpacaOrderConstraintError, AlpacaResponseError
 from app.trading.config import (
@@ -26,21 +28,33 @@ from app.trading.config import (
 from app.trading.execution import LiveExecutionAdapter, build_order_request
 from app.trading.live import (
     LIVE_CONFIRMATION_PHRASE,
+    LIVE_HEALTH_GATE_CLEAR,
     LIVE_MANUAL_DISABLE_ACTIVE,
     LIVE_MAX_ORDER_NOTIONAL_EXCEEDED,
     LIVE_PAPER_PROBE_INTEGER_QTY_REQUIRED,
     LIVE_PAPER_PROBE_MAX_ORDERS_PER_RUN_REACHED,
     LIVE_PAPER_PROBE_MIN_ORDER_VALUE_REQUIRED,
+    LIVE_RECONCILIATION_BROKER_UNAVAILABLE,
+    LIVE_RECONCILIATION_ORPHAN_POSITION,
+    LIVE_SIGNAL_STALE,
     LIVE_STARTUP_CHECKS_NOT_PASSED,
+    LIVE_SYSTEM_HEALTH_UNAVAILABLE,
     LIVE_SYMBOL_NOT_WHITELISTED,
+    LiveStartupValidationError,
     validate_live_startup,
     write_live_status_artifact,
     write_startup_checklist_artifact,
 )
 from app.trading.runner import PaperTradingRunner
 from app.trading.schemas import (
+    CanonicalFeatureLag,
+    CanonicalRecoveryEvent,
+    CanonicalServiceHealth,
+    CanonicalSystemReliability,
     DecisionTraceRecord,
     BrokerAccount,
+    BrokerOrderSnapshot,
+    BrokerPositionSnapshot,
     BrokerSubmitResult,
     FeatureCandle,
     LiveSafetyState,
@@ -170,6 +184,63 @@ def _hold_signal(interval_begin: datetime) -> SignalDecision:
     return _signal(interval_begin, signal="HOLD")
 
 
+def _system_reliability(
+    *,
+    health_overall_status: str = "HEALTHY",
+    reason_codes: tuple[str, ...] = ("SYSTEM_HEALTHY",),
+    lag_breach_active: bool = False,
+    checked_at: datetime | None = None,
+) -> CanonicalSystemReliability:
+    observed_at = utc_now() if checked_at is None else checked_at
+    return CanonicalSystemReliability(
+        service_name="stream-alpha",
+        checked_at=observed_at,
+        health_overall_status=health_overall_status,
+        reason_codes=reason_codes,
+        lag_breach_active=lag_breach_active,
+        services=(
+            CanonicalServiceHealth(
+                service_name="stream-alpha",
+                component_name="producer",
+                checked_at=observed_at,
+                heartbeat_at=observed_at,
+                heartbeat_age_seconds=0.0,
+                heartbeat_freshness_status="FRESH",
+                health_overall_status=health_overall_status,
+                reason_code=reason_codes[0],
+                feed_freshness_status="FRESH",
+                feed_reason_code="FEED_FRESH",
+                feed_age_seconds=0.0,
+            ),
+        ),
+        lag_by_symbol=(
+            CanonicalFeatureLag(
+                service_name="feature-builder",
+                component_name="features",
+                symbol="BTC/USD",
+                evaluated_at=observed_at,
+                latest_raw_event_received_at=observed_at,
+                latest_feature_interval_begin=_candle(0).interval_begin,
+                latest_feature_as_of_time=observed_at,
+                time_lag_seconds=0.0,
+                processing_lag_seconds=0.0,
+                time_lag_reason_code="FEATURE_TIME_LAG_OK",
+                processing_lag_reason_code="FEATURE_PROCESSING_LAG_OK",
+                lag_breach=lag_breach_active,
+                health_overall_status=health_overall_status,
+                reason_code=reason_codes[0],
+            ),
+        ),
+        latest_recovery_event=CanonicalRecoveryEvent(
+            service_name="live-trader",
+            component_name="live_health_gate",
+            event_type="LIVE_HEALTH_GATE_RUNTIME",
+            event_time=observed_at,
+            reason_code=reason_codes[0],
+        ),
+    )
+
+
 def _risk_decision(*, signal: str = "BUY", approved_notional: float = 10.0) -> RiskDecision:
     return RiskDecision(
         service_name="live-trader",
@@ -227,6 +298,7 @@ def _pending_state(
     )
 
 
+# pylint: disable=too-many-arguments
 def _live_safety_state(
     *,
     startup_checks_passed: bool = True,
@@ -234,6 +306,12 @@ def _live_safety_state(
     consecutive_live_failures: int = 0,
     failure_hard_stop_active: bool = False,
     environment_name: str = "paper",
+    system_health_status: str = "HEALTHY",
+    system_health_reason_code: str | None = "SYSTEM_HEALTHY",
+    health_gate_status: str = "CLEAR",
+    health_gate_reason_code: str | None = LIVE_HEALTH_GATE_CLEAR,
+    reconciliation_status: str = "CLEAR",
+    reconciliation_reason_code: str | None = None,
 ) -> LiveSafetyState:
     return LiveSafetyState(
         service_name="live-trader",
@@ -249,6 +327,19 @@ def _live_safety_state(
         consecutive_live_failures=consecutive_live_failures,
         failure_hard_stop_active=failure_hard_stop_active,
         last_failure_reason=None,
+        system_health_status=system_health_status,
+        system_health_reason_code=system_health_reason_code,
+        system_health_checked_at=datetime(2026, 3, 21, 8, 55, tzinfo=timezone.utc),
+        health_gate_status=health_gate_status,
+        health_gate_reason_code=health_gate_reason_code,
+        health_gate_detail=(
+            "Canonical live health gate is clear"
+            if health_gate_status == "CLEAR"
+            else "Blocked by test fixture"
+        ),
+        reconciliation_status=reconciliation_status,
+        reconciliation_reason_code=reconciliation_reason_code,
+        reconciliation_checked_at=datetime(2026, 3, 21, 8, 55, tzinfo=timezone.utc),
         updated_at=datetime(2026, 3, 21, 8, 55, tzinfo=timezone.utc),
     )
 
@@ -282,15 +373,25 @@ class FakeBrokerClient:
             account_id="PA12345",
             environment_name="paper",
             status="ACTIVE",
+            cash=1_000.0,
+            equity=1_000.0,
         )
         self.submit_results = list(submit_results or [])
         self.submit_error = submit_error
+        self.open_orders: list[BrokerOrderSnapshot] = []
+        self.open_positions: list[BrokerPositionSnapshot] = []
         self.validate_calls = 0
         self.submit_calls: list[tuple[OrderRequest, object, FeatureCandle, dict[str, object]]] = []
 
     async def validate_account(self) -> BrokerAccount:
         self.validate_calls += 1
         return self.account
+
+    async def list_open_orders(self) -> list[BrokerOrderSnapshot]:
+        return list(self.open_orders)
+
+    async def list_open_positions(self) -> list[BrokerPositionSnapshot]:
+        return list(self.open_positions)
 
     async def submit_order(  # pylint: disable=too-many-arguments
         self,
@@ -524,8 +625,31 @@ class FakeRepository:  # pylint: disable=too-many-instance-attributes
         self.order_events.setdefault(key, event)
         return self.order_events[key]
 
+    async def load_recent_order_events(
+        self,
+        *,
+        service_name: str,
+        execution_mode: str,
+        limit: int,
+    ):
+        del service_name, execution_mode, limit
+        return list(self.order_events.values())
+
 
 class FakeSignalClient:
+    def __init__(
+        self,
+        *,
+        system_reliability: CanonicalSystemReliability | None = None,
+        system_error: Exception | None = None,
+    ) -> None:
+        self.system_reliability = (
+            _system_reliability()
+            if system_reliability is None and system_error is None
+            else system_reliability
+        )
+        self.system_error = system_error
+
     async def close(self) -> None:
         return None
 
@@ -533,6 +657,13 @@ class FakeSignalClient:
         del symbol
         signal = "BUY" if interval_begin == _candle(0).interval_begin else "HOLD"
         return _signal(interval_begin, signal=signal)
+
+    async def fetch_system_reliability(self) -> CanonicalSystemReliability:
+        if self.system_error is not None:
+            raise self.system_error
+        if self.system_reliability is None:
+            raise RuntimeError("system reliability unavailable")
+        return self.system_reliability
 
 
 def _arm_live(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -589,7 +720,7 @@ def test_paper_probe_policy_activates_only_in_paper_environment(tmp_path: Path) 
     )
 
     assert live_broker_client.submit_calls[0][3]["probe_policy_active"] is False
-    assert live_result.created_position is not None
+    assert live_result.created_position is None
     assert live_result.lifecycle_events[0].probe_policy_active is False
 
 
@@ -686,7 +817,12 @@ def test_paper_probe_max_one_order_per_run_is_enforced(tmp_path: Path) -> None:
         paper_probe_max_orders_per_run=1,
     )
     first_request = _order_request(config, approved_notional=20.0)
-    second_request = replace(first_request, order_request_id=2, signal_row_id="BTC/USD|second")
+    second_request = replace(
+        first_request,
+        order_request_id=2,
+        signal_row_id="BTC/USD|second",
+        target_fill_interval_begin=_candle(2).interval_begin,
+    )
     broker_client = FakeBrokerClient()
     adapter = LiveExecutionAdapter(broker_client=broker_client)
     adapter.begin_run()
@@ -739,8 +875,12 @@ def test_canonical_live_path_is_unchanged_when_probe_is_disabled(tmp_path: Path)
     )
 
     assert broker_client.submit_calls[0][3]["probe_policy_active"] is False
-    assert result.created_position is not None
-    assert len(result.ledger_entries) == 1
+    assert [event.lifecycle_state for event in result.lifecycle_events] == [
+        "SUBMITTED",
+        "FILLED",
+    ]
+    assert result.created_position is None
+    assert len(result.ledger_entries) == 0
 
 
 def test_paper_probe_orders_are_explicitly_tagged_in_audit(tmp_path: Path) -> None:
@@ -872,6 +1012,133 @@ def test_startup_validation_environment_mismatch(
     )
 
 
+def test_live_startup_blocks_on_orphan_broker_position(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _arm_live(monkeypatch)
+    candles = [_candle(0)]
+    repository = FakeRepository(candles)
+    broker_client = FakeBrokerClient()
+    broker_client.open_positions = [
+        BrokerPositionSnapshot(
+            broker_name="alpaca",
+            symbol="BTC/USD",
+            quantity=1.0,
+            avg_entry_price=100.0,
+            market_value=100.0,
+            account_id="PA12345",
+            environment_name="paper",
+        )
+    ]
+    runner = PaperTradingRunner(
+        config=_live_config(tmp_path),
+        repository=repository,
+        signal_client=FakeSignalClient(),
+        broker_client=broker_client,
+    )
+
+    with pytest.raises(LiveStartupValidationError, match="LIVE_RECONCILIATION_ORPHAN_POSITION"):
+        asyncio.run(runner.startup())
+
+    assert repository.live_safety_state is not None
+    assert repository.live_safety_state.reconciliation_status == "BLOCKED"
+    assert (
+        repository.live_safety_state.reconciliation_reason_code
+        == LIVE_RECONCILIATION_ORPHAN_POSITION
+    )
+
+
+def test_live_startup_fails_closed_when_broker_truth_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _arm_live(monkeypatch)
+
+    class ReconciliationUnavailableBroker(FakeBrokerClient):
+        async def list_open_orders(self) -> list[BrokerOrderSnapshot]:
+            raise RuntimeError("broker truth unavailable")
+
+    repository = FakeRepository([_candle(0)])
+    runner = PaperTradingRunner(
+        config=_live_config(tmp_path),
+        repository=repository,
+        signal_client=FakeSignalClient(),
+        broker_client=ReconciliationUnavailableBroker(),
+    )
+
+    with pytest.raises(
+        LiveStartupValidationError,
+        match="LIVE_RECONCILIATION_BROKER_UNAVAILABLE",
+    ):
+        asyncio.run(runner.startup())
+
+    assert repository.live_safety_state is not None
+    assert repository.live_safety_state.reconciliation_status == "UNAVAILABLE"
+    assert (
+        repository.live_safety_state.reconciliation_reason_code
+        == LIVE_RECONCILIATION_BROKER_UNAVAILABLE
+    )
+
+
+def test_live_startup_blocks_on_unhealthy_system_health(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _arm_live(monkeypatch)
+    repository = FakeRepository([_candle(0)])
+    broker_client = FakeBrokerClient()
+    signal_client = FakeSignalClient(
+        system_reliability=_system_reliability(
+            health_overall_status="DEGRADED",
+            reason_codes=("FEED_STALE",),
+        )
+    )
+    runner = PaperTradingRunner(
+        config=_live_config(tmp_path),
+        repository=repository,
+        signal_client=signal_client,
+        broker_client=broker_client,
+    )
+
+    with pytest.raises(LiveStartupValidationError, match="FEED_STALE"):
+        asyncio.run(runner.startup())
+
+    assert repository.live_safety_state is not None
+    assert repository.live_safety_state.health_gate_status == "DEGRADED"
+    assert repository.live_safety_state.health_gate_reason_code == "FEED_STALE"
+
+
+def test_live_startup_fails_closed_when_system_health_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _arm_live(monkeypatch)
+    repository = FakeRepository([_candle(0)])
+    broker_client = FakeBrokerClient()
+    runner = PaperTradingRunner(
+        config=_live_config(tmp_path),
+        repository=repository,
+        signal_client=FakeSignalClient(
+            system_error=httpx.ConnectError("system health unavailable")
+        ),
+        broker_client=broker_client,
+    )
+
+    with pytest.raises(
+        LiveStartupValidationError,
+        match=LIVE_SYSTEM_HEALTH_UNAVAILABLE,
+    ):
+        asyncio.run(runner.startup())
+
+    assert repository.live_safety_state is not None
+    assert repository.live_safety_state.health_gate_status == "UNAVAILABLE"
+    assert (
+        repository.live_safety_state.health_gate_reason_code
+        == LIVE_SYSTEM_HEALTH_UNAVAILABLE
+    )
+
+
 def test_live_not_armed_creates_no_submit(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -970,6 +1237,74 @@ def test_order_above_max_order_notional_blocks_live_submit(tmp_path: Path) -> No
     assert result.lifecycle_events[0].reason_code == LIVE_MAX_ORDER_NOTIONAL_EXCEEDED
 
 
+def test_runtime_reconciliation_mismatch_suspends_live_submit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _arm_live(monkeypatch)
+    candles = [_candle(0), _candle(1)]
+    repository = FakeRepository(candles)
+    broker_client = FakeBrokerClient()
+    runner = PaperTradingRunner(
+        config=_live_config(tmp_path),
+        repository=repository,
+        signal_client=FakeSignalClient(),
+        broker_client=broker_client,
+    )
+
+    asyncio.run(runner.startup())
+    broker_client.open_positions = [
+        BrokerPositionSnapshot(
+            broker_name="alpaca",
+            symbol="BTC/USD",
+            quantity=1.0,
+            avg_entry_price=100.0,
+            market_value=100.0,
+            account_id="PA12345",
+            environment_name="paper",
+        )
+    ]
+
+    asyncio.run(runner.run_once())
+
+    assert repository.live_safety_state is not None
+    assert repository.live_safety_state.reconciliation_status == "BLOCKED"
+    assert len(repository.order_requests) == 0
+    assert len(broker_client.submit_calls) == 0
+
+
+def test_runtime_unhealthy_system_health_suspends_live_submit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _arm_live(monkeypatch)
+    candles = [_candle(0), _candle(1)]
+    repository = FakeRepository(candles)
+    broker_client = FakeBrokerClient()
+    signal_client = FakeSignalClient()
+    runner = PaperTradingRunner(
+        config=_live_config(tmp_path),
+        repository=repository,
+        signal_client=signal_client,
+        broker_client=broker_client,
+    )
+
+    asyncio.run(runner.startup())
+    signal_client.system_reliability = _system_reliability(
+        health_overall_status="DEGRADED",
+        reason_codes=("FEATURE_LAG_BREACH",),
+        lag_breach_active=True,
+    )
+
+    asyncio.run(runner.run_once())
+
+    assert repository.live_safety_state is not None
+    assert repository.live_safety_state.health_gate_status == "DEGRADED"
+    assert repository.live_safety_state.health_gate_reason_code == "FEATURE_LAG_BREACH"
+    assert len(repository.order_requests) == 0
+    assert len(broker_client.submit_calls) == 0
+
+
 def test_repeated_live_submit_failures_activate_hard_stop(tmp_path: Path) -> None:
     config = _live_config(tmp_path, failure_hard_stop_threshold=2)
     broker_client = FakeBrokerClient(
@@ -990,7 +1325,11 @@ def test_repeated_live_submit_failures_activate_hard_stop(tmp_path: Path) -> Non
         )
     )
 
-    second_order_request = replace(first_order_request, order_request_id=2)
+    second_order_request = replace(
+        first_order_request,
+        order_request_id=2,
+        target_fill_interval_begin=_candle(2).interval_begin,
+    )
     second_result = asyncio.run(
         adapter.execute_candle(
             config=config,
@@ -1074,11 +1413,36 @@ def test_successful_live_fill_resets_consecutive_failure_count(tmp_path: Path) -
     assert result.live_safety_state is not None
     assert result.live_safety_state.consecutive_live_failures == 0
     assert [event.lifecycle_state for event in result.lifecycle_events] == [
-        "ACCEPTED",
+        "SUBMITTED",
         "FILLED",
     ]
-    assert result.created_position is not None
-    assert len(result.ledger_entries) == 1
+    assert result.created_position is None
+    assert len(result.ledger_entries) == 0
+
+
+def test_stale_order_request_blocks_live_submit(tmp_path: Path) -> None:
+    config = _live_config(tmp_path)
+    order_request = replace(
+        _order_request(config, approved_notional=10.0),
+        target_fill_interval_begin=_candle(1).interval_begin,
+    )
+    broker_client = FakeBrokerClient()
+    adapter = LiveExecutionAdapter(broker_client=broker_client)
+    result = asyncio.run(
+        adapter.execute_candle(
+            config=config,
+            candle=_candle(2),
+            state=_pending_state(candle=_candle(2), order_request=order_request),
+            open_position=None,
+            signal=_hold_signal(_candle(2).interval_begin),
+            portfolio=_portfolio(),
+            order_request=order_request,
+            live_safety_state=_live_safety_state(),
+        )
+    )
+
+    assert broker_client.submit_calls == []
+    assert result.lifecycle_events[0].reason_code == LIVE_SIGNAL_STALE
 
 
 def test_live_order_intent_and_lifecycle_audit_persist(
@@ -1110,7 +1474,7 @@ def test_live_order_intent_and_lifecycle_audit_persist(
     assert len(repository.order_requests) == 1
     assert {event.lifecycle_state for event in repository.order_events.values()} == {
         "CREATED",
-        "ACCEPTED",
+        "SUBMITTED",
         "FILLED",
     }
     filled_event = next(
@@ -1120,8 +1484,8 @@ def test_live_order_intent_and_lifecycle_audit_persist(
     )
     assert filled_event.broker_name == "alpaca"
     assert filled_event.account_id == "PA12345"
-    assert len(repository.positions) == 1
-    assert len(repository.ledger) == 1
+    assert len(repository.positions) == 0
+    assert len(repository.ledger) == 0
 
 
 def test_startup_checklist_artifact_writing(
@@ -1155,7 +1519,11 @@ def test_live_status_artifact_writing(tmp_path: Path) -> None:
     config = _live_config(tmp_path)
     state = _live_safety_state()
 
-    write_live_status_artifact(state=state, config=config)
+    write_live_status_artifact(
+        state=state,
+        config=config,
+        system_reliability=_system_reliability(),
+    )
 
     payload = json.loads(
         Path(config.execution.live.live_status_path).read_text(encoding="utf-8")
@@ -1163,3 +1531,9 @@ def test_live_status_artifact_writing(tmp_path: Path) -> None:
     assert payload["startup_checks_passed"] is True
     assert payload["account_id"] == "PA12345"
     assert payload["max_order_notional"] == config.execution.live.max_order_notional
+    assert payload["health_gate_status"] == "CLEAR"
+    assert payload["system_health_status"] == "HEALTHY"
+    assert payload["portfolio_truth_source"] == "BROKER_RECONCILIATION_ONLY"
+    assert "lifecycle events only" in payload["order_submit_contract"]
+    assert payload["cross_venue_context"]["venue_mismatch"] is True
+    assert payload["canonical_system_health"]["health_overall_status"] == "HEALTHY"

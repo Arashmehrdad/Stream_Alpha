@@ -20,6 +20,8 @@ Milestone `M8` foundation adds an explicit offline regime workflow. It reads can
 
 Milestone `M9` adds a minimum regime-aware live signal foundation. It loads the saved M8 `thresholds.json`, resolves regime labels for the exact canonical feature row used by M4, extends the accepted inference and paper-trading contracts additively, and surfaces by-regime performance in the existing dashboard and trading artifacts.
 
+Milestone `M10` adds the authoritative pre-trade risk and sizing layer. It blocks unsafe BUY decisions explicitly, keeps SELL/HOLD behavior inspectable, records deterministic reason codes plus ordered sizing adjustments, and persists restart-safe risk state without moving signal authority away from M4.
+
 Milestone `M11` adds a minimum execution abstraction after M10 risk approval. It keeps M4 authoritative for signals, keeps M10 authoritative for risk and sizing, records deterministic idempotent order requests plus lifecycle events, and supports two local-only execution modes: `paper` and `shadow`.
 
 Milestone `M12` adds a guarded live trading foundation on top of the accepted execution layer. It adds a third `live` adapter mode for Alpaca Trading API account validation and order submission, requires explicit runtime arming plus local safety checks before any broker submission, keeps live orders tiny and whitelisted, and writes startup/live-status artifacts plus explicit live audit rows.
@@ -266,6 +268,9 @@ M6 does not do:
 M7 does:
 - retrain challengers from canonical `feature_ohlc` using the accepted M3 evaluation flow
 - compare challengers to the current champion with explicit file-based policy checks
+- use long-only after-cost `mean_long_only_net_value_proxy` as the primary promotion metric
+- save regime-sliced long-only economics in `summary.json`
+- require challengers to be positive after costs and beat both `persistence_3` and `dummy_most_frequent` before promotion
 - store challenger artifacts under `artifacts/training/m7/<run_id>/`
 - maintain a local immutable registry under `artifacts/registry/`
 - support explicit rollback by `model_version`
@@ -310,6 +315,21 @@ M9 does not do:
 - duplicate regime logic in M5 or change M7 registry model resolution
 - add RL, sentiment/news, anomaly detection, MLflow, or adaptive threshold tuning
 
+## M10 Scope
+
+M10 does:
+- evaluate every authoritative M4 signal through an explicit pre-trade risk layer before any order request is created
+- keep BUY approval bounded by cash, max open positions, per-asset exposure, total exposure, daily loss, drawdown, cooldown, loss-streak cooldown, minimum trade notional, and regime trade-allow rules
+- keep SELL and HOLD behavior explicit and restart-safe
+- persist additive `paper_risk_decisions` and `service_risk_state` rows with ordered adjustment steps, primary reason codes, and human-readable rationale text
+- fail closed on blocked BUY decisions and keep rejection reasons inspectable
+
+M10 does not do:
+- replace M4 signal authority
+- route execution directly to brokers
+- add portfolio optimization, leverage, shorts, or adaptive risk tuning
+- hide blocked or modified decisions behind implicit sizing behavior
+
 ## M11 Scope
 
 M11 does:
@@ -318,7 +338,7 @@ M11 does:
 - add deterministic idempotent order requests and lifecycle audit rows under `execution_order_requests` and `execution_order_events`
 - support two local-only execution modes: `paper` and `shadow`
 - keep the same risk-approved signal path in both modes
-- record explicit `CREATED`, `ACCEPTED`, `FILLED`, and `REJECTED` lifecycle states
+- record explicit `CREATED`, `SUBMITTED`, `ACCEPTED`, `PARTIALLY_FILLED`, `FILLED`, `REJECTED`, `CANCELED`, and `FAILED` lifecycle states where supported by the current adapter path
 - keep paper mode functional while making every intended order traceable
 
 M11 does not do:
@@ -338,12 +358,15 @@ M12 does:
 - restrict live orders to the configured `execution.live.symbol_whitelist`
 - check a local manual-disable sentinel before every live broker submission
 - track consecutive live submit failures and activate a hard-stop when the configured threshold is reached
+- keep live lifecycle audit rows explicit even when the broker path is non-terminal
+- avoid mutating local live positions or ledger rows from submit success alone
+- require broker-truth reconciliation before live state is considered clear enough to continue
 - persist additive live safety state plus broker metadata on order lifecycle rows
 - write a redacted startup checklist artifact and a current live status artifact
 - surface live mode, live safety state, and recent live order audit rows in the existing dashboard
 
 M12 does not do:
-- add stale-data protection, circuit breakers, or recovery orchestration
+- auto-import broker fills into local portfolio state without explicit verified reconciliation
 - add websocket streaming, advanced order types, or partial-fill management
 - add a live trading control plane, scheduler, or background recovery daemon
 - change M4 signal generation, M9 regime classification, or M10 risk sizing authority
@@ -369,7 +392,7 @@ M13 Packet 2 does:
 M13 Packet 2 does not do:
 - change M4 model authority, M10 risk authority, or M11/M12 execution routing
 - add alert routing, deployment profiles, or a new orchestration stack
-- add stale-feed live blocking, recovery daemons, or explainability payload expansion
+- add alert routing, recovery daemons, or explainability payload expansion
 
 M13 Packet 3 does:
 - track finalized feature time lag per symbol from `evaluated_at - latest_feature_as_of_time`
@@ -380,6 +403,7 @@ M13 Packet 3 does:
 - persist canonical system snapshots under `reliability_system_state`
 - add read-only `GET /reliability/system`
 - write `artifacts/reliability/system_health.json` and `artifacts/reliability/lag_summary.json`
+- gate guarded-live startup, runtime, and pre-submit paths on canonical system health and unresolved reconciliation
 - surface one overall reliability status, per-service heartbeat health, lag breach state, and the latest recovery event in the existing dashboard
 
 M13 Packet 3 does not do:
@@ -928,7 +952,7 @@ For M12 guarded-live checks:
 ```powershell
 Get-Content artifacts\live\startup_checklist.json
 Get-Content artifacts\live\live_status.json
-docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT service_name, execution_mode, broker_name, startup_checks_passed, manual_disable_active, failure_hard_stop_active FROM execution_live_safety_state;"
+docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT service_name, execution_mode, broker_name, startup_checks_passed, manual_disable_active, failure_hard_stop_active, reconciliation_status, health_gate_status FROM execution_live_safety_state;"
 docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT execution_mode, lifecycle_state, broker_name, external_status, COUNT(*) AS event_rows FROM execution_order_events GROUP BY execution_mode, lifecycle_state, broker_name, external_status ORDER BY execution_mode, lifecycle_state, broker_name, external_status;"
 ```
 
@@ -996,6 +1020,18 @@ docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELE
 ```
 
 Expect one explicit overall status in `HEALTHY`, `DEGRADED`, or `UNAVAILABLE`, explicit aggregate reason codes, producer feed-freshness visibility, per-service heartbeat status, lag breach state, and the latest recovery event. The dashboard should show the same system-level summary in `Reliability Status`, `Per-Service Health`, and `Feature Consumer Lag`.
+
+7. Verify live gating fails closed on degraded health or unresolved reconciliation.
+Run guarded live with valid credentials, then either force `/reliability/system` away from `HEALTHY` or create a broker/local mismatch and confirm the runner suspends live submission until the gate clears.
+
+```powershell
+python scripts\run_paper_trader.py --config configs\paper_trading.yaml --once
+Get-Content artifacts\live\live_status.json
+docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT service_name, reconciliation_status, reconciliation_reason_code, health_gate_status, health_gate_reason_code, unresolved_incident_count FROM execution_live_safety_state;"
+docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT component_name, event_type, reason_code, detail, event_time FROM reliability_events WHERE component_name IN ('live_reconciliation', 'live_health_gate') ORDER BY event_time DESC LIMIT 20;"
+```
+
+Expect `health_gate_status` and `reconciliation_status` to fail closed whenever canonical health is not `HEALTHY`, a lag breach is active, signal freshness is stale, or broker truth does not match local state.
 
 ## M14 Explainability Validation
 
@@ -1140,10 +1176,11 @@ docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c \"SEL
 - M5 uses the existing M4 inference service as authoritative and does not re-score features locally.
 - M5 is long-only spot simulation with simple next-open fills plus barrier exits; it is intentionally not a live broker or advanced execution model.
 - M7 promotion is fully file-based and explicit; there is no scheduler daemon or automatic retraining loop.
+- M7 artifacts now treat long-only after-cost economics as the promotion contract; a model can win classification tie-breaks and still be explicitly non-acceptable if the after-cost proxy stays non-positive.
 - M7 rollback only switches the promoted champion pointer and does not mutate old promoted snapshots.
 - M9 resolves regimes from the latest saved M8 thresholds artifact by default; there is no online threshold fitting or adaptive retuning.
-- M12 guarded live mirrors only the explicit due order-request path through the broker adapter. Stale-feed protection, recovery orchestration, and richer broker reconciliation are intentionally deferred.
-- M13 Packet 3 adds lag visibility and a canonical cross-service reliability summary, but it intentionally does not add alert routing, stale-data live blocking, or automatic recovery orchestration.
+- M12 guarded live now fails closed on broker-truth mismatch and keeps local portfolio mutations out of the submit path. It does not yet auto-import broker positions or fills into local trading state; unresolved broker truth still blocks until an operator resolves it.
+- M13 Packet 3 now gates live startup and live submit on canonical system health, lag, freshness, signal health, and reconciliation status. It still does not add alert routing or automatic recovery orchestration.
 - This is still a single-broker local stack for development, not a highly available deployment.
 
 ## M12 Guarded Live Validation
@@ -1176,6 +1213,8 @@ Get-Content artifacts\live\live_status.json
 docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT * FROM execution_live_safety_state;"
 docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT execution_mode, lifecycle_state, reason_code, broker_name, external_status, account_id FROM execution_order_events ORDER BY id DESC LIMIT 10;"
 ```
+
+Expect `artifacts\live\live_status.json` to show `research_source_exchange=kraken`, `execution_broker_name=alpaca`, explicit cross-venue context, explicit reconciliation and health-gate status, and the live submit contract explaining that local portfolio mutations require broker truth or verified reconciliation.
 
 ## References
 

@@ -29,7 +29,7 @@ def write_workflow_config(config_path: Path) -> Path:
         "categorical_feature_columns": ["symbol"],
         "close_column": "close_price",
         "comparison_policy": {
-            "primary_metric": "mean_net_value_proxy",
+            "primary_metric": "mean_long_only_net_value_proxy",
             "max_directional_accuracy_regression": 0.01,
             "max_brier_score_worsening": 0.01,
         },
@@ -53,17 +53,20 @@ def write_workflow_config(config_path: Path) -> Path:
     return config_path
 
 
+# pylint: disable=too-many-locals
 def write_run_dir(
     base_dir: Path,
     run_name: str,
     *,
     model_name: str = "logistic_regression",
-    mean_net_value_proxy: float,
+    mean_long_only_net_value_proxy: float,
     directional_accuracy: float,
     brier_score: float,
     feature_columns: list[str] | None = None,
     expanded_feature_names: list[str] | None = None,
     protocol_overrides: dict[str, Any] | None = None,
+    persistence_mean_long_only_net_value_proxy: float | None = None,
+    dummy_mean_long_only_net_value_proxy: float | None = None,
 ) -> Path:
     """Create a minimal but valid training artifact directory for tests."""
     feature_columns = (
@@ -132,35 +135,121 @@ def write_run_dir(
         encoding="utf-8",
     )
     (run_dir / "fold_metrics.csv").write_text(
-        "model_name,fold_index,directional_accuracy,brier_score,mean_net_value_proxy\n"
-        f"{model_name},0,{directional_accuracy},{brier_score},{mean_net_value_proxy}\n",
+        "model_name,fold_index,directional_accuracy,brier_score,"
+        "trade_count,trade_rate,mean_long_only_gross_value_proxy,"
+        "mean_long_only_net_value_proxy\n"
+        f"{model_name},0,{directional_accuracy},{brier_score},1,1.0,"
+        f"{mean_long_only_net_value_proxy + 0.002},{mean_long_only_net_value_proxy}\n",
         encoding="utf-8",
     )
     (run_dir / "oof_predictions.csv").write_text(
-        "model_name,row_id,prob_up\n"
-        f"{model_name},BTC/USD|2026-03-19T00:00:00Z,0.6\n",
+        "model_name,row_id,prob_up,regime_label,long_trade_taken,"
+        "long_only_gross_value_proxy,long_only_net_value_proxy\n"
+        f"{model_name},BTC/USD|2026-03-19T00:00:00Z,0.6,TREND_UP,1,"
+        f"{mean_long_only_net_value_proxy + 0.002},{mean_long_only_net_value_proxy}\n",
         encoding="utf-8",
     )
+    persistence_metric = (
+        mean_long_only_net_value_proxy - 0.0005
+        if persistence_mean_long_only_net_value_proxy is None
+        else persistence_mean_long_only_net_value_proxy
+    )
+    dummy_metric = (
+        mean_long_only_net_value_proxy - 0.001
+        if dummy_mean_long_only_net_value_proxy is None
+        else dummy_mean_long_only_net_value_proxy
+    )
+
+    def _metrics_payload(
+        metric_value: float,
+        *,
+        accuracy: float,
+        brier: float,
+    ) -> dict[str, Any]:
+        return {
+            "directional_accuracy": accuracy,
+            "brier_score": brier,
+            "trade_count": 1,
+            "trade_rate": 1.0,
+            "mean_long_only_gross_value_proxy": metric_value + 0.002,
+            "mean_long_only_net_value_proxy": metric_value,
+            "economics_by_regime": {
+                "TREND_UP": {
+                    "prediction_count": 1,
+                    "trade_count": 1,
+                    "trade_rate": 1.0,
+                    "mean_long_only_gross_value_proxy": metric_value + 0.002,
+                    "mean_long_only_net_value_proxy": metric_value,
+                    "after_cost_positive": metric_value > 0.0,
+                }
+            },
+        }
+
     summary = {
-        "models": {
-            model_name: {
-                "directional_accuracy": directional_accuracy,
-                "brier_score": brier_score,
-                "mean_net_value_proxy": mean_net_value_proxy,
-            },
-            "hist_gradient_boosting": {
-                "directional_accuracy": directional_accuracy - 0.02,
-                "brier_score": brier_score + 0.01,
-                "mean_net_value_proxy": mean_net_value_proxy - 0.001,
-            },
+        "economics_contract": {
+            "name": "LONG_ONLY_AFTER_COST_PROXY",
+            "primary_metric": "mean_long_only_net_value_proxy",
         },
+        "models": {
+            model_name: _metrics_payload(
+                mean_long_only_net_value_proxy,
+                accuracy=directional_accuracy,
+                brier=brier_score,
+            ),
+            "hist_gradient_boosting": _metrics_payload(
+                mean_long_only_net_value_proxy - 0.001,
+                accuracy=directional_accuracy - 0.02,
+                brier=brier_score + 0.01,
+            ),
+            "persistence_3": _metrics_payload(
+                persistence_metric,
+                accuracy=max(directional_accuracy - 0.01, 0.0),
+                brier=brier_score + 0.005,
+            ),
+            "dummy_most_frequent": _metrics_payload(
+                dummy_metric,
+                accuracy=max(directional_accuracy - 0.03, 0.0),
+                brier=brier_score + 0.015,
+            ),
+        },
+        "promotion_baselines": ["persistence_3", "dummy_most_frequent"],
         "winner": {
             "model_name": model_name,
             "selection_rule": {
-                "primary": "mean_net_value_proxy",
+                "primary": "mean_long_only_net_value_proxy",
                 "tie_break_1": "directional_accuracy",
                 "tie_break_2": "lower_brier_score",
             },
+        },
+        "acceptance": {
+            "winner_after_cost_positive": mean_long_only_net_value_proxy > 0.0,
+            "learned_models_positive_after_costs": (
+                [model_name] if mean_long_only_net_value_proxy > 0.0 else []
+            ),
+            "learned_models_beating_persistence_after_costs": (
+                [model_name]
+                if mean_long_only_net_value_proxy > persistence_metric
+                else []
+            ),
+            "learned_models_beating_dummy_after_costs": (
+                [model_name]
+                if mean_long_only_net_value_proxy > dummy_metric
+                else []
+            ),
+            "learned_models_beating_all_baselines_after_costs": (
+                [model_name]
+                if (
+                    mean_long_only_net_value_proxy > 0.0
+                    and mean_long_only_net_value_proxy > persistence_metric
+                    and mean_long_only_net_value_proxy > dummy_metric
+                )
+                else []
+            ),
+            "meets_acceptance_target": (
+                mean_long_only_net_value_proxy > 0.0
+                and mean_long_only_net_value_proxy > persistence_metric
+                and mean_long_only_net_value_proxy > dummy_metric
+            ),
         },
     }
     (run_dir / "summary.json").write_text(

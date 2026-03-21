@@ -15,6 +15,12 @@ from app.explainability.schemas import (
     TopFeatureContribution,
 )
 from app.trading.schemas import SignalDecision
+from app.trading.schemas import (
+    CanonicalFeatureLag,
+    CanonicalRecoveryEvent,
+    CanonicalServiceHealth,
+    CanonicalSystemReliability,
+)
 
 
 class SignalClientError(RuntimeError):
@@ -130,5 +136,141 @@ class SignalClient:
                 None
                 if payload.get("signal_explanation") is None
                 else SignalExplanation.model_validate(payload["signal_explanation"])
+            ),
+        )
+
+    async def fetch_system_reliability(self) -> CanonicalSystemReliability:
+        """Fetch the canonical M13 cross-service reliability summary."""
+        response = await self._client.get("/reliability/system")
+        response.raise_for_status()
+        payload = response.json()
+        return CanonicalSystemReliability(
+            service_name=str(payload["service_name"]),
+            checked_at=parse_rfc3339(str(payload["checked_at"])),
+            health_overall_status=str(payload["health_overall_status"]),
+            reason_codes=tuple(str(code) for code in payload.get("reason_codes", [])),
+            lag_breach_active=bool(payload.get("lag_breach_active", False)),
+            services=tuple(
+                CanonicalServiceHealth(
+                    service_name=str(item["service_name"]),
+                    component_name=str(item["component_name"]),
+                    checked_at=parse_rfc3339(str(item["checked_at"])),
+                    heartbeat_at=(
+                        None
+                        if item.get("heartbeat_at") is None
+                        else parse_rfc3339(str(item["heartbeat_at"]))
+                    ),
+                    heartbeat_age_seconds=(
+                        None
+                        if item.get("heartbeat_age_seconds") is None
+                        else float(item["heartbeat_age_seconds"])
+                    ),
+                    heartbeat_freshness_status=str(item["heartbeat_freshness_status"]),
+                    health_overall_status=str(item["health_overall_status"]),
+                    reason_code=str(item["reason_code"]),
+                    detail=(
+                        None if item.get("detail") is None else str(item["detail"])
+                    ),
+                    feed_freshness_status=(
+                        None
+                        if item.get("feed_freshness_status") is None
+                        else str(item["feed_freshness_status"])
+                    ),
+                    feed_reason_code=(
+                        None
+                        if item.get("feed_reason_code") is None
+                        else str(item["feed_reason_code"])
+                    ),
+                    feed_age_seconds=(
+                        None
+                        if item.get("feed_age_seconds") is None
+                        else float(item["feed_age_seconds"])
+                    ),
+                )
+                for item in payload.get("services", [])
+            ),
+            lag_by_symbol=tuple(
+                CanonicalFeatureLag(
+                    service_name=str(item["service_name"]),
+                    component_name=str(item["component_name"]),
+                    symbol=str(item["symbol"]),
+                    evaluated_at=parse_rfc3339(str(item["evaluated_at"])),
+                    latest_raw_event_received_at=(
+                        None
+                        if item.get("latest_raw_event_received_at") is None
+                        else parse_rfc3339(str(item["latest_raw_event_received_at"]))
+                    ),
+                    latest_feature_interval_begin=(
+                        None
+                        if item.get("latest_feature_interval_begin") is None
+                        else parse_rfc3339(str(item["latest_feature_interval_begin"]))
+                    ),
+                    latest_feature_as_of_time=(
+                        None
+                        if item.get("latest_feature_as_of_time") is None
+                        else parse_rfc3339(str(item["latest_feature_as_of_time"]))
+                    ),
+                    time_lag_seconds=(
+                        None
+                        if item.get("time_lag_seconds") is None
+                        else float(item["time_lag_seconds"])
+                    ),
+                    processing_lag_seconds=(
+                        None
+                        if item.get("processing_lag_seconds") is None
+                        else float(item["processing_lag_seconds"])
+                    ),
+                    time_lag_reason_code=str(item["time_lag_reason_code"]),
+                    processing_lag_reason_code=str(item["processing_lag_reason_code"]),
+                    lag_breach=bool(item["lag_breach"]),
+                    health_overall_status=str(item["health_overall_status"]),
+                    reason_code=str(item["reason_code"]),
+                    detail=(
+                        None if item.get("detail") is None else str(item["detail"])
+                    ),
+                )
+                for item in payload.get("lag_by_symbol", [])
+            ),
+            latest_recovery_event=(
+                None
+                if payload.get("latest_recovery_event") is None
+                else CanonicalRecoveryEvent(
+                    service_name=str(payload["latest_recovery_event"]["service_name"]),
+                    component_name=str(
+                        payload["latest_recovery_event"]["component_name"]
+                    ),
+                    event_type=str(payload["latest_recovery_event"]["event_type"]),
+                    event_time=parse_rfc3339(
+                        str(payload["latest_recovery_event"]["event_time"])
+                    ),
+                    reason_code=str(payload["latest_recovery_event"]["reason_code"]),
+                    health_overall_status=(
+                        None
+                        if payload["latest_recovery_event"].get(
+                            "health_overall_status"
+                        )
+                        is None
+                        else str(
+                            payload["latest_recovery_event"]["health_overall_status"]
+                        )
+                    ),
+                    freshness_status=(
+                        None
+                        if payload["latest_recovery_event"].get("freshness_status")
+                        is None
+                        else str(payload["latest_recovery_event"]["freshness_status"])
+                    ),
+                    breaker_state=(
+                        None
+                        if payload["latest_recovery_event"].get("breaker_state")
+                        is None
+                        else str(payload["latest_recovery_event"]["breaker_state"])
+                    ),
+                    detail=(
+                        None
+                        if payload["latest_recovery_event"].get("detail") is None
+                        else str(payload["latest_recovery_event"]["detail"])
+                    ),
+                )
             ),
         )

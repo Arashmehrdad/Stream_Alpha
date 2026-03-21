@@ -35,7 +35,10 @@ def build_summary(
     ]
     overall = {
         "service_name": config.service_name,
+        "execution_mode": config.execution.mode,
         "symbols": list(config.symbols),
+        "data_source_exchange": config.source_exchange,
+        "execution_context": _execution_context(config),
         "cash_balance": cash_balance,
         "cumulative_pnl_realized": realized_pnl,
         "cumulative_pnl_total": total_pnl,
@@ -64,6 +67,43 @@ def build_summary(
             latest_prices=latest_prices,
             fee_bps=config.risk.fee_bps,
         ),
+    }
+
+
+def _execution_context(config: PaperTradingConfig) -> dict[str, Any]:
+    execution_venue = "alpaca" if config.execution.mode == "live" else None
+    execution_environment = (
+        config.execution.live.expected_environment
+        if config.execution.mode == "live"
+        else None
+    )
+    portfolio_truth_source = {
+        "paper": "LOCAL_SIMULATION",
+        "shadow": "SHADOW_AUDIT_ONLY",
+        "live": "BROKER_RECONCILIATION_ONLY",
+    }[config.execution.mode]
+    fill_truth_source = {
+        "paper": "LOCAL_SIMULATION",
+        "shadow": "SHADOW_AUDIT_ONLY",
+        "live": "BROKER_TRUTH_OR_RECONCILIATION",
+    }[config.execution.mode]
+    return {
+        "execution_contract": {
+            "paper": "LOCAL_PAPER_SIMULATION",
+            "shadow": "LOCAL_SHADOW_AUDIT_ONLY",
+            "live": "ALPACA_GUARDED_LIVE_SUBMIT",
+        }[config.execution.mode],
+        "fill_truth_source": fill_truth_source,
+        "portfolio_truth_source": portfolio_truth_source,
+        "cross_venue_context": {
+            "data_venue": config.source_exchange,
+            "execution_venue": execution_venue,
+            "execution_environment": execution_environment,
+            "venue_mismatch": (
+                execution_venue is not None
+                and config.source_exchange.lower() != execution_venue.lower()
+            ),
+        },
     }
 
 

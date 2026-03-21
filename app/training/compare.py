@@ -19,6 +19,8 @@ from app.training.registry import (
 
 
 _EPSILON = 1e-12
+_PRIMARY_METRIC = "mean_long_only_net_value_proxy"
+_REQUIRED_PROMOTION_BASELINES = ("persistence_3", "dummy_most_frequent")
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,8 +64,10 @@ def load_workflow_config(config_path: Path) -> WorkflowConfig:
         raise ValueError(
             "configs/training.m7.json is missing required comparison_policy fields",
         ) from error
-    if policy.primary_metric != "mean_net_value_proxy":
-        raise ValueError("M7 promotion primary_metric must be mean_net_value_proxy")
+    if policy.primary_metric != _PRIMARY_METRIC:
+        raise ValueError(
+            "M7 promotion primary_metric must be mean_long_only_net_value_proxy"
+        )
 
     return WorkflowConfig(
         training=load_training_config(Path(config_path)),
@@ -71,6 +75,7 @@ def load_workflow_config(config_path: Path) -> WorkflowConfig:
     )
 
 
+# pylint: disable=too-many-locals
 def compare_run_to_current(
     *,
     run_dir: Path,
@@ -80,9 +85,20 @@ def compare_run_to_current(
     """Compare one challenger run to the current promoted champion, when present."""
     workflow = load_workflow_config(config_path)
     challenger_manifest = build_run_manifest(run_dir)
+    challenger_summary = _load_summary_from_manifest(challenger_manifest)
+    challenger_metrics = dict(challenger_manifest["winner"]["metrics"])
+    baseline_checks = _baseline_checks(
+        challenger_summary,
+        challenger_metrics=challenger_metrics,
+        primary_metric=workflow.comparison_policy.primary_metric,
+    )
     current_entry = load_current_registry_entry(registry_root)
     if current_entry is None:
-        return _no_champion_payload(challenger_manifest, workflow.comparison_policy)
+        return _no_champion_payload(
+            challenger_manifest,
+            workflow.comparison_policy,
+            baseline_checks=baseline_checks,
+        )
 
     champion_manifest_path = Path(str(current_entry["run_manifest_path"])).resolve()
     if not champion_manifest_path.is_file():
@@ -93,17 +109,17 @@ def compare_run_to_current(
     champion_manifest = read_json(champion_manifest_path)
 
     compatibility_checks = _compatibility_checks(challenger_manifest, champion_manifest)
-    challenger_metrics = dict(challenger_manifest["winner"]["metrics"])
     champion_metrics = dict(champion_manifest["winner"]["metrics"])
 
     reasons: list[str] = []
     if not all(compatibility_checks.values()):
         reasons.extend(_compatibility_failure_reasons(compatibility_checks))
+    reasons.extend(_baseline_failure_reasons(baseline_checks))
 
     if not _is_primary_metric_improved(challenger_metrics, champion_metrics):
         reasons.append(
-            "Primary metric mean_net_value_proxy did not beat the current champion "
-            "under the deterministic tie-break rules",
+            "Primary metric mean_long_only_net_value_proxy did not beat the current "
+            "champion under the deterministic tie-break rules",
         )
 
     accuracy_delta = (
@@ -137,9 +153,10 @@ def compare_run_to_current(
             model_version=str(current_entry["model_version"]),
         ),
         "compatibility_checks": compatibility_checks,
+        "baseline_checks": baseline_checks,
         "metric_deltas": {
-            "mean_net_value_proxy": float(challenger_metrics["mean_net_value_proxy"])
-            - float(champion_metrics["mean_net_value_proxy"]),
+            _PRIMARY_METRIC: float(challenger_metrics[_PRIMARY_METRIC])
+            - float(champion_metrics[_PRIMARY_METRIC]),
             "directional_accuracy": accuracy_delta,
             "brier_score": brier_delta,
         },
@@ -176,12 +193,21 @@ def main() -> None:
 def _no_champion_payload(
     challenger_manifest: dict[str, Any],
     policy: ComparisonPolicy,
+    *,
+    baseline_checks: dict[str, Any],
 ) -> dict[str, Any]:
     """Return the explicit bootstrap comparison payload when no champion exists yet."""
+    reasons = _baseline_failure_reasons(baseline_checks)
+    if not reasons:
+        reasons = [
+            "No current champion is registered; bootstrap is allowed because the "
+            "challenger is positive after costs and beats the required baselines.",
+        ]
+    passed = not _baseline_failure_reasons(baseline_checks)
     return {
         "generated_at": to_rfc3339(utc_now()),
-        "passed": True,
-        "decision": "bootstrap_allowed",
+        "passed": passed,
+        "decision": "bootstrap_allowed" if passed else "reject",
         "policy": policy.to_dict(),
         "challenger": _comparison_side(challenger_manifest, model_version=None),
         "champion": None,
@@ -190,10 +216,9 @@ def _no_champion_payload(
             "evaluation_protocol_match": True,
             "selection_rule_match": True,
         },
+        "baseline_checks": baseline_checks,
         "metric_deltas": None,
-        "reasons": [
-            "No current champion is registered; promotion may bootstrap the registry.",
-        ],
+        "reasons": reasons,
     }
 
 
@@ -209,6 +234,8 @@ def _comparison_side(
         "run_dir": manifest["run_dir"],
         "model_name": manifest["winner"]["model_name"],
         "trained_at": manifest["winner"]["trained_at"],
+        "economics_contract": dict(manifest.get("economics_contract", {})),
+        "acceptance": dict(manifest.get("acceptance", {})),
         "metrics": manifest["winner"]["metrics"],
     }
 
@@ -245,8 +272,8 @@ def _is_primary_metric_improved(
     champion_metrics: dict[str, Any],
 ) -> bool:
     """Apply the deterministic primary metric plus tie-break ordering."""
-    challenger_net = float(challenger_metrics["mean_net_value_proxy"])
-    champion_net = float(champion_metrics["mean_net_value_proxy"])
+    challenger_net = float(challenger_metrics[_PRIMARY_METRIC])
+    champion_net = float(champion_metrics[_PRIMARY_METRIC])
     if challenger_net > champion_net + _EPSILON:
         return True
     if challenger_net < champion_net - _EPSILON:
@@ -262,6 +289,57 @@ def _is_primary_metric_improved(
     challenger_brier = float(challenger_metrics["brier_score"])
     champion_brier = float(champion_metrics["brier_score"])
     return challenger_brier < champion_brier - _EPSILON
+
+
+def _load_summary_from_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
+    summary_path = Path(str(manifest["artifact_files"]["summary.json"])).resolve()
+    if not summary_path.is_file():
+        raise ValueError(f"summary.json is missing from {summary_path}")
+    return read_json(summary_path)
+
+
+def _baseline_checks(
+    challenger_summary: dict[str, Any],
+    *,
+    challenger_metrics: dict[str, Any],
+    primary_metric: str,
+) -> dict[str, Any]:
+    baseline_results: dict[str, dict[str, Any]] = {}
+    challenger_value = float(challenger_metrics[primary_metric])
+    for baseline_name in _REQUIRED_PROMOTION_BASELINES:
+        try:
+            baseline_value = float(challenger_summary["models"][baseline_name][primary_metric])
+        except KeyError as error:
+            raise ValueError(
+                f"Training summary is missing required baseline metric {primary_metric} "
+                f"for {baseline_name}"
+            ) from error
+        baseline_results[baseline_name] = {
+            "metric_name": primary_metric,
+            "challenger_value": challenger_value,
+            "baseline_value": baseline_value,
+            "passed": challenger_value > baseline_value + _EPSILON,
+        }
+    return {
+        "winner_after_cost_positive": challenger_value > _EPSILON,
+        "required_baselines": baseline_results,
+    }
+
+
+def _baseline_failure_reasons(baseline_checks: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    if not bool(baseline_checks["winner_after_cost_positive"]):
+        reasons.append(
+            "Challenger mean_long_only_net_value_proxy is not positive after costs",
+        )
+    for baseline_name, details in baseline_checks["required_baselines"].items():
+        if bool(details["passed"]):
+            continue
+        reasons.append(
+            "Challenger mean_long_only_net_value_proxy did not beat baseline "
+            f"{baseline_name} after costs",
+        )
+    return reasons
 
 
 if __name__ == "__main__":

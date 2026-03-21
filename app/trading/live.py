@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 from app.common.serialization import make_json_safe
@@ -12,9 +12,18 @@ from app.common.time import to_rfc3339, utc_now
 from app.trading.alpaca import AlpacaClientError, AlpacaTradingClient
 from app.trading.config import PaperTradingConfig
 from app.trading.schemas import (
+    CanonicalSystemReliability,
+    BrokerAccount,
+    BrokerOrderSnapshot,
+    BrokerPositionSnapshot,
+    FeatureCandle,
     LiveSafetyState,
+    OrderLifecycleEvent,
+    OrderRequest,
+    PaperPosition,
     LiveStartupCheck,
     LiveStartupChecklist,
+    SignalDecision,
 )
 
 
@@ -28,13 +37,43 @@ LIVE_FAILURE_HARD_STOP_ACTIVE = "LIVE_FAILURE_HARD_STOP_ACTIVE"
 LIVE_SYMBOL_NOT_WHITELISTED = "LIVE_SYMBOL_NOT_WHITELISTED"
 LIVE_MAX_ORDER_NOTIONAL_EXCEEDED = "LIVE_MAX_ORDER_NOTIONAL_EXCEEDED"
 LIVE_BROKER_SUBMIT_FAILED = "LIVE_BROKER_SUBMIT_FAILED"
+LIVE_ORDER_SUBMITTED = "LIVE_ORDER_SUBMITTED"
 LIVE_ORDER_ACCEPTED = "LIVE_ORDER_ACCEPTED"
+LIVE_ORDER_PARTIALLY_FILLED = "LIVE_ORDER_PARTIALLY_FILLED"
 LIVE_ORDER_FILLED = "LIVE_ORDER_FILLED"
 LIVE_ORDER_REJECTED = "LIVE_ORDER_REJECTED"
+LIVE_ORDER_CANCELED = "LIVE_ORDER_CANCELED"
+LIVE_ORDER_FAILED = "LIVE_ORDER_FAILED"
+LIVE_RECONCILIATION_CLEAR = "LIVE_RECONCILIATION_CLEAR"
+LIVE_RECONCILIATION_BROKER_UNAVAILABLE = "LIVE_RECONCILIATION_BROKER_UNAVAILABLE"
+LIVE_RECONCILIATION_BLOCKED = "LIVE_RECONCILIATION_BLOCKED"
+LIVE_RECONCILIATION_ORPHAN_ORDER = "LIVE_RECONCILIATION_ORPHAN_ORDER"
+LIVE_RECONCILIATION_ORPHAN_POSITION = "LIVE_RECONCILIATION_ORPHAN_POSITION"
+LIVE_RECONCILIATION_LOCAL_POSITION_MISSING_AT_BROKER = (
+    "LIVE_RECONCILIATION_LOCAL_POSITION_MISSING_AT_BROKER"
+)
+LIVE_RECONCILIATION_ORDER_STATE_MISMATCH = "LIVE_RECONCILIATION_ORDER_STATE_MISMATCH"
+LIVE_RECONCILIATION_POSITION_QTY_MISMATCH = (
+    "LIVE_RECONCILIATION_POSITION_QTY_MISMATCH"
+)
+LIVE_HEALTH_GATE_CLEAR = "LIVE_HEALTH_GATE_CLEAR"
+LIVE_SYSTEM_HEALTH_UNAVAILABLE = "LIVE_SYSTEM_HEALTH_UNAVAILABLE"
+LIVE_SYSTEM_HEALTH_STALE = "LIVE_SYSTEM_HEALTH_STALE"
+LIVE_SIGNAL_STALE = "LIVE_SIGNAL_STALE"
 LIVE_PAPER_PROBE_SYMBOL_NOT_WHITELISTED = "LIVE_PAPER_PROBE_SYMBOL_NOT_WHITELISTED"
 LIVE_PAPER_PROBE_INTEGER_QTY_REQUIRED = "LIVE_PAPER_PROBE_INTEGER_QTY_REQUIRED"
 LIVE_PAPER_PROBE_MIN_ORDER_VALUE_REQUIRED = "LIVE_PAPER_PROBE_MIN_ORDER_VALUE_REQUIRED"
 LIVE_PAPER_PROBE_MAX_ORDERS_PER_RUN_REACHED = "LIVE_PAPER_PROBE_MAX_ORDERS_PER_RUN_REACHED"
+
+_LIVE_TERMINAL_ORDER_STATES = {"FILLED", "REJECTED", "CANCELED", "FAILED"}
+
+
+@dataclass(frozen=True, slots=True)
+class LiveReconciliationIncident:
+    """One explicit live reconciliation mismatch requiring operator attention."""
+
+    reason_code: str
+    detail: str
 
 
 class LiveStartupValidationError(RuntimeError):
@@ -56,7 +95,7 @@ def is_manual_disable_active(path: str) -> bool:
     return Path(path).expanduser().exists()
 
 
-async def validate_live_startup(  # pylint: disable=too-many-locals
+async def validate_live_startup(  # pylint: disable=too-many-locals,too-many-statements
     *,
     config: PaperTradingConfig,
     broker_client: AlpacaTradingClient | None = None,
@@ -128,6 +167,8 @@ async def validate_live_startup(  # pylint: disable=too-many-locals
     validated_environment: str | None = None
     account_validated = False
     last_failure_reason: str | None = None
+    broker_cash: float | None = None
+    broker_equity: float | None = None
 
     if bool(api_key_id) and bool(api_secret_key) and bool(alpaca_base_url):
         try:
@@ -137,6 +178,8 @@ async def validate_live_startup(  # pylint: disable=too-many-locals
             validated_account_id = account.account_id
             validated_environment = account.environment_name
             account_validated = True
+            broker_cash = account.cash
+            broker_equity = account.equity
             checks.append(
                 _startup_check(
                     "broker_authentication",
@@ -261,6 +304,8 @@ async def validate_live_startup(  # pylint: disable=too-many-locals
         consecutive_live_failures=0,
         failure_hard_stop_active=False,
         last_failure_reason=last_failure_reason,
+        broker_cash=broker_cash,
+        broker_equity=broker_equity,
         updated_at=checked_at,
     )
     checklist = LiveStartupChecklist(
@@ -306,6 +351,206 @@ def refresh_manual_disable_state(
         state,
         manual_disable_active=is_manual_disable_active(manual_disable_path),
         updated_at=utc_now(),
+    )
+
+
+# pylint: disable=too-many-arguments
+def reconcile_live_state(
+    *,
+    state: LiveSafetyState,
+    account: BrokerAccount,
+    broker_orders: list[BrokerOrderSnapshot],
+    broker_positions: list[BrokerPositionSnapshot],
+    local_order_events: list[OrderLifecycleEvent],
+    local_open_positions: dict[str, PaperPosition],
+) -> tuple[LiveSafetyState, tuple[LiveReconciliationIncident, ...]]:
+    """Compare local tracked live state against broker truth and fail closed on mismatch."""
+    incidents = _collect_live_reconciliation_incidents(
+        broker_orders=broker_orders,
+        broker_positions=broker_positions,
+        local_order_events=local_order_events,
+        local_open_positions=local_open_positions,
+    )
+    checked_at = utc_now()
+    if incidents:
+        return (
+            replace(
+                state,
+                account_validated=True,
+                account_id=account.account_id,
+                environment_name=account.environment_name,
+                broker_cash=account.cash,
+                broker_equity=account.equity,
+                reconciliation_status="BLOCKED",
+                reconciliation_reason_code=incidents[0].reason_code,
+                reconciliation_checked_at=checked_at,
+                unresolved_incident_count=len(incidents),
+                updated_at=checked_at,
+            ),
+            incidents,
+        )
+    return (
+        replace(
+            state,
+            account_validated=True,
+            account_id=account.account_id,
+            environment_name=account.environment_name,
+            broker_cash=account.cash,
+            broker_equity=account.equity,
+            reconciliation_status="CLEAR",
+            reconciliation_reason_code=LIVE_RECONCILIATION_CLEAR,
+            reconciliation_checked_at=checked_at,
+            unresolved_incident_count=0,
+            updated_at=checked_at,
+        ),
+        (),
+    )
+
+
+def mark_live_reconciliation_unavailable(
+    *,
+    state: LiveSafetyState,
+    reason_code: str,
+) -> LiveSafetyState:
+    """Mark broker-truth reconciliation unavailable so live submit fails closed."""
+    checked_at = utc_now()
+    return replace(
+        state,
+        reconciliation_status="UNAVAILABLE",
+        reconciliation_reason_code=reason_code,
+        reconciliation_checked_at=checked_at,
+        unresolved_incident_count=0,
+        updated_at=checked_at,
+    )
+
+
+def assert_live_reconciliation_clear(state: LiveSafetyState) -> None:
+    """Raise when live reconciliation is not clear enough for guarded startup."""
+    if state.reconciliation_status == "CLEAR":
+        return
+    raise LiveStartupValidationError(
+        "M12 live reconciliation failed closed: "
+        f"{state.reconciliation_reason_code or LIVE_RECONCILIATION_BLOCKED}"
+    )
+
+
+def apply_live_health_gate(  # pylint: disable=too-many-arguments,too-many-return-statements
+    *,
+    state: LiveSafetyState,
+    system_reliability: CanonicalSystemReliability | None,
+    heartbeat_stale_after_seconds: int,
+    signal: SignalDecision | None = None,
+    candle: FeatureCandle | None = None,
+    order_request: OrderRequest | None = None,
+) -> LiveSafetyState:
+    """Apply the canonical M13 live health gate and persist the latest decision."""
+    checked_at = utc_now()
+    if system_reliability is None:
+        return replace(
+            state,
+            system_health_status="UNAVAILABLE",
+            system_health_reason_code=LIVE_SYSTEM_HEALTH_UNAVAILABLE,
+            system_health_checked_at=None,
+            health_gate_status="UNAVAILABLE",
+            health_gate_reason_code=LIVE_SYSTEM_HEALTH_UNAVAILABLE,
+            health_gate_detail="Canonical system health could not be loaded",
+            updated_at=checked_at,
+        )
+
+    reason_code = (
+        system_reliability.reason_codes[0]
+        if system_reliability.reason_codes
+        else LIVE_HEALTH_GATE_CLEAR
+    )
+    snapshot_age_seconds = max(
+        0.0,
+        (checked_at - system_reliability.checked_at).total_seconds(),
+    )
+    if snapshot_age_seconds > heartbeat_stale_after_seconds:
+        return replace(
+            state,
+            system_health_status=system_reliability.health_overall_status,
+            system_health_reason_code=reason_code,
+            system_health_checked_at=system_reliability.checked_at,
+            health_gate_status="UNAVAILABLE",
+            health_gate_reason_code=LIVE_SYSTEM_HEALTH_STALE,
+            health_gate_detail=(
+                "Canonical system health snapshot is stale: "
+                f"age_seconds={snapshot_age_seconds:.3f} "
+                f"threshold={heartbeat_stale_after_seconds}"
+            ),
+            updated_at=checked_at,
+        )
+
+    if system_reliability.health_overall_status != "HEALTHY":
+        return replace(
+            state,
+            system_health_status=system_reliability.health_overall_status,
+            system_health_reason_code=reason_code,
+            system_health_checked_at=system_reliability.checked_at,
+            health_gate_status=system_reliability.health_overall_status,
+            health_gate_reason_code=reason_code,
+            health_gate_detail=(
+                "Canonical system health is not healthy: "
+                f"{system_reliability.health_overall_status}"
+            ),
+            updated_at=checked_at,
+        )
+
+    if signal is not None and (
+        signal.health_overall_status not in {None, "HEALTHY"}
+        or signal.freshness_status not in {None, "FRESH"}
+    ):
+        return replace(
+            state,
+            system_health_status=system_reliability.health_overall_status,
+            system_health_reason_code=reason_code,
+            system_health_checked_at=system_reliability.checked_at,
+            health_gate_status="BLOCKED",
+            health_gate_reason_code=signal.reason_code or LIVE_SIGNAL_STALE,
+            health_gate_detail=signal.reason,
+            updated_at=checked_at,
+        )
+
+    if (
+        order_request is not None
+        and candle is not None
+        and order_request.target_fill_interval_begin < candle.interval_begin
+    ):
+        return replace(
+            state,
+            system_health_status=system_reliability.health_overall_status,
+            system_health_reason_code=reason_code,
+            system_health_checked_at=system_reliability.checked_at,
+            health_gate_status="BLOCKED",
+            health_gate_reason_code=LIVE_SIGNAL_STALE,
+            health_gate_detail=(
+                "Order request target fill interval is stale: "
+                f"target={to_rfc3339(order_request.target_fill_interval_begin)} "
+                f"current={to_rfc3339(candle.interval_begin)}"
+            ),
+            updated_at=checked_at,
+        )
+
+    return replace(
+        state,
+        system_health_status=system_reliability.health_overall_status,
+        system_health_reason_code=reason_code,
+        system_health_checked_at=system_reliability.checked_at,
+        health_gate_status="CLEAR",
+        health_gate_reason_code=LIVE_HEALTH_GATE_CLEAR,
+        health_gate_detail="Canonical live health gate is clear",
+        updated_at=checked_at,
+    )
+
+
+def assert_live_health_gate_clear(state: LiveSafetyState) -> None:
+    """Raise when the canonical M13 live gate is not clear enough for startup."""
+    if state.health_gate_status == "CLEAR":
+        return
+    raise LiveStartupValidationError(
+        "M13 live health gate failed closed: "
+        f"{state.health_gate_reason_code or LIVE_SYSTEM_HEALTH_UNAVAILABLE}"
     )
 
 
@@ -375,6 +620,7 @@ def write_live_status_artifact(
     *,
     state: LiveSafetyState,
     config: PaperTradingConfig,
+    system_reliability: CanonicalSystemReliability | None = None,
 ) -> None:
     """Write the current guarded-live safety status artifact."""
     live_config = config.execution.live
@@ -392,8 +638,24 @@ def write_live_status_artifact(
         "account_validated": state.account_validated,
         "account_id": state.account_id,
         "environment_name": state.environment_name,
+        "broker_cash": state.broker_cash,
+        "broker_equity": state.broker_equity,
         "expected_account_id": live_config.expected_account_id,
         "expected_environment": live_config.expected_environment,
+        "research_source_exchange": config.source_exchange,
+        "execution_broker_name": state.broker_name,
+        "cross_venue_context": {
+            "data_venue": config.source_exchange,
+            "execution_venue": state.broker_name,
+            "execution_environment": state.environment_name,
+            "venue_mismatch": config.source_exchange.lower() != state.broker_name.lower(),
+        },
+        "order_submit_contract": (
+            "Broker submit success records lifecycle events only; local portfolio "
+            "and ledger mutations require broker-truth fill state or verified "
+            "reconciliation."
+        ),
+        "portfolio_truth_source": "BROKER_RECONCILIATION_ONLY",
         "symbol_whitelist": list(live_config.symbol_whitelist),
         "max_order_notional": live_config.max_order_notional,
         "manual_disable_active": state.manual_disable_active,
@@ -402,6 +664,29 @@ def write_live_status_artifact(
         "failure_hard_stop_active": state.failure_hard_stop_active,
         "failure_hard_stop_threshold": live_config.failure_hard_stop_threshold,
         "last_failure_reason": state.last_failure_reason,
+        "system_health_status": state.system_health_status,
+        "system_health_reason_code": state.system_health_reason_code,
+        "system_health_checked_at": (
+            None
+            if state.system_health_checked_at is None
+            else to_rfc3339(state.system_health_checked_at)
+        ),
+        "health_gate_status": state.health_gate_status,
+        "health_gate_reason_code": state.health_gate_reason_code,
+        "health_gate_detail": state.health_gate_detail,
+        "reconciliation_status": state.reconciliation_status,
+        "reconciliation_reason_code": state.reconciliation_reason_code,
+        "reconciliation_checked_at": (
+            None
+            if state.reconciliation_checked_at is None
+            else to_rfc3339(state.reconciliation_checked_at)
+        ),
+        "unresolved_incident_count": state.unresolved_incident_count,
+        "canonical_system_health": (
+            None
+            if system_reliability is None
+            else make_json_safe(asdict(system_reliability))
+        ),
         "updated_at": None if state.updated_at is None else to_rfc3339(state.updated_at),
     }
     _write_json(Path(live_config.live_status_path), payload)
@@ -409,6 +694,100 @@ def write_live_status_artifact(
 
 def _startup_check(name: str, passed: bool, detail: str) -> LiveStartupCheck:
     return LiveStartupCheck(name=name, passed=passed, detail=detail)
+
+
+def _collect_live_reconciliation_incidents(
+    *,
+    broker_orders: list[BrokerOrderSnapshot],
+    broker_positions: list[BrokerPositionSnapshot],
+    local_order_events: list[OrderLifecycleEvent],
+    local_open_positions: dict[str, PaperPosition],
+) -> tuple[LiveReconciliationIncident, ...]:
+    latest_events_by_external_order = _latest_events_by_external_order(local_order_events)
+    broker_positions_by_symbol = {
+        position.symbol: position for position in broker_positions if position.quantity > 0.0
+    }
+    incidents: list[LiveReconciliationIncident] = []
+
+    for broker_order in broker_orders:
+        local_event = latest_events_by_external_order.get(broker_order.external_order_id)
+        if local_event is None:
+            incidents.append(
+                LiveReconciliationIncident(
+                    reason_code=LIVE_RECONCILIATION_ORPHAN_ORDER,
+                    detail=(
+                        "Broker open order is not linked to a local order event: "
+                        f"{broker_order.external_order_id} {broker_order.symbol}"
+                    ),
+                )
+            )
+            continue
+        if local_event.lifecycle_state in _LIVE_TERMINAL_ORDER_STATES:
+            incidents.append(
+                LiveReconciliationIncident(
+                    reason_code=LIVE_RECONCILIATION_ORDER_STATE_MISMATCH,
+                    detail=(
+                        "Broker reports an open order while local state is terminal: "
+                        f"{broker_order.external_order_id} local={local_event.lifecycle_state}"
+                    ),
+                )
+            )
+
+    for broker_position in broker_positions:
+        local_position = local_open_positions.get(broker_position.symbol)
+        if local_position is None:
+            incidents.append(
+                LiveReconciliationIncident(
+                    reason_code=LIVE_RECONCILIATION_ORPHAN_POSITION,
+                    detail=(
+                        "Broker open position has no local live position: "
+                        f"{broker_position.symbol} qty={broker_position.quantity}"
+                    ),
+                )
+            )
+            continue
+        if abs(local_position.quantity - broker_position.quantity) > 1e-9:
+            incidents.append(
+                LiveReconciliationIncident(
+                    reason_code=LIVE_RECONCILIATION_POSITION_QTY_MISMATCH,
+                    detail=(
+                        "Broker and local live position quantities differ: "
+                        f"{broker_position.symbol} broker={broker_position.quantity} "
+                        f"local={local_position.quantity}"
+                    ),
+                )
+            )
+
+    for symbol, local_position in local_open_positions.items():
+        if symbol in broker_positions_by_symbol:
+            continue
+        incidents.append(
+            LiveReconciliationIncident(
+                reason_code=LIVE_RECONCILIATION_LOCAL_POSITION_MISSING_AT_BROKER,
+                detail=(
+                    "Local live position is missing at the broker: "
+                    f"{symbol} qty={local_position.quantity}"
+                ),
+            )
+        )
+
+    return tuple(incidents)
+
+
+def _latest_events_by_external_order(
+    events: list[OrderLifecycleEvent],
+) -> dict[str, OrderLifecycleEvent]:
+    latest: dict[str, OrderLifecycleEvent] = {}
+    for event in events:
+        if event.external_order_id is None:
+            continue
+        existing = latest.get(event.external_order_id)
+        if existing is None or (event.event_time, event.event_id or 0) > (
+            existing.event_time,
+            existing.event_id or 0,
+        ):
+            latest[event.external_order_id] = event
+    return latest
 
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:

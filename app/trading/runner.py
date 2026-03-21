@@ -1,5 +1,6 @@
 """Runner orchestration and summary writing for Stream Alpha M5."""
 
+# pylint: disable=too-many-lines
 # pylint: disable=duplicate-code
 
 from __future__ import annotations
@@ -48,7 +49,16 @@ from app.trading.execution import (
     build_pending_order_request,
 )
 from app.trading.live import (
+    LIVE_HEALTH_GATE_CLEAR,
+    LIVE_RECONCILIATION_BROKER_UNAVAILABLE,
+    LIVE_RECONCILIATION_CLEAR,
+    LIVE_SYSTEM_HEALTH_UNAVAILABLE,
+    apply_live_health_gate,
+    assert_live_health_gate_clear,
+    assert_live_reconciliation_clear,
     assert_live_startup_passed,
+    mark_live_reconciliation_unavailable,
+    reconcile_live_state,
     validate_live_startup,
     write_live_status_artifact,
     write_startup_checklist_artifact,
@@ -91,6 +101,9 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
         self.live_safety_state = None
         self._signal_client_component = "signal_client"
         self._runner_component = "trading_runner"
+        self._live_health_component = "live_health_gate"
+        self._live_reconciliation_component = "live_reconciliation"
+        self._last_system_reliability_snapshot = None
         self._last_heartbeat_at = None
         self.logger = logging.getLogger(f"{config.service_name}.runner")
 
@@ -127,16 +140,29 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
                 last_failure_reason=existing_live_state.last_failure_reason,
             )
         self.live_safety_state = live_safety_state
-        await self.repository.save_live_safety_state(live_safety_state)
+        self.live_safety_state = await self._refresh_live_reconciliation(
+            open_positions=await self.repository.load_open_positions(
+                self.config.service_name,
+                execution_mode=self.config.execution.mode,
+            ),
+            event_type="LIVE_RECONCILIATION_STARTUP",
+        )
+        self.live_safety_state = await self._refresh_live_health_gate(
+            event_type="LIVE_HEALTH_GATE_STARTUP",
+        )
+        await self.repository.save_live_safety_state(self.live_safety_state)
         write_startup_checklist_artifact(
             checklist=checklist,
             artifact_path=self.config.execution.live.startup_checklist_path,
         )
         write_live_status_artifact(
-            state=live_safety_state,
+            state=self.live_safety_state,
             config=self.config,
+            system_reliability=self._last_system_reliability_snapshot,
         )
         assert_live_startup_passed(checklist)
+        assert_live_reconciliation_clear(self.live_safety_state)
+        assert_live_health_gate_clear(self.live_safety_state)
 
     async def shutdown(self) -> None:
         """Close the signal client and repository."""
@@ -168,6 +194,33 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
             self.config.service_name,
             execution_mode=self.config.execution.mode,
         )
+        if self.config.execution.mode == "live":
+            self.live_safety_state = await self._refresh_live_reconciliation(
+                open_positions=open_positions,
+                event_type="LIVE_RECONCILIATION_RUNTIME",
+            )
+            self.live_safety_state = await self._refresh_live_health_gate(
+                event_type="LIVE_HEALTH_GATE_RUNTIME",
+            )
+            await self.repository.save_live_safety_state(self.live_safety_state)
+            write_live_status_artifact(
+                state=self.live_safety_state,
+                config=self.config,
+                system_reliability=self._last_system_reliability_snapshot,
+            )
+            if (
+                self.live_safety_state.reconciliation_status != "CLEAR"
+                or self.live_safety_state.health_gate_status != "CLEAR"
+            ):
+                await self._write_runner_heartbeat(
+                    health_overall_status="DEGRADED",
+                    reason_code=SERVICE_HEARTBEAT_DEGRADED,
+                    detail=(
+                        self.live_safety_state.reconciliation_reason_code
+                        or self.live_safety_state.health_gate_reason_code
+                    ),
+                )
+                return
         available_cash = await self.repository.load_cash_balance(
             service_name=self.config.service_name,
             execution_mode=self.config.execution.mode,
@@ -273,6 +326,19 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
                 candle=candle,
                 state=state,
             )
+            if self.config.execution.mode == "live" and due_order_request is not None:
+                self.live_safety_state = await self._refresh_live_health_gate(
+                    event_type="LIVE_HEALTH_GATE_PRE_SUBMIT",
+                    signal=signal,
+                    candle=candle,
+                    order_request=due_order_request,
+                )
+                await self.repository.save_live_safety_state(self.live_safety_state)
+                write_live_status_artifact(
+                    state=self.live_safety_state,
+                    config=self.config,
+                    system_reliability=self._last_system_reliability_snapshot,
+                )
             execution_result = await self.execution_adapter.execute_candle(
                 config=self.config,
                 candle=candle,
@@ -307,6 +373,7 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
                 write_live_status_artifact(
                     state=self.live_safety_state,
                     config=self.config,
+                    system_reliability=self._last_system_reliability_snapshot,
                 )
             available_cash += execution_result.cash_delta
             if persisted_open is None:
@@ -650,6 +717,205 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
         _write_csv(
             artifact_dir / "closed_positions.csv",
             _positions_to_rows([row for row in positions if row.status == "CLOSED"]),
+        )
+
+    async def _refresh_live_reconciliation(
+        self,
+        *,
+        open_positions: dict[str, PaperPosition],
+        event_type: str,
+    ):
+        if self.live_safety_state is None:
+            raise RuntimeError("Live reconciliation requires a live safety state")
+        broker_client = getattr(self.execution_adapter, "broker_client", None)
+        if broker_client is None:
+            updated_state = mark_live_reconciliation_unavailable(
+                state=self.live_safety_state,
+                reason_code=LIVE_RECONCILIATION_BROKER_UNAVAILABLE,
+            )
+            await self._record_live_reconciliation_events(
+                previous_state=self.live_safety_state,
+                updated_state=updated_state,
+                event_type=event_type,
+                incident_details=("Live broker client was not initialized",),
+            )
+            return updated_state
+
+        try:
+            account = await broker_client.validate_account()
+            broker_orders = await broker_client.list_open_orders()
+            broker_positions = await broker_client.list_open_positions()
+        except Exception as error:  # pylint: disable=broad-exception-caught
+            updated_state = mark_live_reconciliation_unavailable(
+                state=self.live_safety_state,
+                reason_code=LIVE_RECONCILIATION_BROKER_UNAVAILABLE,
+            )
+            await self._record_live_reconciliation_events(
+                previous_state=self.live_safety_state,
+                updated_state=updated_state,
+                event_type=event_type,
+                incident_details=(str(error),),
+            )
+            return updated_state
+
+        local_order_events = await self.repository.load_recent_order_events(
+            service_name=self.config.service_name,
+            execution_mode=self.config.execution.mode,
+            limit=500,
+        )
+        updated_state, incidents = reconcile_live_state(
+            state=self.live_safety_state,
+            account=account,
+            broker_orders=broker_orders,
+            broker_positions=broker_positions,
+            local_order_events=local_order_events,
+            local_open_positions=open_positions,
+        )
+        await self._record_live_reconciliation_events(
+            previous_state=self.live_safety_state,
+            updated_state=updated_state,
+            event_type=event_type,
+            incident_details=tuple(incident.detail for incident in incidents),
+        )
+        return updated_state
+
+    async def _refresh_live_health_gate(
+        self,
+        *,
+        event_type: str,
+        signal=None,
+        candle: FeatureCandle | None = None,
+        order_request: OrderRequest | None = None,
+    ):
+        if self.live_safety_state is None:
+            raise RuntimeError("Live health gating requires a live safety state")
+
+        system_reliability = None
+        incident_detail = None
+        try:
+            system_reliability = await self.signal_client.fetch_system_reliability()
+        except (SignalClientError, httpx.HTTPError) as error:
+            incident_detail = str(error)
+            self._last_system_reliability_snapshot = None
+        else:
+            self._last_system_reliability_snapshot = system_reliability
+
+        updated_state = apply_live_health_gate(
+            state=self.live_safety_state,
+            system_reliability=system_reliability,
+            heartbeat_stale_after_seconds=(
+                self.reliability_config.heartbeat.stale_after_seconds
+            ),
+            signal=signal,
+            candle=candle,
+            order_request=order_request,
+        )
+        await self._record_live_health_gate_events(
+            previous_state=self.live_safety_state,
+            updated_state=updated_state,
+            event_type=event_type,
+            incident_detail=incident_detail,
+        )
+        return updated_state
+
+    async def _record_live_reconciliation_events(
+        self,
+        *,
+        previous_state,
+        updated_state,
+        event_type: str,
+        incident_details: tuple[str, ...],
+    ) -> None:
+        status_changed = (
+            previous_state.reconciliation_status != updated_state.reconciliation_status
+            or previous_state.reconciliation_reason_code
+            != updated_state.reconciliation_reason_code
+            or previous_state.unresolved_incident_count
+            != updated_state.unresolved_incident_count
+        )
+        if not status_changed:
+            return
+        if updated_state.reconciliation_status == "CLEAR":
+            await self._record_reliability_event(
+                RecoveryEvent(
+                    service_name=self.config.service_name,
+                    component_name=self._live_reconciliation_component,
+                    event_type=event_type,
+                    event_time=utc_now(),
+                    reason_code=LIVE_RECONCILIATION_CLEAR,
+                    health_overall_status="HEALTHY",
+                    freshness_status="FRESH",
+                    breaker_state=None,
+                    detail="Broker truth matches local live state",
+                )
+            )
+            return
+        for detail in incident_details:
+            await self._record_reliability_event(
+                RecoveryEvent(
+                    service_name=self.config.service_name,
+                    component_name=self._live_reconciliation_component,
+                    event_type=event_type,
+                    event_time=utc_now(),
+                    reason_code=(
+                        updated_state.reconciliation_reason_code
+                        or LIVE_RECONCILIATION_BROKER_UNAVAILABLE
+                    ),
+                    health_overall_status="UNAVAILABLE",
+                    freshness_status="STALE",
+                    breaker_state=None,
+                    detail=detail,
+                )
+            )
+
+    async def _record_live_health_gate_events(
+        self,
+        *,
+        previous_state,
+        updated_state,
+        event_type: str,
+        incident_detail: str | None,
+    ) -> None:
+        status_changed = (
+            previous_state.health_gate_status != updated_state.health_gate_status
+            or previous_state.health_gate_reason_code != updated_state.health_gate_reason_code
+            or previous_state.system_health_status != updated_state.system_health_status
+        )
+        if not status_changed:
+            return
+        if updated_state.health_gate_status == "CLEAR":
+            await self._record_reliability_event(
+                RecoveryEvent(
+                    service_name=self.config.service_name,
+                    component_name=self._live_health_component,
+                    event_type=event_type,
+                    event_time=utc_now(),
+                    reason_code=LIVE_HEALTH_GATE_CLEAR,
+                    health_overall_status="HEALTHY",
+                    freshness_status="FRESH",
+                    breaker_state=None,
+                    detail=updated_state.health_gate_detail,
+                )
+            )
+            return
+        await self._record_reliability_event(
+            RecoveryEvent(
+                service_name=self.config.service_name,
+                component_name=self._live_health_component,
+                event_type=event_type,
+                event_time=utc_now(),
+                reason_code=(
+                    updated_state.health_gate_reason_code
+                    or updated_state.system_health_reason_code
+                    or LIVE_SYSTEM_HEALTH_UNAVAILABLE
+                ),
+                health_overall_status=updated_state.system_health_status,
+                freshness_status=(
+                    "STALE" if updated_state.health_gate_status != "CLEAR" else "FRESH"
+                ),
+                breaker_state=None,
+                detail=incident_detail or updated_state.health_gate_detail,
+            )
         )
 
     def _default_signal_client_state(self) -> ReliabilityState:

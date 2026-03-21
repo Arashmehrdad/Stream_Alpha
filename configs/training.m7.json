@@ -7,7 +7,7 @@
   "comparison_policy": {
     "max_brier_score_worsening": 0.01,
     "max_directional_accuracy_regression": 0.01,
-    "primary_metric": "mean_net_value_proxy"
+    "primary_metric": "mean_long_only_net_value_proxy"
   },
   "first_train_fraction": 0.5,
   "interval_column": "interval_begin",

@@ -8,8 +8,11 @@ from urllib.parse import urlparse
 
 import httpx
 
+from app.common.time import parse_rfc3339
 from app.trading.schemas import (
     BrokerAccount,
+    BrokerOrderSnapshot,
+    BrokerPositionSnapshot,
     BrokerSubmitResult,
     FeatureCandle,
     OrderRequest,
@@ -122,7 +125,69 @@ class AlpacaTradingClient:
             account_id=str(account_id),
             environment_name=infer_alpaca_environment(self.base_url),
             status=status,
+            cash=_optional_float(payload.get("cash")),
+            equity=_optional_float(payload.get("equity")),
         )
+
+    async def list_open_orders(self) -> list[BrokerOrderSnapshot]:
+        """Return normalized broker-truth open orders for guarded reconciliation."""
+        response = await self._request("GET", "/v2/orders?status=open&direction=desc&limit=500")
+        payload = _decode_json_array(response, context="list open orders")
+        environment_name = infer_alpaca_environment(self.base_url)
+        orders: list[BrokerOrderSnapshot] = []
+        for item in payload:
+            external_order_id = item.get("id")
+            symbol = item.get("symbol")
+            side = item.get("side")
+            status = item.get("status")
+            if external_order_id in {None, ""} or symbol in {None, ""} or side in {None, ""}:
+                continue
+            orders.append(
+                BrokerOrderSnapshot(
+                    broker_name=self.broker_name,
+                    external_order_id=str(external_order_id),
+                    symbol=str(symbol),
+                    side=str(side),
+                    status=str(status),
+                    account_id=None
+                    if item.get("account_id") in {None, ""}
+                    else str(item["account_id"]),
+                    environment_name=environment_name,
+                    submitted_at=_optional_datetime(item.get("submitted_at")),
+                    filled_at=_optional_datetime(item.get("filled_at")),
+                    qty=_optional_float(item.get("qty")),
+                    filled_qty=_optional_float(item.get("filled_qty")),
+                    filled_avg_price=_optional_float(item.get("filled_avg_price")),
+                )
+            )
+        return orders
+
+    async def list_open_positions(self) -> list[BrokerPositionSnapshot]:
+        """Return normalized broker-truth open positions for guarded reconciliation."""
+        response = await self._request("GET", "/v2/positions")
+        payload = _decode_json_array(response, context="list open positions")
+        environment_name = infer_alpaca_environment(self.base_url)
+        positions: list[BrokerPositionSnapshot] = []
+        for item in payload:
+            symbol = item.get("symbol")
+            qty = _optional_float(item.get("qty"))
+            if symbol in {None, ""} or qty is None or qty == 0.0:
+                continue
+            positions.append(
+                BrokerPositionSnapshot(
+                    broker_name=self.broker_name,
+                    symbol=str(symbol),
+                    quantity=qty,
+                    avg_entry_price=_optional_float(item.get("avg_entry_price")),
+                    market_value=_optional_float(item.get("market_value")),
+                    account_id=None
+                    if item.get("account_id") in {None, ""}
+                    else str(item["account_id"]),
+                    environment_name=environment_name,
+                    side="long" if qty > 0.0 else "short",
+                )
+            )
+        return positions
 
     async def submit_order(  # pylint: disable=too-many-arguments
         self,
@@ -293,8 +358,34 @@ def _decode_json(response: httpx.Response, *, context: str) -> dict[str, object]
     return payload
 
 
+def _decode_json_array(response: httpx.Response, *, context: str) -> list[dict[str, object]]:
+    try:
+        payload = response.json()
+    except ValueError as error:
+        raise AlpacaResponseError(
+            f"Alpaca returned malformed JSON for {context}"
+        ) from error
+    if not isinstance(payload, list):
+        raise AlpacaResponseError(
+            f"Alpaca returned a non-array JSON payload for {context}"
+        )
+    return [item for item in payload if isinstance(item, dict)]
+
+
 def _round_decimal(value: float) -> float:
     return round(value, 8)
+
+
+def _optional_float(value: object) -> float | None:
+    if value in {None, ""}:
+        return None
+    return float(value)
+
+
+def _optional_datetime(value: object):
+    if value in {None, ""}:
+        return None
+    return parse_rfc3339(str(value))
 
 
 def _format_decimal(value: float) -> str:
