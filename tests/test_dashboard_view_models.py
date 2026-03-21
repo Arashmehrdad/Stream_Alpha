@@ -6,13 +6,14 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from app.trading.config import PaperTradingConfig, RiskConfig
+from app.trading.config import ExecutionConfig, PaperTradingConfig, RiskConfig
 from app.trading.schemas import PaperPosition
 from dashboards.data_sources import (
     ApiHealthSnapshot,
     DashboardSnapshot,
     DatabaseSnapshot,
     EngineStateSnapshot,
+    OrderAuditSnapshot,
     SignalSnapshot,
 )
 from dashboards.view_models import (
@@ -21,11 +22,12 @@ from dashboards.view_models import (
     build_latest_signal_rows,
     build_overview_metrics,
     build_performance_by_regime_rows,
+    build_recent_order_audit_rows,
     build_trader_freshness,
 )
 
 
-def _config() -> PaperTradingConfig:
+def _config(*, execution_mode: str = "paper") -> PaperTradingConfig:
     return PaperTradingConfig(
         service_name="paper-trader",
         source_exchange="kraken",
@@ -46,6 +48,7 @@ def _config() -> PaperTradingConfig:
             max_open_positions=1,
             max_exposure_per_asset=0.25,
         ),
+        execution=ExecutionConfig(mode=execution_mode, idempotency_key_version=1),
     )
 
 
@@ -252,3 +255,35 @@ def test_latest_signal_rows_and_regime_performance_are_surfaced() -> None:
     by_regime = {row["regime_label"]: row for row in by_regime_rows}
     assert round(by_regime["TREND_UP"]["realized_pnl"], 4) == 45.9
     assert by_regime["HIGH_VOL"]["open_positions"] == 1
+
+
+def test_recent_order_audit_rows_and_execution_mode_are_available_for_rendering() -> None:
+    checked_at = datetime(2026, 3, 21, 12, 0, tzinfo=timezone.utc)
+    rows = build_recent_order_audit_rows(
+        (
+            OrderAuditSnapshot(
+                event_id=7,
+                order_request_id=11,
+                symbol="BTC/USD",
+                action="BUY",
+                lifecycle_state="FILLED",
+                event_time=checked_at,
+                reason_code="PAPER_ORDER_FILLED",
+                details="filled at next open",
+            ),
+        )
+    )
+
+    assert _config(execution_mode="shadow").execution.mode == "shadow"
+    assert rows == [
+        {
+            "event_id": 7,
+            "order_request_id": 11,
+            "symbol": "BTC/USD",
+            "action": "BUY",
+            "lifecycle_state": "FILLED",
+            "event_time": "2026-03-21T12:00:00Z",
+            "reason_code": "PAPER_ORDER_FILLED",
+            "details": "filled at next open",
+        }
+    ]

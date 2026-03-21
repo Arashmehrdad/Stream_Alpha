@@ -56,7 +56,7 @@ def _table_basename(name: str) -> str:
     return name.split(".")[-1]
 
 
-class TradingRepository:
+class TradingRepository:  # pylint: disable=too-many-instance-attributes
     """Repository for M5 state, positions, ledger rows, and canonical candles."""
 
     def __init__(self, dsn: str, source_table: str) -> None:
@@ -152,7 +152,7 @@ class TradingRepository:
                 updated_at
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-                $16, $17, $18, $19, $20::text[], NOW()
+                $16, $17, $18, $19, $20, $21::text[], NOW()
             )
             ON CONFLICT (service_name, execution_mode, symbol)
             DO UPDATE SET
@@ -704,7 +704,7 @@ class TradingRepository:
                 realized_pnl
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-                $12, $13, $14, $15, $16, $17::text[], $18, $19, $20, $21, $22,
+                $12, $13, $14, $15, $16, $17, $18::text[], $19, $20, $21, $22,
                 $23, $24, $25, $26, $27
             )
             """,
@@ -819,7 +819,7 @@ class TradingRepository:
         )
         return {str(row["symbol"]): float(row["close_price"]) for row in rows}
 
-    async def _ensure_schema(self) -> None:
+    async def _ensure_schema(self) -> None:  # pylint: disable=too-many-statements
         pool = self._require_pool()
         open_position_index = _build_index_name(
             _table_basename(POSITIONS_TABLE),

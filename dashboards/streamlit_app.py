@@ -22,6 +22,7 @@ from dashboards.view_models import (
     build_performance_by_regime_rows,
     build_recent_closed_trade_rows,
     build_recent_ledger_rows,
+    build_recent_order_audit_rows,
     build_trader_freshness,
     latest_feature_as_of,
 )
@@ -51,6 +52,7 @@ def main() -> None:
         st.write(f"Inference API: `{settings.dashboard.inference_api_base_url}`")
         st.write(f"Feature source table: `{settings.tables.feature_ohlc}`")
         st.write(f"Paper trader service: `{trading_config.service_name}`")
+        st.write(f"Execution mode: `{trading_config.execution.mode}`")
         st.write(f"Refresh target: `{settings.dashboard.refresh_seconds}s`")
         if st.button("Refresh now", width="stretch"):
             st.rerun()
@@ -251,14 +253,19 @@ def _render_trading(*, settings: Settings, trading_config, snapshot) -> None:
         snapshot.database.recent_closed_positions
     )
     recent_ledger_rows = build_recent_ledger_rows(snapshot.database.recent_ledger_entries)
+    recent_order_audit_rows = build_recent_order_audit_rows(
+        snapshot.database.recent_order_events
+    )
     by_regime_rows = build_performance_by_regime_rows(
         snapshot=snapshot,
         trading_config=trading_config,
     )
 
+    st.caption(f"Execution mode: `{trading_config.execution.mode}`")
     render_table("Open Positions", open_position_rows)
     render_table("Recent Closed Trades", recent_closed_rows)
     render_table("Recent Ledger Activity", recent_ledger_rows)
+    render_table("Recent Order Audit", recent_order_audit_rows)
     render_table("Performance By Regime", by_regime_rows)
 
     st.caption(

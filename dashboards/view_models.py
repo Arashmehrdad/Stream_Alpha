@@ -19,6 +19,7 @@ from dashboards.data_sources import (
     EngineStateSnapshot,
     LatestFeatureSnapshot,
     LedgerEntrySnapshot,
+    OrderAuditSnapshot,
     SignalSnapshot,
 )
 
@@ -289,6 +290,25 @@ def build_recent_ledger_rows(
             "model_name": entry.model_name,
             "signal_row_id": entry.signal_row_id,
             "regime_label": entry.regime_label,
+        }
+        for entry in entries
+    ]
+
+
+def build_recent_order_audit_rows(
+    entries: tuple[OrderAuditSnapshot, ...],
+) -> list[dict[str, Any]]:
+    """Build the recent order-audit table for the trading tab."""
+    return [
+        {
+            "event_id": entry.event_id,
+            "order_request_id": entry.order_request_id,
+            "symbol": entry.symbol,
+            "action": entry.action,
+            "lifecycle_state": entry.lifecycle_state,
+            "event_time": to_rfc3339(entry.event_time),
+            "reason_code": entry.reason_code,
+            "details": entry.details,
         }
         for entry in entries
     ]
