@@ -17,10 +17,13 @@ from app.trading.schemas import PaperPosition
 from dashboards.data_sources import (
     DashboardSnapshot,
     EngineStateSnapshot,
+    FreshnessSnapshot,
     LatestFeatureSnapshot,
     LedgerEntrySnapshot,
     LiveSafetySnapshot,
     OrderAuditSnapshot,
+    RecoveryEventSnapshot,
+    ReliabilityStateSnapshot,
     SignalSnapshot,
 )
 
@@ -121,6 +124,10 @@ def build_latest_signal_rows(
                     "regime_label": None if signal is None else signal.regime_label,
                     "regime_run_id": None if signal is None else signal.regime_run_id,
                     "trade_allowed": None if signal is None else signal.trade_allowed,
+                    "signal_status": None if signal is None else signal.signal_status,
+                    "decision_source": None if signal is None else signal.decision_source,
+                    "reason_code": None if signal is None else signal.reason_code,
+                    "freshness_status": None if signal is None else signal.freshness_status,
                 }
             )
             continue
@@ -140,6 +147,10 @@ def build_latest_signal_rows(
                 "regime_label": signal.regime_label,
                 "regime_run_id": signal.regime_run_id,
                 "trade_allowed": signal.trade_allowed,
+                "signal_status": signal.signal_status,
+                "decision_source": signal.decision_source,
+                "reason_code": signal.reason_code,
+                "freshness_status": signal.freshness_status,
             }
         )
     return rows
@@ -314,6 +325,67 @@ def build_recent_order_audit_rows(
             "external_status": entry.external_status,
         }
         for entry in entries
+    ]
+
+
+def build_symbol_freshness_rows(
+    freshness_rows: tuple[FreshnessSnapshot, ...],
+) -> list[dict[str, Any]]:
+    """Build a compact per-symbol freshness table."""
+    rows: list[dict[str, Any]] = []
+    for row in freshness_rows:
+        rows.append(
+            {
+                "symbol": row.symbol,
+                "health_overall_status": row.health_overall_status,
+                "freshness_status": row.freshness_status,
+                "feature_freshness_status": row.feature_freshness_status,
+                "feature_reason_code": row.feature_reason_code,
+                "regime_freshness_status": row.regime_freshness_status,
+                "regime_reason_code": row.regime_reason_code,
+                "row_id": row.row_id,
+                "as_of_time": (
+                    None if row.as_of_time is None else to_rfc3339(row.as_of_time)
+                ),
+                "detail": row.detail or row.error,
+            }
+        )
+    return rows
+
+
+def build_reliability_status_rows(
+    *,
+    api_health,
+    reliability_states: tuple[ReliabilityStateSnapshot, ...],
+    latest_recovery_event: RecoveryEventSnapshot | None,
+) -> list[dict[str, Any]]:
+    """Build one compact reliability summary table."""
+    if reliability_states:
+        primary_state = reliability_states[0]
+        breaker_state = primary_state.breaker_state
+        breaker_reason = primary_state.reason_code
+    else:
+        breaker_state = None
+        breaker_reason = None
+
+    return [
+        {
+            "overall_health": api_health.health_overall_status or api_health.status,
+            "health_reason_code": api_health.reason_code,
+            "breaker_state": breaker_state,
+            "breaker_reason_code": breaker_reason,
+            "latest_recovery_event_type": (
+                None if latest_recovery_event is None else latest_recovery_event.event_type
+            ),
+            "latest_recovery_reason_code": (
+                None if latest_recovery_event is None else latest_recovery_event.reason_code
+            ),
+            "latest_recovery_time": (
+                None
+                if latest_recovery_event is None
+                else to_rfc3339(latest_recovery_event.event_time)
+            ),
+        }
     ]
 
 

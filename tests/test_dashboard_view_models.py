@@ -13,11 +13,15 @@ from dashboards.data_sources import (
     DashboardSnapshot,
     DatabaseSnapshot,
     EngineStateSnapshot,
+    FreshnessSnapshot,
     LiveSafetySnapshot,
     OrderAuditSnapshot,
+    RecoveryEventSnapshot,
+    ReliabilityStateSnapshot,
     SignalSnapshot,
 )
 from dashboards.view_models import (
+    build_reliability_status_rows,
     build_drawdown_curve_rows,
     build_equity_curve_rows,
     build_latest_signal_rows,
@@ -25,6 +29,7 @@ from dashboards.view_models import (
     build_overview_metrics,
     build_performance_by_regime_rows,
     build_recent_order_audit_rows,
+    build_symbol_freshness_rows,
     build_trader_freshness,
 )
 
@@ -134,8 +139,11 @@ def test_overview_metrics_and_drawdown_are_computed_from_positions() -> None:
             available=True,
             checked_at=datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc),
             status="ok",
+            health_overall_status="HEALTHY",
+            reason_code="HEALTH_HEALTHY",
         ),
         signals=tuple(),
+        freshness=tuple(),
         database=DatabaseSnapshot(
             available=True,
             checked_at=datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc),
@@ -211,6 +219,8 @@ def test_latest_signal_rows_and_regime_performance_are_surfaced() -> None:
             regime_loaded=True,
             regime_run_id="20260320T120000Z",
             regime_artifact_path="artifacts/regime/m8/20260320T120000Z/thresholds.json",
+            health_overall_status="HEALTHY",
+            reason_code="HEALTH_HEALTHY",
         ),
         signals=(
             SignalSnapshot(
@@ -231,6 +241,30 @@ def test_latest_signal_rows_and_regime_performance_are_surfaced() -> None:
                 trade_allowed=True,
                 buy_threshold=0.54,
                 sell_threshold=0.44,
+                signal_status="MODEL_SIGNAL",
+                decision_source="model",
+                reason_code="HEALTH_HEALTHY",
+                freshness_status="FRESH",
+                health_overall_status="HEALTHY",
+            ),
+        ),
+        freshness=(
+            FreshnessSnapshot(
+                symbol="BTC/USD",
+                checked_at=checked_at,
+                available=True,
+                row_id="BTC/USD|2026-03-20T11:55:00Z",
+                interval_begin=checked_at - timedelta(minutes=5),
+                as_of_time=checked_at,
+                health_overall_status="HEALTHY",
+                freshness_status="FRESH",
+                reason_code="HEALTH_HEALTHY",
+                feature_freshness_status="FRESH",
+                feature_reason_code="FEATURE_FRESH",
+                feature_age_seconds=0.0,
+                regime_freshness_status="FRESH",
+                regime_reason_code="REGIME_FRESH",
+                regime_age_seconds=0.0,
             ),
         ),
         database=DatabaseSnapshot(
@@ -254,6 +288,8 @@ def test_latest_signal_rows_and_regime_performance_are_surfaced() -> None:
 
     assert signal_rows[0]["regime_label"] == "TREND_UP"
     assert signal_rows[0]["trade_allowed"] is True
+    assert signal_rows[0]["signal_status"] == "MODEL_SIGNAL"
+    assert signal_rows[0]["decision_source"] == "model"
     by_regime = {row["regime_label"]: row for row in by_regime_rows}
     assert round(by_regime["TREND_UP"]["realized_pnl"], 4) == 45.9
     assert by_regime["HIGH_VOL"]["open_positions"] == 1
@@ -319,3 +355,94 @@ def test_live_status_rows_surface_guarded_live_fields() -> None:
     assert rows[0]["execution_mode"] == "live"
     assert rows[0]["broker_name"] == "alpaca"
     assert rows[0]["validated_environment"] == "paper"
+
+
+def test_reliability_rows_surface_breaker_and_latest_recovery_event() -> None:
+    checked_at = datetime(2026, 3, 21, 12, 0, tzinfo=timezone.utc)
+    rows = build_reliability_status_rows(
+        api_health=ApiHealthSnapshot(
+            available=True,
+            checked_at=checked_at,
+            status="degraded",
+            health_overall_status="DEGRADED",
+            reason_code="HEALTH_DEGRADED_FRESHNESS",
+        ),
+        reliability_states=(
+            ReliabilityStateSnapshot(
+                service_name="paper-trader",
+                component_name="signal_client",
+                health_overall_status="UNAVAILABLE",
+                freshness_status="STALE",
+                breaker_state="OPEN",
+                failure_count=3,
+                success_count=0,
+                reason_code="SIGNAL_FETCH_FAILED",
+                detail="breaker open",
+                updated_at=checked_at,
+            ),
+        ),
+        latest_recovery_event=RecoveryEventSnapshot(
+            service_name="paper-trader",
+            component_name="signal_client",
+            event_type="PENDING_SIGNAL_EXPIRED",
+            event_time=checked_at,
+            reason_code="RECOVERY_STALE_PENDING_SIGNAL_CLEARED",
+            health_overall_status="DEGRADED",
+            freshness_status="STALE",
+            breaker_state="OPEN",
+            detail="cleared stale pending signal",
+        ),
+    )
+
+    assert rows == [
+        {
+            "overall_health": "DEGRADED",
+            "health_reason_code": "HEALTH_DEGRADED_FRESHNESS",
+            "breaker_state": "OPEN",
+            "breaker_reason_code": "SIGNAL_FETCH_FAILED",
+            "latest_recovery_event_type": "PENDING_SIGNAL_EXPIRED",
+            "latest_recovery_reason_code": "RECOVERY_STALE_PENDING_SIGNAL_CLEARED",
+            "latest_recovery_time": "2026-03-21T12:00:00Z",
+        }
+    ]
+
+
+def test_symbol_freshness_rows_surface_exact_row_status() -> None:
+    checked_at = datetime(2026, 3, 21, 12, 0, tzinfo=timezone.utc)
+    rows = build_symbol_freshness_rows(
+        (
+            FreshnessSnapshot(
+                symbol="BTC/USD",
+                checked_at=checked_at,
+                available=True,
+                row_id="BTC/USD|2026-03-21T11:55:00Z",
+                interval_begin=checked_at - timedelta(minutes=5),
+                as_of_time=checked_at,
+                health_overall_status="HEALTHY",
+                freshness_status="FRESH",
+                reason_code="HEALTH_HEALTHY",
+                feature_freshness_status="FRESH",
+                feature_reason_code="FEATURE_FRESH",
+                feature_age_seconds=0.0,
+                regime_freshness_status="FRESH",
+                regime_reason_code="REGIME_FRESH",
+                regime_age_seconds=0.0,
+                detail="Exact-row regime resolution succeeded",
+            ),
+        )
+    )
+
+    assert rows == [
+        {
+            "symbol": "BTC/USD",
+            "health_overall_status": "HEALTHY",
+            "freshness_status": "FRESH",
+            "feature_freshness_status": "FRESH",
+            "feature_reason_code": "FEATURE_FRESH",
+            "regime_freshness_status": "FRESH",
+            "regime_reason_code": "REGIME_FRESH",
+            "row_id": "BTC/USD|2026-03-21T11:55:00Z",
+            "as_of_time": "2026-03-21T12:00:00Z",
+            "detail": "Exact-row regime resolution succeeded",
+        }
+    ]

@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from app.common.time import to_rfc3339
+from app.reliability.schemas import RecoveryEvent, ReliabilityState, ServiceHeartbeat
 from app.trading.config import ExecutionConfig, PaperTradingConfig, RiskConfig
 from app.trading.execution import build_idempotency_key, build_order_request
 from app.trading.runner import PaperTradingRunner
@@ -98,6 +99,9 @@ class FakeRepository:  # pylint: disable=too-many-instance-attributes
         self.ledger = []
         self.risk_state = None
         self.risk_decisions = []
+        self.reliability_states = {}
+        self.reliability_events = []
+        self.heartbeats = []
         self.order_requests: dict[str, OrderRequest] = {}
         self.order_events: dict[tuple[int, str], OrderLifecycleEvent] = {}
         self.position_id = 0
@@ -164,6 +168,17 @@ class FakeRepository:  # pylint: disable=too-many-instance-attributes
     async def save_engine_state(self, state) -> None:
         self.states[state.symbol] = state
 
+    async def fetch_latest_feature_row(
+        self,
+        *,
+        symbol: str,
+        source_exchange: str,
+        interval_minutes: int,
+    ):
+        del source_exchange, interval_minutes
+        matching = [row for row in self.candles if row.symbol == symbol]
+        return None if not matching else matching[-1]
+
     async def load_service_risk_state(self, *, service_name: str, execution_mode: str):
         del service_name, execution_mode
         return self.risk_state
@@ -173,6 +188,23 @@ class FakeRepository:  # pylint: disable=too-many-instance-attributes
 
     async def insert_risk_decision(self, entry) -> None:
         self.risk_decisions.append(entry)
+
+    async def load_reliability_state(self, *, service_name: str, component_name: str):
+        del service_name
+        return self.reliability_states.get(component_name)
+
+    async def save_reliability_state(self, state: ReliabilityState) -> None:
+        self.reliability_states[state.component_name] = state
+
+    async def insert_reliability_event(self, event: RecoveryEvent) -> RecoveryEvent:
+        stored = replace(event, event_id=len(self.reliability_events) + 1)
+        self.reliability_events.append(stored)
+        return stored
+
+    async def save_service_heartbeat(self, heartbeat: ServiceHeartbeat) -> ServiceHeartbeat:
+        stored = replace(heartbeat, heartbeat_id=len(self.heartbeats) + 1)
+        self.heartbeats.append(stored)
+        return stored
 
     async def load_positions(self, *, service_name: str, execution_mode: str):
         del service_name, execution_mode

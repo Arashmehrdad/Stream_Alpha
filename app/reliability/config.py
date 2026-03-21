@@ -8,6 +8,11 @@ from pathlib import Path
 import yaml
 
 
+def default_reliability_config_path() -> Path:
+    """Return the checked-in reliability config path from the repo root."""
+    return Path(__file__).resolve().parents[2] / "configs" / "reliability.yaml"
+
+
 @dataclass(frozen=True, slots=True)
 class FreshnessConfig:
     """Explicit freshness thresholds for core reliability checks."""
@@ -42,6 +47,15 @@ class RecoveryConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class ReliabilityArtifactConfig:
+    """Explicit reliability artifact destinations."""
+
+    health_snapshot_path: str
+    freshness_summary_path: str
+    recovery_events_path: str
+
+
+@dataclass(frozen=True, slots=True)
 class ReliabilityConfig:
     """Full checked-in M13 reliability configuration."""
 
@@ -50,6 +64,7 @@ class ReliabilityConfig:
     heartbeat: HeartbeatConfig
     circuit_breaker: CircuitBreakerConfig
     recovery: RecoveryConfig
+    artifacts: ReliabilityArtifactConfig
 
 
 def load_reliability_config(config_path: Path) -> ReliabilityConfig:
@@ -62,6 +77,7 @@ def load_reliability_config(config_path: Path) -> ReliabilityConfig:
     heartbeat_payload = _require_mapping(payload, "heartbeat")
     breaker_payload = _require_mapping(payload, "circuit_breaker")
     recovery_payload = _require_mapping(payload, "recovery")
+    artifacts_payload = _require_mapping(payload, "artifacts")
 
     config = ReliabilityConfig(
         schema_version=str(payload.get("schema_version", "")).strip(),
@@ -84,6 +100,13 @@ def load_reliability_config(config_path: Path) -> ReliabilityConfig:
                 recovery_payload["stale_pending_signal_max_age_intervals"]
             ),
         ),
+        artifacts=ReliabilityArtifactConfig(
+            health_snapshot_path=str(artifacts_payload["health_snapshot_path"]).strip(),
+            freshness_summary_path=str(
+                artifacts_payload["freshness_summary_path"]
+            ).strip(),
+            recovery_events_path=str(artifacts_payload["recovery_events_path"]).strip(),
+        ),
     )
     _validate_config(config)
     return config
@@ -99,23 +122,62 @@ def _require_mapping(payload: dict[str, object], key: str) -> dict[str, object]:
 def _validate_config(config: ReliabilityConfig) -> None:
     if not config.schema_version:
         raise ValueError("schema_version must not be empty")
-    if config.freshness.feed_max_age_seconds <= 0:
-        raise ValueError("freshness.feed_max_age_seconds must be positive")
-    if config.freshness.feature_max_age_seconds <= 0:
-        raise ValueError("freshness.feature_max_age_seconds must be positive")
-    if config.freshness.regime_max_age_seconds <= 0:
-        raise ValueError("freshness.regime_max_age_seconds must be positive")
-    if config.heartbeat.write_interval_seconds <= 0:
-        raise ValueError("heartbeat.write_interval_seconds must be positive")
-    if config.heartbeat.stale_after_seconds <= 0:
-        raise ValueError("heartbeat.stale_after_seconds must be positive")
-    if config.circuit_breaker.failure_threshold <= 0:
-        raise ValueError("circuit_breaker.failure_threshold must be positive")
-    if config.circuit_breaker.half_open_after_seconds <= 0:
-        raise ValueError("circuit_breaker.half_open_after_seconds must be positive")
-    if config.circuit_breaker.success_threshold <= 0:
-        raise ValueError("circuit_breaker.success_threshold must be positive")
-    if config.recovery.stale_pending_signal_max_age_intervals <= 0:
-        raise ValueError(
-            "recovery.stale_pending_signal_max_age_intervals must be positive"
-        )
+    positive_checks = (
+        (
+            config.freshness.feed_max_age_seconds,
+            "freshness.feed_max_age_seconds must be positive",
+        ),
+        (
+            config.freshness.feature_max_age_seconds,
+            "freshness.feature_max_age_seconds must be positive",
+        ),
+        (
+            config.freshness.regime_max_age_seconds,
+            "freshness.regime_max_age_seconds must be positive",
+        ),
+        (
+            config.heartbeat.write_interval_seconds,
+            "heartbeat.write_interval_seconds must be positive",
+        ),
+        (
+            config.heartbeat.stale_after_seconds,
+            "heartbeat.stale_after_seconds must be positive",
+        ),
+        (
+            config.circuit_breaker.failure_threshold,
+            "circuit_breaker.failure_threshold must be positive",
+        ),
+        (
+            config.circuit_breaker.half_open_after_seconds,
+            "circuit_breaker.half_open_after_seconds must be positive",
+        ),
+        (
+            config.circuit_breaker.success_threshold,
+            "circuit_breaker.success_threshold must be positive",
+        ),
+        (
+            config.recovery.stale_pending_signal_max_age_intervals,
+            "recovery.stale_pending_signal_max_age_intervals must be positive",
+        ),
+    )
+    for value, message in positive_checks:
+        if value <= 0:
+            raise ValueError(message)
+
+    path_checks = (
+        (
+            config.artifacts.health_snapshot_path,
+            "artifacts.health_snapshot_path must not be empty",
+        ),
+        (
+            config.artifacts.freshness_summary_path,
+            "artifacts.freshness_summary_path must not be empty",
+        ),
+        (
+            config.artifacts.recovery_events_path,
+            "artifacts.recovery_events_path must not be empty",
+        ),
+    )
+    for path_value, message in path_checks:
+        if not path_value:
+            raise ValueError(message)

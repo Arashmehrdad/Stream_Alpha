@@ -9,11 +9,32 @@ import csv
 import json
 import logging
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 from app.common.serialization import make_json_safe
 from app.common.time import to_rfc3339, utc_now
+from app.reliability.artifacts import append_jsonl_artifact
+from app.reliability.config import default_reliability_config_path, load_reliability_config
+from app.reliability.schemas import (
+    CircuitBreakerState,
+    RecoveryEvent,
+    ReliabilityState,
+    ServiceHeartbeat,
+)
+from app.reliability.service import (
+    HEALTH_HEALTHY,
+    RECOVERY_STALE_PENDING_SIGNAL_CLEARED,
+    SERVICE_HEARTBEAT_DEGRADED,
+    SERVICE_HEARTBEAT_HEALTHY,
+    SIGNAL_FETCH_FAILED,
+    SIGNAL_FETCH_SKIPPED_BREAKER_OPEN,
+    evaluate_pending_signal_expiry,
+    transition_circuit_breaker,
+)
 from app.trading.config import PaperTradingConfig
 from app.trading.execution import (
     build_created_event,
@@ -38,10 +59,10 @@ from app.trading.risk_engine import (
     mark_to_market_portfolio_context,
 )
 from app.trading.schemas import FeatureCandle, OrderRequest, PaperPosition
-from app.trading.signal_client import SignalClient
+from app.trading.signal_client import SignalClient, SignalClientError
 
 
-class PaperTradingRunner:
+class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
     """Poll canonical feature rows, fetch M4 signals, and persist M5 paper trades."""
 
     def __init__(
@@ -59,12 +80,24 @@ class PaperTradingRunner:
             config.execution.mode,
             broker_client=broker_client,
         )
+        self.reliability_config = load_reliability_config(
+            default_reliability_config_path()
+        )
         self.live_safety_state = None
+        self._signal_client_component = "signal_client"
+        self._runner_component = "trading_runner"
+        self._last_heartbeat_at = None
         self.logger = logging.getLogger(f"{config.service_name}.runner")
 
     async def startup(self) -> None:
         """Connect the repository before polling."""
         await self.repository.connect()
+        await self._expire_stale_pending_signals()
+        await self._write_runner_heartbeat(
+            health_overall_status="HEALTHY",
+            reason_code=SERVICE_HEARTBEAT_HEALTHY,
+            detail="Trading runner startup completed",
+        )
         if self.config.execution.mode != "live":
             return
 
@@ -112,10 +145,15 @@ class PaperTradingRunner:
             await self.run_once()
             await asyncio.sleep(self.config.poll_interval_seconds)
 
-    async def run_once(self) -> None:  # pylint: disable=too-many-locals
+    async def run_once(self) -> None:  # pylint: disable=too-many-locals,too-many-statements
         """Process all newly observed finalized candles exactly once."""
         if hasattr(self.execution_adapter, "begin_run"):
             self.execution_adapter.begin_run()
+        await self._write_runner_heartbeat(
+            health_overall_status="HEALTHY",
+            reason_code=SERVICE_HEARTBEAT_HEALTHY,
+            detail="Trading runner cycle started",
+        )
         states = await self.repository.load_engine_states(
             service_name=self.config.service_name,
             execution_mode=self.config.execution.mode,
@@ -138,6 +176,12 @@ class PaperTradingRunner:
             service_name=self.config.service_name,
             execution_mode=self.config.execution.mode,
         )
+        signal_client_state = await self.repository.load_reliability_state(
+            service_name=self.config.service_name,
+            component_name=self._signal_client_component,
+        )
+        if signal_client_state is None:
+            signal_client_state = self._default_signal_client_state()
         candles = await self._load_pending_candles(states)
         if service_risk_state is None:
             service_risk_state = default_service_risk_state(
@@ -148,10 +192,61 @@ class PaperTradingRunner:
                 execution_mode=self.config.execution.mode,
             )
 
+        blocked_symbols: set[str] = set()
         for candle in candles:
-            signal = await self.signal_client.fetch_signal(
-                symbol=candle.symbol,
-                interval_begin=candle.interval_begin,
+            if candle.symbol in blocked_symbols:
+                continue
+            signal_client_state = await self._refresh_signal_client_breaker(
+                state=signal_client_state,
+                evaluated_at=candle.as_of_time,
+            )
+            if signal_client_state.breaker_state == "OPEN":
+                blocked_symbols.add(candle.symbol)
+                await self._record_reliability_event(
+                    RecoveryEvent(
+                        service_name=self.config.service_name,
+                        component_name=self._signal_client_component,
+                        event_type="SIGNAL_FETCH_SKIPPED",
+                        event_time=candle.as_of_time,
+                        reason_code=SIGNAL_FETCH_SKIPPED_BREAKER_OPEN,
+                        health_overall_status=signal_client_state.health_overall_status,
+                        freshness_status=signal_client_state.freshness_status,
+                        breaker_state=signal_client_state.breaker_state,
+                        detail=(
+                            "Inference breaker is OPEN; skipping signal fetch for "
+                            f"{candle.symbol} at {to_rfc3339(candle.interval_begin)}"
+                        ),
+                    )
+                )
+                await self._write_runner_heartbeat(
+                    health_overall_status="DEGRADED",
+                    reason_code=SERVICE_HEARTBEAT_DEGRADED,
+                    detail="Inference breaker is OPEN",
+                )
+                continue
+
+            try:
+                signal = await self.signal_client.fetch_signal(
+                    symbol=candle.symbol,
+                    interval_begin=candle.interval_begin,
+                )
+            except (SignalClientError, httpx.HTTPError) as error:
+                blocked_symbols.add(candle.symbol)
+                signal_client_state = await self._observe_signal_client_failure(
+                    state=signal_client_state,
+                    evaluated_at=candle.as_of_time,
+                    detail=str(error),
+                )
+                await self._write_runner_heartbeat(
+                    health_overall_status="DEGRADED",
+                    reason_code=SERVICE_HEARTBEAT_DEGRADED,
+                    detail=str(error),
+                )
+                continue
+
+            signal_client_state = await self._observe_signal_client_success(
+                state=signal_client_state,
+                evaluated_at=candle.as_of_time,
             )
             state = states[candle.symbol]
             open_position = open_positions.get(candle.symbol)
@@ -267,6 +362,19 @@ class PaperTradingRunner:
             )
 
         await self._write_summaries(available_cash)
+        await self._write_runner_heartbeat(
+            health_overall_status=(
+                "DEGRADED"
+                if signal_client_state.breaker_state != "CLOSED"
+                else "HEALTHY"
+            ),
+            reason_code=(
+                SERVICE_HEARTBEAT_DEGRADED
+                if signal_client_state.breaker_state != "CLOSED"
+                else SERVICE_HEARTBEAT_HEALTHY
+            ),
+            detail=signal_client_state.reason_code,
+        )
 
     async def _load_pending_candles(
         self,
@@ -418,6 +526,226 @@ class PaperTradingRunner:
             _positions_to_rows([row for row in positions if row.status == "CLOSED"]),
         )
 
+    def _default_signal_client_state(self) -> ReliabilityState:
+        return ReliabilityState(
+            service_name=self.config.service_name,
+            component_name=self._signal_client_component,
+            health_overall_status="HEALTHY",
+            breaker_state="CLOSED",
+            failure_count=0,
+            success_count=0,
+            freshness_status="FRESH",
+            reason_code=HEALTH_HEALTHY,
+            detail="Signal client breaker initialized",
+            updated_at=utc_now(),
+        )
+
+    async def _refresh_signal_client_breaker(
+        self,
+        *,
+        state: ReliabilityState,
+        evaluated_at: datetime,
+    ) -> ReliabilityState:
+        transitioned = transition_circuit_breaker(
+            state=_to_breaker_state(state),
+            config=self.reliability_config.circuit_breaker,
+            evaluated_at=evaluated_at,
+            observed_success=None,
+        )
+        refreshed = _merge_breaker_state(
+            state=state,
+            transitioned=transitioned,
+            health_overall_status=(
+                "UNAVAILABLE" if transitioned.breaker_state == "OPEN" else "DEGRADED"
+                if transitioned.breaker_state == "HALF_OPEN"
+                else "HEALTHY"
+            ),
+            detail="Signal client breaker refreshed before fetch",
+        )
+        await self.repository.save_reliability_state(refreshed)
+        if refreshed.breaker_state != state.breaker_state:
+            await self._record_reliability_event(
+                RecoveryEvent(
+                    service_name=self.config.service_name,
+                    component_name=self._signal_client_component,
+                    event_type="BREAKER_TRANSITION",
+                    event_time=evaluated_at,
+                    reason_code=transitioned.reason_code or HEALTH_HEALTHY,
+                    health_overall_status=refreshed.health_overall_status,
+                    freshness_status=refreshed.freshness_status,
+                    breaker_state=refreshed.breaker_state,
+                    detail=refreshed.detail,
+                )
+            )
+        return refreshed
+
+    async def _observe_signal_client_success(
+        self,
+        *,
+        state: ReliabilityState,
+        evaluated_at: datetime,
+    ) -> ReliabilityState:
+        transitioned = transition_circuit_breaker(
+            state=_to_breaker_state(state),
+            config=self.reliability_config.circuit_breaker,
+            evaluated_at=evaluated_at,
+            observed_success=True,
+        )
+        refreshed = _merge_breaker_state(
+            state=state,
+            transitioned=transitioned,
+            health_overall_status=(
+                "DEGRADED" if transitioned.breaker_state == "HALF_OPEN" else "HEALTHY"
+            ),
+            detail="Signal fetch succeeded",
+        )
+        await self.repository.save_reliability_state(refreshed)
+        if (
+            refreshed.breaker_state != state.breaker_state
+            or refreshed.reason_code != state.reason_code
+        ):
+            await self._record_reliability_event(
+                RecoveryEvent(
+                    service_name=self.config.service_name,
+                    component_name=self._signal_client_component,
+                    event_type="SIGNAL_FETCH_SUCCESS",
+                    event_time=evaluated_at,
+                    reason_code=transitioned.reason_code or HEALTH_HEALTHY,
+                    health_overall_status=refreshed.health_overall_status,
+                    freshness_status=refreshed.freshness_status,
+                    breaker_state=refreshed.breaker_state,
+                    detail=refreshed.detail,
+                )
+            )
+        return refreshed
+
+    async def _observe_signal_client_failure(
+        self,
+        *,
+        state: ReliabilityState,
+        evaluated_at: datetime,
+        detail: str,
+    ) -> ReliabilityState:
+        transitioned = transition_circuit_breaker(
+            state=_to_breaker_state(state),
+            config=self.reliability_config.circuit_breaker,
+            evaluated_at=evaluated_at,
+            observed_success=False,
+        )
+        refreshed = _merge_breaker_state(
+            state=state,
+            transitioned=transitioned,
+            health_overall_status=(
+                "UNAVAILABLE" if transitioned.breaker_state == "OPEN" else "DEGRADED"
+            ),
+            detail=detail,
+            reason_code=SIGNAL_FETCH_FAILED,
+        )
+        await self.repository.save_reliability_state(refreshed)
+        await self._record_reliability_event(
+            RecoveryEvent(
+                service_name=self.config.service_name,
+                component_name=self._signal_client_component,
+                event_type="SIGNAL_FETCH_FAILURE",
+                event_time=evaluated_at,
+                reason_code=SIGNAL_FETCH_FAILED,
+                health_overall_status=refreshed.health_overall_status,
+                freshness_status=refreshed.freshness_status,
+                breaker_state=refreshed.breaker_state,
+                detail=detail,
+            )
+        )
+        return refreshed
+
+    async def _expire_stale_pending_signals(self) -> None:
+        states = await self.repository.load_engine_states(
+            service_name=self.config.service_name,
+            execution_mode=self.config.execution.mode,
+            symbols=self.config.symbols,
+        )
+        for symbol, state in states.items():
+            pending_signal = state.pending_signal
+            if pending_signal is None:
+                continue
+            latest_row = await self.repository.fetch_latest_feature_row(
+                symbol=symbol,
+                source_exchange=self.config.source_exchange,
+                interval_minutes=self.config.interval_minutes,
+            )
+            if latest_row is None:
+                continue
+            expired, reason_code = evaluate_pending_signal_expiry(
+                signal_interval_begin=pending_signal.signal_interval_begin,
+                current_interval_begin=latest_row.interval_begin,
+                interval_minutes=self.config.interval_minutes,
+                max_age_intervals=(
+                    self.reliability_config.recovery.stale_pending_signal_max_age_intervals
+                ),
+            )
+            if not expired:
+                continue
+            updated_state = replace(state, pending_signal=None)
+            await self.repository.save_engine_state(updated_state)
+            await self._record_reliability_event(
+                RecoveryEvent(
+                    service_name=self.config.service_name,
+                    component_name=symbol,
+                    event_type="PENDING_SIGNAL_EXPIRED",
+                    event_time=utc_now(),
+                    reason_code=RECOVERY_STALE_PENDING_SIGNAL_CLEARED,
+                    health_overall_status="DEGRADED",
+                    freshness_status="STALE",
+                    breaker_state=None,
+                    detail=(
+                        f"Cleared stale pending signal {pending_signal.row_id} "
+                        f"after {reason_code}"
+                    ),
+                )
+            )
+
+    async def _record_reliability_event(self, event: RecoveryEvent) -> None:
+        stored_event = await self.repository.insert_reliability_event(event)
+        append_jsonl_artifact(
+            self.reliability_config.artifacts.recovery_events_path,
+            {
+                "service_name": stored_event.service_name,
+                "component_name": stored_event.component_name,
+                "event_type": stored_event.event_type,
+                "event_time": to_rfc3339(stored_event.event_time),
+                "reason_code": stored_event.reason_code,
+                "health_overall_status": stored_event.health_overall_status,
+                "freshness_status": stored_event.freshness_status,
+                "breaker_state": stored_event.breaker_state,
+                "detail": stored_event.detail,
+            },
+        )
+
+    async def _write_runner_heartbeat(
+        self,
+        *,
+        health_overall_status: str,
+        reason_code: str,
+        detail: str | None,
+    ) -> None:
+        observed_at = utc_now()
+        if (
+            self._last_heartbeat_at is not None
+            and (observed_at - self._last_heartbeat_at).total_seconds()
+            < self.reliability_config.heartbeat.write_interval_seconds
+        ):
+            return
+        self._last_heartbeat_at = observed_at
+        await self.repository.save_service_heartbeat(
+            ServiceHeartbeat(
+                service_name=self.config.service_name,
+                component_name=self._runner_component,
+                heartbeat_at=observed_at,
+                health_overall_status=health_overall_status,
+                reason_code=reason_code,
+                detail=detail,
+            )
+        )
+
 
 def _positions_to_rows(positions: list[PaperPosition]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
@@ -475,6 +803,51 @@ def _positions_to_rows(positions: list[PaperPosition]) -> list[dict[str, Any]]:
             }
         )
     return rows
+
+
+def _to_breaker_state(state: ReliabilityState):
+    return CircuitBreakerState(
+        service_name=state.service_name,
+        component_name=state.component_name,
+        breaker_state=state.breaker_state,
+        health_overall_status=state.health_overall_status,
+        failure_count=state.failure_count,
+        success_count=state.success_count,
+        freshness_status=state.freshness_status,
+        last_heartbeat_at=state.last_heartbeat_at,
+        last_success_at=state.last_success_at,
+        last_failure_at=state.last_failure_at,
+        opened_at=state.opened_at,
+        reason_code=state.reason_code,
+        detail=state.detail,
+        updated_at=state.updated_at,
+    )
+
+
+def _merge_breaker_state(
+    *,
+    state: ReliabilityState,
+    transitioned,
+    health_overall_status: str,
+    detail: str,
+    reason_code: str | None = None,
+) -> ReliabilityState:
+    return ReliabilityState(
+        service_name=state.service_name,
+        component_name=state.component_name,
+        health_overall_status=health_overall_status,
+        breaker_state=transitioned.breaker_state,
+        failure_count=transitioned.failure_count,
+        success_count=transitioned.success_count,
+        freshness_status="FRESH" if health_overall_status == "HEALTHY" else "STALE",
+        last_heartbeat_at=utc_now(),
+        last_success_at=transitioned.last_success_at,
+        last_failure_at=transitioned.last_failure_at,
+        opened_at=transitioned.opened_at,
+        reason_code=reason_code or transitioned.reason_code,
+        detail=detail,
+        updated_at=transitioned.updated_at,
+    )
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:

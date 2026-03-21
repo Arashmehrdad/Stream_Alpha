@@ -107,3 +107,30 @@ class HealthAggregation:
     reason_codes: tuple[str, ...] = field(default_factory=tuple)
     freshness_statuses: tuple[FreshnessStatus, ...] = field(default_factory=tuple)
     breaker_state: BreakerStatus | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SymbolFreshnessSnapshot:
+    """Exact-row freshness summary for one symbol."""
+
+    symbol: str
+    row_id: str | None
+    interval_begin: datetime | None
+    as_of_time: datetime | None
+    health_overall_status: HealthOverallStatus
+    freshness_status: FreshnessLevel
+    reason_code: str
+    feature_freshness: FreshnessStatus
+    regime_freshness: FreshnessStatus
+
+
+@dataclass(frozen=True, slots=True)
+class ReliabilityHealthSnapshot:
+    """Inspectable overall health artifact payload."""
+
+    service_name: str
+    checked_at: datetime
+    health_overall_status: HealthOverallStatus
+    reason_code: str
+    freshness_status: FreshnessLevel
+    symbols: tuple[SymbolFreshnessSnapshot, ...] = field(default_factory=tuple)

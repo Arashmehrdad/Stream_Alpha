@@ -13,6 +13,7 @@ from app.trading.config import load_paper_trading_config
 from dashboards.data_sources import DashboardDataSources
 from dashboards.view_models import (
     age_text,
+    build_reliability_status_rows,
     build_drawdown_curve_rows,
     build_equity_curve_rows,
     build_feature_snapshot_rows,
@@ -24,6 +25,7 @@ from dashboards.view_models import (
     build_recent_closed_trade_rows,
     build_recent_ledger_rows,
     build_recent_order_audit_rows,
+    build_symbol_freshness_rows,
     build_trader_freshness,
     latest_feature_as_of,
 )
@@ -85,12 +87,20 @@ def main() -> None:
         symbols=trading_config.symbols,
         features=snapshot.database.latest_features,
     )
+    reliability_rows = build_reliability_status_rows(
+        api_health=snapshot.api_health,
+        reliability_states=snapshot.database.reliability_states,
+        latest_recovery_event=snapshot.database.latest_recovery_event,
+    )
+    freshness_rows = build_symbol_freshness_rows(snapshot.freshness)
 
     with overview_tab:
         _render_overview(
             trading_config=trading_config,
             snapshot=snapshot,
             latest_signals=latest_signals,
+            reliability_rows=reliability_rows,
+            freshness_rows=freshness_rows,
         )
 
     with signals_tab:
@@ -107,8 +117,15 @@ def main() -> None:
             snapshot=snapshot,
         )
 
-
-def _render_overview(*, trading_config, snapshot, latest_signals) -> None:
+# pylint: disable=too-many-locals
+def _render_overview(
+    *,
+    trading_config,
+    snapshot,
+    latest_signals,
+    reliability_rows,
+    freshness_rows,
+) -> None:
     health_columns = st.columns(4)
     api_health = snapshot.api_health
     db_health = snapshot.database
@@ -173,6 +190,8 @@ def _render_overview(*, trading_config, snapshot, latest_signals) -> None:
         secondary_columns[3].metric("Sharpe-Like", f"{overview_metrics.sharpe_like:.2f}")
 
     render_table("Latest Signals", latest_signals)
+    render_table("Reliability Status", reliability_rows)
+    render_table("Per-Symbol Freshness", freshness_rows)
     if api_health.regime_loaded:
         st.caption(
             "Regime runtime: "
@@ -214,6 +233,7 @@ def _render_overview(*, trading_config, snapshot, latest_signals) -> None:
     st.caption(
         "Dashboard reads only from the accepted M4 inference API and M5 PostgreSQL tables."
     )
+# pylint: enable=too-many-locals
 
 
 def _render_signals_and_features(*, snapshot, latest_signals, latest_features) -> None:
@@ -230,8 +250,13 @@ def _render_signals_and_features(*, snapshot, latest_signals, latest_features) -
     render_table("Latest Signals By Asset", latest_signals)
     render_table("Latest Canonical Feature Snapshot", latest_features)
 
-
-def _render_trading(*, settings: Settings, trading_config, snapshot) -> None:
+# pylint: disable=too-many-locals
+def _render_trading(
+    *,
+    settings: Settings,
+    trading_config,
+    snapshot,
+) -> None:
     if not snapshot.database.available:
         st.error("PostgreSQL is unavailable. Trading state cannot be rendered.")
         return
@@ -293,6 +318,7 @@ def _render_trading(*, settings: Settings, trading_config, snapshot) -> None:
         f"{settings.dashboard.recent_trades_limit}; "
         f"recent ledger limit: {settings.dashboard.recent_ledger_limit}"
     )
+# pylint: enable=too-many-locals
 
 
 def _render_mode_banner(*, trading_config, snapshot) -> None:

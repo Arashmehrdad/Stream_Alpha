@@ -90,4 +90,9 @@ class SignalClient:
                 if payload.get("freshness_status") is None
                 else str(payload["freshness_status"])
             ),
+            health_overall_status=(
+                None
+                if payload.get("health_overall_status") is None
+                else str(payload["health_overall_status"])
+            ),
         )

@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import json
 
@@ -78,6 +78,12 @@ class FakeDatabase:
         self.last_interval_begin = interval_begin
         if self.fetch_error is not None:
             raise self.fetch_error
+        if (
+            interval_begin is not None
+            and self.row is not None
+            and self.row["interval_begin"] != interval_begin
+        ):
+            return None
         return self.row
 
 
@@ -247,17 +253,24 @@ def _feature_row(
     realized_vol_12: float = 0.03,
     momentum_3: float = 0.03,
     macd_line_12_26: float = 1.2,
+    base_time: datetime | None = None,
 ) -> dict:
-    base_time = datetime(2026, 3, 19, 22, 0, tzinfo=timezone.utc)
+    if base_time is None:
+        base_time = datetime.now(timezone.utc).replace(second=0, microsecond=0) - timedelta(
+            minutes=5
+        )
+    interval_end = base_time + timedelta(minutes=5)
+    as_of_time = interval_end
+    computed_at = interval_end + timedelta(minutes=1)
     return {
         "id": 1,
         "source_exchange": "kraken",
         "symbol": symbol,
         "interval_minutes": 5,
         "interval_begin": base_time,
-        "interval_end": datetime(2026, 3, 19, 22, 5, tzinfo=timezone.utc),
-        "as_of_time": datetime(2026, 3, 19, 22, 5, tzinfo=timezone.utc),
-        "computed_at": datetime(2026, 3, 19, 22, 6, tzinfo=timezone.utc),
+        "interval_end": interval_end,
+        "as_of_time": as_of_time,
+        "computed_at": computed_at,
         "raw_event_id": "evt-1",
         "open_price": 70000.0,
         "high_price": 70100.0,
@@ -281,8 +294,8 @@ def _feature_row(
         "lag_log_return_1": 0.005,
         "lag_log_return_2": 0.004,
         "lag_log_return_3": 0.003,
-        "created_at": datetime(2026, 3, 19, 22, 6, tzinfo=timezone.utc),
-        "updated_at": datetime(2026, 3, 19, 22, 6, tzinfo=timezone.utc),
+        "created_at": computed_at,
+        "updated_at": computed_at,
     }
 
 
@@ -306,6 +319,8 @@ def test_health_reports_success_and_dependency_failure(tmp_path: Path) -> None:
     assert healthy_response.json()["status"] == "ok"
     assert healthy_response.json()["regime_loaded"] is True
     assert healthy_response.json()["regime_run_id"] == "20260320T120000Z"
+    assert healthy_response.json()["health_overall_status"] == "HEALTHY"
+    assert healthy_response.json()["freshness_status"] == "FRESH"
 
     unhealthy_client = _build_client(
         tmp_path,
@@ -316,6 +331,7 @@ def test_health_reports_success_and_dependency_failure(tmp_path: Path) -> None:
 
     assert unhealthy_response.status_code == 503
     assert unhealthy_response.json()["database"] == "unavailable"
+    assert unhealthy_response.json()["health_overall_status"] == "UNAVAILABLE"
 
 
 def test_predict_happy_path(tmp_path: Path) -> None:
@@ -331,23 +347,26 @@ def test_predict_happy_path(tmp_path: Path) -> None:
     assert payload["row_id"].startswith("BTC/USD|")
     assert payload["regime_label"] == "TREND_UP"
     assert payload["regime_run_id"] == "20260320T120000Z"
+    assert payload["freshness_status"] == "FRESH"
+    assert payload["health_overall_status"] == "HEALTHY"
 
 
 def test_signal_accepts_exact_interval_begin_selector(tmp_path: Path) -> None:
     """The additive M4 contract should allow M5 to request an exact finalized candle."""
-    database = FakeDatabase(row=_feature_row())
+    row = _feature_row(base_time=datetime(2026, 3, 19, 22, 0, tzinfo=timezone.utc))
+    database = FakeDatabase(row=row)
     client = _build_client(tmp_path, prob_up=0.7, database=database)
 
     response = client.get(
         "/signal",
         params={
             "symbol": "BTC/USD",
-            "interval_begin": "2026-03-19T22:00:00Z",
+            "interval_begin": row["interval_begin"].isoformat().replace("+00:00", "Z"),
         },
     )
 
     assert response.status_code == 200
-    assert database.last_interval_begin == datetime(2026, 3, 19, 22, 0, tzinfo=timezone.utc)
+    assert database.last_interval_begin == row["interval_begin"]
 
 
 def test_signal_buy_sell_and_hold(tmp_path: Path) -> None:
@@ -356,12 +375,20 @@ def test_signal_buy_sell_and_hold(tmp_path: Path) -> None:
     sell_client = _build_client(tmp_path, prob_up=0.3, database=FakeDatabase(row=_feature_row()))
     hold_client = _build_client(tmp_path, prob_up=0.5, database=FakeDatabase(row=_feature_row()))
 
-    assert buy_client.get("/signal", params={"symbol": "BTC/USD"}).json()["signal"] == "BUY"
-    assert buy_client.get("/signal", params={"symbol": "BTC/USD"}).json()["trade_allowed"] is True
-    assert sell_client.get("/signal", params={"symbol": "BTC/USD"}).json()["signal"] == "SELL"
-    assert sell_client.get("/signal", params={"symbol": "BTC/USD"}).json()["trade_allowed"] is True
-    assert hold_client.get("/signal", params={"symbol": "BTC/USD"}).json()["signal"] == "HOLD"
-    assert hold_client.get("/signal", params={"symbol": "BTC/USD"}).json()["trade_allowed"] is False
+    buy_payload = buy_client.get("/signal", params={"symbol": "BTC/USD"}).json()
+    sell_payload = sell_client.get("/signal", params={"symbol": "BTC/USD"}).json()
+    hold_payload = hold_client.get("/signal", params={"symbol": "BTC/USD"}).json()
+
+    assert buy_payload["signal"] == "BUY"
+    assert buy_payload["trade_allowed"] is True
+    assert buy_payload["decision_source"] == "model"
+    assert buy_payload["signal_status"] == "MODEL_SIGNAL"
+    assert sell_payload["signal"] == "SELL"
+    assert sell_payload["trade_allowed"] is True
+    assert sell_payload["decision_source"] == "model"
+    assert hold_payload["signal"] == "HOLD"
+    assert hold_payload["trade_allowed"] is False
+    assert hold_payload["signal_status"] == "MODEL_HOLD"
 
 
 def test_regime_endpoint_returns_exact_row_regime_and_policy(tmp_path: Path) -> None:
@@ -426,14 +453,26 @@ def test_signal_sell_remains_allowed_in_high_vol_regime(tmp_path: Path) -> None:
 
 
 def test_invalid_symbol_and_missing_row_behaviour(tmp_path: Path) -> None:
-    """Invalid symbols should 400 and missing rows should 404."""
+    """Invalid symbols should 400 and `/signal` should degrade to a reliability HOLD."""
     client = _build_client(tmp_path, prob_up=0.7, database=FakeDatabase(row=None))
 
     invalid_response = client.get("/predict", params={"symbol": "DOGE/USD"})
     missing_response = client.get("/predict", params={"symbol": "BTC/USD"})
+    missing_signal_response = client.get(
+        "/signal",
+        params={
+            "symbol": "BTC/USD",
+            "interval_begin": "2026-03-21T12:00:00Z",
+        },
+    )
 
     assert invalid_response.status_code == 400
     assert missing_response.status_code == 404
+    assert missing_signal_response.status_code == 200
+    assert missing_signal_response.json()["signal"] == "HOLD"
+    assert missing_signal_response.json()["decision_source"] == "reliability"
+    assert missing_signal_response.json()["reason_code"] == "RELIABILITY_HOLD_MISSING_FEATURE_ROW"
+    assert missing_signal_response.json()["row_id"] == "BTC/USD|2026-03-21T12:00:00Z"
 
 
 def test_metrics_increment_after_requests(tmp_path: Path) -> None:
@@ -449,6 +488,9 @@ def test_metrics_increment_after_requests(tmp_path: Path) -> None:
     assert payload["requests_total"] == 2
     assert payload["endpoint_counts"]["/health"] == 1
     assert payload["endpoint_counts"]["/predict"] == 1
+    assert payload["health_overall_status"] == "HEALTHY"
+    assert payload["reason_code"] == "HEALTH_HEALTHY"
+    assert payload["freshness_summary"]["BTC/USD"]["freshness_status"] == "FRESH"
 
 
 def test_predict_returns_503_when_database_is_unavailable(tmp_path: Path) -> None:
@@ -462,3 +504,59 @@ def test_predict_returns_503_when_database_is_unavailable(tmp_path: Path) -> Non
     response = client.get("/predict", params={"symbol": "BTC/USD"})
 
     assert response.status_code == 503
+
+
+def test_signal_degrades_to_reliability_hold_when_feature_row_is_stale(tmp_path: Path) -> None:
+    """`/signal` should downgrade to a reliability HOLD for stale exact-row inputs."""
+    base_time = datetime.now(timezone.utc).replace(second=0, microsecond=0) - timedelta(
+        minutes=20
+    )
+    client = _build_client(
+        tmp_path,
+        prob_up=0.7,
+        database=FakeDatabase(row=_feature_row(base_time=base_time)),
+    )
+
+    response = client.get("/signal", params={"symbol": "BTC/USD"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["signal"] == "HOLD"
+    assert payload["decision_source"] == "reliability"
+    assert payload["signal_status"] == "RELIABILITY_HOLD"
+    assert payload["freshness_status"] == "STALE"
+    assert payload["reason_code"] == "RELIABILITY_HOLD_STALE_FEATURE_ROW"
+
+
+def test_freshness_endpoint_returns_exact_row_status(tmp_path: Path) -> None:
+    """`/freshness` should surface the exact-row freshness state for a live symbol."""
+    row = _feature_row()
+    client = _build_client(tmp_path, prob_up=0.7, database=FakeDatabase(row=row))
+
+    response = client.get("/freshness", params={"symbol": "BTC/USD"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["health_overall_status"] == "HEALTHY"
+    assert payload["feature_freshness_status"] == "FRESH"
+    assert payload["regime_freshness_status"] == "FRESH"
+    assert payload["row_id"].startswith("BTC/USD|")
+
+
+def test_freshness_endpoint_reports_missing_exact_row(tmp_path: Path) -> None:
+    """`/freshness` should mark the requested candle stale when no exact row exists."""
+    client = _build_client(tmp_path, prob_up=0.7, database=FakeDatabase(row=None))
+
+    response = client.get(
+        "/freshness",
+        params={
+            "symbol": "BTC/USD",
+            "interval_begin": "2026-03-21T12:00:00Z",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["freshness_status"] == "STALE"
+    assert payload["reason_code"] == "FEATURE_ROW_MISSING"
+    assert payload["row_id"] == "BTC/USD|2026-03-21T12:00:00Z"

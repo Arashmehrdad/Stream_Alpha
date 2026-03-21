@@ -45,6 +45,14 @@ def test_feed_feature_and_regime_freshness_are_deterministic() -> None:
         observed_at=now - timedelta(hours=1),
         evaluated_at=now,
         max_age_seconds=86400,
+        exact_row_resolved=True,
+    )
+    regime_incompatible = evaluate_regime_freshness(
+        observed_at=now - timedelta(seconds=1),
+        evaluated_at=now,
+        max_age_seconds=86400,
+        exact_row_resolved=False,
+        detail="thresholds did not match the exact row",
     )
 
     assert feed_status.freshness_status == "FRESH"
@@ -53,6 +61,7 @@ def test_feed_feature_and_regime_freshness_are_deterministic() -> None:
     assert feature_status.reason_code == FEATURE_STALE
     assert regime_status.freshness_status == "FRESH"
     assert regime_status.reason_code == REGIME_FRESH
+    assert regime_incompatible.freshness_status == "STALE"
 
 
 def test_overall_health_aggregation_respects_freshness_and_breaker() -> None:

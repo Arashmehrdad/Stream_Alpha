@@ -20,6 +20,10 @@ from app.features.db import FeatureStore
 from app.features.engine import MIN_FINALIZED_CANDLES
 from app.features.models import deserialize_ohlc_event
 from app.features.state import FeatureStateManager
+from app.reliability.config import default_reliability_config_path, load_reliability_config
+from app.reliability.schemas import ServiceHeartbeat
+from app.reliability.service import SERVICE_HEARTBEAT_DEGRADED, SERVICE_HEARTBEAT_HEALTHY
+from app.reliability.store import ReliabilityStore
 
 
 @dataclass(slots=True)
@@ -59,6 +63,10 @@ class FeatureConsumerService:  # pylint: disable=too-many-instance-attributes
         self.logger = logging.getLogger(f"{settings.app_name}.features")
         self.stop_event = asyncio.Event()
         self.db = FeatureStore(settings.postgres.dsn, settings.tables)
+        self.reliability_config = load_reliability_config(
+            default_reliability_config_path()
+        )
+        self.reliability_store = ReliabilityStore(settings.postgres.dsn)
         self.state = FeatureStateManager(
             grace_seconds=settings.features.finalization_grace_seconds,
             history_limit=bootstrap_candles,
@@ -75,6 +83,9 @@ class FeatureConsumerService:  # pylint: disable=too-many-instance-attributes
             1,
             min(settings.features.finalization_grace_seconds, 5),
         )
+        self._last_feature_write_at = None
+        self._last_event_received_at = None
+        self._persisted_feature_rows = 0
 
     def request_stop(self) -> None:
         """Trigger a graceful service shutdown."""
@@ -83,6 +94,7 @@ class FeatureConsumerService:  # pylint: disable=too-many-instance-attributes
 
     async def run(self) -> None:  # pylint: disable=broad-exception-caught
         """Run bootstrap, consumption, and stale-candle sweeps until shutdown."""
+        heartbeat_task = asyncio.create_task(self._heartbeat_loop())
         try:
             while not self.stop_event.is_set():
                 try:
@@ -109,10 +121,14 @@ class FeatureConsumerService:  # pylint: disable=too-many-instance-attributes
                     except asyncio.TimeoutError:
                         continue
         finally:
+            heartbeat_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await heartbeat_task
             await self._reset_dependencies()
 
     async def _connect_database(self) -> None:
         await self.db.connect()
+        await self.reliability_store.connect()
 
     async def _bootstrap_state(self) -> None:
         bootstrap_now = utc_now()
@@ -124,6 +140,8 @@ class FeatureConsumerService:  # pylint: disable=too-many-instance-attributes
         )
         for row in feature_rows:
             await self.db.upsert_feature_row(row)
+            self._last_feature_write_at = row.as_of_time
+            self._persisted_feature_rows += 1
         self.logger.info(
             "Feature bootstrap complete",
             extra={
@@ -188,9 +206,12 @@ class FeatureConsumerService:  # pylint: disable=too-many-instance-attributes
             )
             return
 
+        self._last_event_received_at = event.received_at
         feature_rows = self.state.apply_event(event, computed_at=utc_now())
         for row in feature_rows:
             await self.db.upsert_feature_row(row)
+            self._last_feature_write_at = row.as_of_time
+            self._persisted_feature_rows += 1
 
     async def _sweep_loop(self) -> None:
         while not self.stop_event.is_set():
@@ -198,6 +219,8 @@ class FeatureConsumerService:  # pylint: disable=too-many-instance-attributes
             feature_rows = self.state.sweep(now=current_time, computed_at=current_time)
             for row in feature_rows:
                 await self.db.upsert_feature_row(row)
+                self._last_feature_write_at = row.as_of_time
+                self._persisted_feature_rows += 1
 
             try:
                 await asyncio.wait_for(
@@ -215,8 +238,53 @@ class FeatureConsumerService:  # pylint: disable=too-many-instance-attributes
                 await consumer.stop()
         with suppress(Exception):
             await self.db.close()
+        with suppress(Exception):
+            await self.reliability_store.close()
 
     def _require_consumer(self) -> AIOKafkaConsumer:
         if self._consumer is None:
             raise RuntimeError("Feature consumer has not been started")
         return self._consumer
+
+    async def _heartbeat_loop(self) -> None:
+        while not self.stop_event.is_set():
+            observed_at = utc_now()
+            detail = {
+                "last_event_received_at": (
+                    None
+                    if self._last_event_received_at is None
+                    else self._last_event_received_at.isoformat().replace("+00:00", "Z")
+                ),
+                "last_feature_write_at": (
+                    None
+                    if self._last_feature_write_at is None
+                    else self._last_feature_write_at.isoformat().replace("+00:00", "Z")
+                ),
+                "persisted_feature_rows": self._persisted_feature_rows,
+            }
+            with suppress(Exception):
+                await self.reliability_store.save_service_heartbeat(
+                    ServiceHeartbeat(
+                        service_name=self.settings.features.service_name,
+                        component_name="features",
+                        heartbeat_at=observed_at,
+                        health_overall_status=(
+                            "HEALTHY"
+                            if self._last_feature_write_at is not None
+                            else "DEGRADED"
+                        ),
+                        reason_code=(
+                            SERVICE_HEARTBEAT_HEALTHY
+                            if self._last_feature_write_at is not None
+                            else SERVICE_HEARTBEAT_DEGRADED
+                        ),
+                        detail=str(detail),
+                    )
+                )
+            try:
+                await asyncio.wait_for(
+                    self.stop_event.wait(),
+                    timeout=self.reliability_config.heartbeat.write_interval_seconds,
+                )
+            except asyncio.TimeoutError:
+                continue

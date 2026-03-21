@@ -1,5 +1,7 @@
 """Core inference service logic for the Stream Alpha M4 API."""
 
+# pylint: disable=too-many-lines
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -11,11 +13,40 @@ from typing import Any
 import joblib
 
 from app.common.config import Settings
-from app.common.time import to_rfc3339, utc_now
+from app.common.time import parse_rfc3339, to_rfc3339, utc_now
 from app.inference.db import InferenceDatabase
-from app.inference.schemas import HealthResponse, MetricsResponse, RegimeResponse
-from app.inference.schemas import ThresholdsResponse
-from app.inference.schemas import LatencyStatsResponse, PredictionResponse, SignalResponse
+from app.inference.schemas import (
+    FreshnessResponse,
+    HealthResponse,
+    LatencyStatsResponse,
+    MetricsResponse,
+    PredictionResponse,
+    RegimeResponse,
+    SignalResponse,
+    ThresholdsResponse,
+)
+from app.reliability.artifacts import write_json_artifact
+from app.reliability.config import default_reliability_config_path, load_reliability_config
+from app.reliability.schemas import (
+    FreshnessStatus,
+    ReliabilityHealthSnapshot,
+    ServiceHeartbeat,
+    SymbolFreshnessSnapshot,
+)
+from app.reliability.service import (
+    FEATURE_ROW_MISSING,
+    HEALTH_HEALTHY,
+    REGIME_ROW_INCOMPATIBLE,
+    RELIABILITY_HOLD_INPUTS_MISSING,
+    RELIABILITY_HOLD_MISSING_FEATURE_ROW,
+    RELIABILITY_HOLD_STALE_FEATURE_ROW,
+    SERVICE_HEARTBEAT_DEGRADED,
+    SERVICE_HEARTBEAT_HEALTHY,
+    aggregate_health_status,
+    evaluate_feature_freshness,
+    evaluate_regime_freshness,
+)
+from app.reliability.store import ReliabilityStore
 from app.regime.live import LiveRegimeRuntime, load_live_regime_runtime
 from app.training.registry import resolve_inference_model_path
 
@@ -38,6 +69,24 @@ class LoadedModelArtifact:
     expanded_feature_names: tuple[str, ...]
     model_artifact_path: str
     model: Any
+
+
+@dataclass(frozen=True, slots=True)
+class FreshnessEvaluation:  # pylint: disable=too-many-instance-attributes
+    """Exact-row freshness evaluation used across M4 endpoints."""
+
+    symbol: str
+    row_id: str | None
+    interval_begin: str | None
+    as_of_time: str | None
+    health_overall_status: str
+    freshness_status: str
+    reason_code: str
+    feature_freshness: FreshnessStatus
+    regime_freshness: FreshnessStatus
+    regime_label: str | None = None
+    regime_run_id: str | None = None
+    detail: str | None = None
 
 
 @dataclass(slots=True)
@@ -118,9 +167,10 @@ def load_model_artifact(model_path: str) -> LoadedModelArtifact:
     )
 
 
-class InferenceService:
+class InferenceService:  # pylint: disable=too-many-instance-attributes
     """Serve online predictions from the latest canonical feature row."""
 
+    # pylint: disable=too-many-arguments
     def __init__(
         self,
         settings: Settings,
@@ -128,13 +178,18 @@ class InferenceService:
         database: InferenceDatabase | None = None,
         model_artifact: LoadedModelArtifact | None = None,
         regime_runtime: LiveRegimeRuntime | None = None,
+        reliability_store: ReliabilityStore | None = None,
     ) -> None:
         self.settings = settings
         self.started_at = utc_now()
         self.metrics = MetricsState(started_at=self.started_at)
+        self.reliability_config = load_reliability_config(default_reliability_config_path())
         self.database = database or InferenceDatabase(
             settings.postgres.dsn,
             settings.tables.feature_ohlc,
+        )
+        self.reliability_store = reliability_store or ReliabilityStore(
+            settings.postgres.dsn
         )
         self.model_artifact = model_artifact or load_model_artifact(
             settings.inference.model_path,
@@ -144,6 +199,7 @@ class InferenceService:
             signal_policy_path=settings.inference.regime_signal_policy_path,
         )
         self._symbols = set(settings.kraken.symbols)
+        self._last_heartbeat_at: datetime | None = None
         self._validate_thresholds()
         self.regime_runtime.validate_runtime_compatibility(
             source_table=settings.tables.feature_ohlc,
@@ -151,6 +207,7 @@ class InferenceService:
             interval_minutes=settings.kraken.ohlc_interval_minutes,
             symbols=settings.kraken.symbols,
         )
+    # pylint: enable=too-many-arguments
 
     async def startup(self) -> None:
         """Open the read-only database pool for serving."""
@@ -158,10 +215,18 @@ class InferenceService:
             await self.database.connect()
         except Exception:  # pylint: disable=broad-exception-caught
             return
+        try:
+            await self.reliability_store.connect()
+        except Exception:  # pylint: disable=broad-exception-caught
+            return
 
     async def shutdown(self) -> None:
         """Close the database pool."""
         await self.database.close()
+        try:
+            await self.reliability_store.close()
+        except Exception:  # pylint: disable=broad-exception-caught
+            return
 
     def record_request(self, *, path: str, status_code: int, latency_ms: float) -> None:
         """Record one completed HTTP request."""
@@ -171,8 +236,46 @@ class InferenceService:
         """Return the current dependency health payload and status code."""
         database_healthy = await self.database.is_healthy()
         model_loaded = self.model_artifact is not None
-        status_code = 200 if database_healthy and model_loaded else 503
-        status_text = "ok" if status_code == 200 else "unavailable"
+        if database_healthy and model_loaded:
+            freshness_rows = await self._freshness_summary_rows()
+            health_snapshot = self._build_health_snapshot(freshness_rows)
+            await self._maybe_write_service_heartbeat(
+                health_overall_status=health_snapshot.health_overall_status,
+                reason_code=(
+                    SERVICE_HEARTBEAT_HEALTHY
+                    if health_snapshot.health_overall_status == "HEALTHY"
+                    else SERVICE_HEARTBEAT_DEGRADED
+                ),
+                detail=health_snapshot.reason_code,
+                observed_at=health_snapshot.checked_at,
+            )
+            self._write_health_artifacts(health_snapshot)
+            status_code = 200
+            status_text = (
+                "ok"
+                if health_snapshot.health_overall_status == "HEALTHY"
+                else "degraded"
+            )
+            health_overall_status = health_snapshot.health_overall_status
+            reason_code = health_snapshot.reason_code
+            freshness_status = health_snapshot.freshness_status
+        else:
+            status_code = 503
+            status_text = "unavailable"
+            health_overall_status = "UNAVAILABLE"
+            reason_code = "DATABASE_UNAVAILABLE" if not database_healthy else "MODEL_UNAVAILABLE"
+            freshness_status = "UNKNOWN"
+            write_json_artifact(
+                self.reliability_config.artifacts.health_snapshot_path,
+                {
+                    "service_name": self.settings.inference.service_name,
+                    "checked_at": to_rfc3339(utc_now()),
+                    "health_overall_status": health_overall_status,
+                    "reason_code": reason_code,
+                    "freshness_status": freshness_status,
+                    "symbols": [],
+                },
+            )
         return (
             status_code,
             HealthResponse(
@@ -188,6 +291,9 @@ class InferenceService:
                 regime_artifact_path=self.regime_runtime.artifact_path,
                 database="healthy" if database_healthy else "unavailable",
                 started_at=self.started_at,
+                health_overall_status=health_overall_status,
+                reason_code=reason_code,
+                freshness_status=freshness_status,
             ),
         )
 
@@ -209,7 +315,12 @@ class InferenceService:
             interval_begin=interval_begin,
         )
 
-    def predict_from_row(self, row: dict[str, Any]) -> PredictionResponse:
+    def predict_from_row(
+        self,
+        row: dict[str, Any],
+        *,
+        freshness: FreshnessEvaluation | None = None,
+    ) -> PredictionResponse:
         """Run predict_proba against one canonical feature row."""
         feature_input = self._build_feature_input(row)
         resolved_regime = self._resolve_regime(row)
@@ -236,13 +347,26 @@ class InferenceService:
             confidence=max(prob_up, prob_down),
             regime_label=resolved_regime.regime_label,
             regime_run_id=resolved_regime.regime_run_id,
+            decision_source="model",
+            reason_code=None if freshness is None else freshness.reason_code,
+            freshness_status=None if freshness is None else freshness.freshness_status,
+            health_overall_status=(
+                None if freshness is None else freshness.health_overall_status
+            ),
         )
 
-    def signal_from_prediction(self, prediction: PredictionResponse) -> SignalResponse:
+    def signal_from_prediction(
+        self,
+        prediction: PredictionResponse,
+        *,
+        freshness: FreshnessEvaluation | None = None,
+    ) -> SignalResponse:
         """Convert one prediction into BUY, SELL, or HOLD."""
         policy = self.regime_runtime.policy_for(prediction.regime_label)
         buy_threshold = policy.buy_prob_up
         sell_threshold = policy.sell_prob_up
+        decision_source = "model"
+        reason_code = None if freshness is None else freshness.reason_code
         if prediction.prob_up >= buy_threshold:
             if policy.allow_new_long_entries:
                 signal = "BUY"
@@ -250,6 +374,7 @@ class InferenceService:
                     f"prob_up {prediction.prob_up:.4f} >= buy threshold "
                     f"{buy_threshold:.2f}"
                 )
+                signal_status = "MODEL_SIGNAL"
             else:
                 signal = "HOLD"
                 reason = (
@@ -257,15 +382,18 @@ class InferenceService:
                     f"{buy_threshold:.2f} but new long entries are disabled in "
                     f"{prediction.regime_label}"
                 )
+                signal_status = "MODEL_HOLD"
         elif prediction.prob_up <= sell_threshold:
             signal = "SELL"
             reason = f"prob_up {prediction.prob_up:.4f} <= sell threshold {sell_threshold:.2f}"
+            signal_status = "MODEL_SIGNAL"
         else:
             signal = "HOLD"
             reason = (
                 f"prob_up {prediction.prob_up:.4f} is between "
                 f"{sell_threshold:.2f} and {buy_threshold:.2f}"
             )
+            signal_status = "MODEL_HOLD"
         trade_allowed = signal in {"BUY", "SELL"}
 
         return SignalResponse(
@@ -286,9 +414,21 @@ class InferenceService:
             regime_label=prediction.regime_label,
             regime_run_id=prediction.regime_run_id,
             trade_allowed=trade_allowed,
+            signal_status=signal_status,
+            decision_source=decision_source,
+            reason_code=reason_code,
+            freshness_status=None if freshness is None else freshness.freshness_status,
+            health_overall_status=(
+                None if freshness is None else freshness.health_overall_status
+            ),
         )
 
-    def regime_from_row(self, row: dict[str, Any]) -> RegimeResponse:
+    def regime_from_row(
+        self,
+        row: dict[str, Any],
+        *,
+        freshness: FreshnessEvaluation | None = None,
+    ) -> RegimeResponse:
         """Resolve the exact-row regime payload used by M4."""
         resolved_regime = self._resolve_regime(row)
         policy = self.regime_runtime.policy_for(resolved_regime.regime_label)
@@ -308,11 +448,45 @@ class InferenceService:
             trade_allowed=policy.allow_new_long_entries,
             buy_prob_up=policy.buy_prob_up,
             sell_prob_up=policy.sell_prob_up,
+            freshness_status=None if freshness is None else freshness.freshness_status,
+            health_overall_status=(
+                None if freshness is None else freshness.health_overall_status
+            ),
         )
 
-    def metrics_snapshot(self) -> MetricsResponse:
+    async def metrics_snapshot(self) -> MetricsResponse:
         """Return the current in-memory metrics payload."""
         uptime_seconds = max(0.0, (utc_now() - self.started_at).total_seconds())
+        try:
+            freshness_rows = await self._freshness_summary_rows()
+            health_snapshot = self._build_health_snapshot(freshness_rows)
+            await self._maybe_write_service_heartbeat(
+                health_overall_status=health_snapshot.health_overall_status,
+                reason_code=(
+                    SERVICE_HEARTBEAT_HEALTHY
+                    if health_snapshot.health_overall_status == "HEALTHY"
+                    else SERVICE_HEARTBEAT_DEGRADED
+                ),
+                detail=health_snapshot.reason_code,
+                observed_at=health_snapshot.checked_at,
+            )
+            self._write_health_artifacts(health_snapshot)
+            freshness_summary = {
+                row.symbol: {
+                    "health_overall_status": row.health_overall_status,
+                    "freshness_status": row.freshness_status,
+                    "reason_code": row.reason_code,
+                    "feature_freshness_status": row.feature_freshness.freshness_status,
+                    "regime_freshness_status": row.regime_freshness.freshness_status,
+                }
+                for row in freshness_rows
+            }
+            health_overall_status = health_snapshot.health_overall_status
+            reason_code = health_snapshot.reason_code
+        except Exception:  # pylint: disable=broad-exception-caught
+            freshness_summary = None
+            health_overall_status = "UNAVAILABLE"
+            reason_code = "DATABASE_UNAVAILABLE"
         return MetricsResponse(
             requests_total=self.metrics.requests_total,
             errors_total=self.metrics.errors_total,
@@ -322,7 +496,134 @@ class InferenceService:
             started_at=self.started_at,
             uptime_seconds=uptime_seconds,
             model_name=self.model_artifact.model_name,
+            health_overall_status=health_overall_status,
+            reason_code=reason_code,
+            freshness_summary=freshness_summary,
         )
+
+    async def freshness_response(
+        self,
+        *,
+        symbol: str,
+        interval_begin: datetime | None = None,
+    ) -> FreshnessResponse:
+        """Return explicit exact-row freshness for one symbol."""
+        freshness = await self.freshness_evaluation(
+            symbol=symbol,
+            interval_begin=interval_begin,
+        )
+        await self._maybe_write_service_heartbeat(
+            health_overall_status=freshness.health_overall_status,
+            reason_code=(
+                SERVICE_HEARTBEAT_HEALTHY
+                if freshness.health_overall_status == "HEALTHY"
+                else SERVICE_HEARTBEAT_DEGRADED
+            ),
+            detail=freshness.reason_code,
+            observed_at=utc_now(),
+        )
+        self._write_freshness_artifact([freshness])
+        return FreshnessResponse(
+            symbol=freshness.symbol,
+            row_id=freshness.row_id,
+            interval_begin=freshness.interval_begin,
+            as_of_time=freshness.as_of_time,
+            health_overall_status=freshness.health_overall_status,
+            freshness_status=freshness.freshness_status,
+            reason_code=freshness.reason_code,
+            feature_freshness_status=freshness.feature_freshness.freshness_status,
+            feature_reason_code=freshness.feature_freshness.reason_code,
+            feature_age_seconds=freshness.feature_freshness.age_seconds,
+            regime_freshness_status=freshness.regime_freshness.freshness_status,
+            regime_reason_code=freshness.regime_freshness.reason_code,
+            regime_age_seconds=freshness.regime_freshness.age_seconds,
+            detail=freshness.detail,
+        )
+
+    async def freshness_evaluation(
+        self,
+        *,
+        symbol: str,
+        interval_begin: datetime | None = None,
+    ) -> FreshnessEvaluation:
+        """Return the internal exact-row freshness evaluation for one symbol."""
+        row = await self.latest_feature_row(symbol, interval_begin=interval_begin)
+        return self._evaluate_freshness_for_row(
+            symbol=symbol,
+            row=row,
+            interval_begin=interval_begin,
+            evaluated_at=utc_now(),
+        )
+
+    async def signal_for_request(
+        self,
+        *,
+        symbol: str,
+        interval_begin: datetime | None = None,
+    ) -> SignalResponse:
+        """Return the authoritative signal or an explicit reliability HOLD."""
+        row = await self.latest_feature_row(symbol, interval_begin=interval_begin)
+        freshness = self._evaluate_freshness_for_row(
+            symbol=symbol,
+            row=row,
+            interval_begin=interval_begin,
+            evaluated_at=utc_now(),
+        )
+        await self._maybe_write_service_heartbeat(
+            health_overall_status=freshness.health_overall_status,
+            reason_code=(
+                SERVICE_HEARTBEAT_HEALTHY
+                if freshness.health_overall_status == "HEALTHY"
+                else SERVICE_HEARTBEAT_DEGRADED
+            ),
+            detail=freshness.reason_code,
+            observed_at=utc_now(),
+        )
+
+        if row is None:
+            return self._build_reliability_hold(
+                symbol=symbol,
+                as_of_time=None,
+                row_id=freshness.row_id or _fallback_row_id(symbol, interval_begin),
+                regime_label=None,
+                regime_run_id=None,
+                freshness=freshness,
+                reason_code=RELIABILITY_HOLD_MISSING_FEATURE_ROW,
+                reason="No canonical feature row was found for the requested candle",
+            )
+
+        if freshness.feature_freshness.freshness_status != "FRESH":
+            return self._build_reliability_hold(
+                symbol=symbol,
+                as_of_time=row["as_of_time"],
+                row_id=f"{row['symbol']}|{to_rfc3339(row['interval_begin'])}",
+                regime_label=freshness.regime_label,
+                regime_run_id=freshness.regime_run_id,
+                freshness=freshness,
+                reason_code=RELIABILITY_HOLD_STALE_FEATURE_ROW,
+                reason=(
+                    "Canonical feature inputs are stale for the requested signal decision"
+                ),
+            )
+
+        try:
+            prediction = self.predict_from_row(row, freshness=freshness)
+            return self.signal_from_prediction(prediction, freshness=freshness)
+        except ArtifactSchemaMismatchError as error:
+            return self._build_reliability_hold(
+                symbol=symbol,
+                as_of_time=row["as_of_time"],
+                row_id=f"{row['symbol']}|{to_rfc3339(row['interval_begin'])}",
+                regime_label=freshness.regime_label,
+                regime_run_id=freshness.regime_run_id,
+                freshness=freshness,
+                reason_code=(
+                    REGIME_ROW_INCOMPATIBLE
+                    if freshness.regime_freshness.freshness_status != "FRESH"
+                    else RELIABILITY_HOLD_INPUTS_MISSING
+                ),
+                reason=str(error),
+            )
 
     def _build_feature_input(self, row: dict[str, Any]) -> dict[str, Any]:
         missing_columns = [
@@ -355,7 +656,377 @@ class InferenceService:
         except ValueError as error:
             raise ArtifactSchemaMismatchError(str(error)) from error
 
+    async def _freshness_summary_rows(self) -> list[FreshnessEvaluation]:
+        rows: list[FreshnessEvaluation] = []
+        evaluated_at = utc_now()
+        for symbol in self.settings.kraken.symbols:
+            row = await self.latest_feature_row(symbol)
+            rows.append(
+                self._evaluate_freshness_for_row(
+                    symbol=symbol,
+                    row=row,
+                    interval_begin=None,
+                    evaluated_at=evaluated_at,
+                )
+            )
+        return rows
+
+    # pylint: disable=too-many-locals
+    def _evaluate_freshness_for_row(
+        self,
+        *,
+        symbol: str,
+        row: dict[str, Any] | None,
+        interval_begin: datetime | None,
+        evaluated_at: datetime,
+    ) -> FreshnessEvaluation:
+        if row is None:
+            feature_freshness = FreshnessStatus(
+                component_name="feature_ohlc",
+                freshness_status="STALE",
+                evaluated_at=evaluated_at,
+                max_age_seconds=self.reliability_config.freshness.feature_max_age_seconds,
+                reason_code=FEATURE_ROW_MISSING,
+                observed_at=None,
+                age_seconds=None,
+                detail="No exact canonical feature row was found",
+            )
+            regime_freshness = evaluate_regime_freshness(
+                observed_at=None,
+                evaluated_at=evaluated_at,
+                max_age_seconds=self.reliability_config.freshness.regime_max_age_seconds,
+                exact_row_resolved=False,
+                detail="Cannot resolve regime without an exact canonical feature row",
+            )
+            health = aggregate_health_status(
+                freshness_statuses=(feature_freshness, regime_freshness)
+            )
+            row_id = _fallback_row_id(symbol, interval_begin)
+            interval_begin_text = (
+                None if interval_begin is None else to_rfc3339(interval_begin)
+            )
+            return FreshnessEvaluation(
+                symbol=symbol,
+                row_id=row_id,
+                interval_begin=interval_begin_text,
+                as_of_time=None,
+                health_overall_status=health.health_overall_status,
+                freshness_status=_overall_freshness_status(
+                    feature_freshness,
+                    regime_freshness,
+                ),
+                reason_code=FEATURE_ROW_MISSING,
+                feature_freshness=feature_freshness,
+                regime_freshness=regime_freshness,
+                detail=feature_freshness.detail,
+            )
+
+        interval_begin_text = to_rfc3339(row["interval_begin"])
+        as_of_time_text = to_rfc3339(row["as_of_time"])
+        feature_freshness = evaluate_feature_freshness(
+            observed_at=row["as_of_time"],
+            evaluated_at=evaluated_at,
+            max_age_seconds=self.reliability_config.freshness.feature_max_age_seconds,
+        )
+        resolved_regime = None
+        regime_error = None
+        try:
+            resolved_regime = self.regime_runtime.resolve_feature_row_regime(row)
+        except ValueError as error:
+            regime_error = str(error)
+        regime_freshness = evaluate_regime_freshness(
+            observed_at=row["as_of_time"],
+            evaluated_at=evaluated_at,
+            max_age_seconds=self.reliability_config.freshness.regime_max_age_seconds,
+            exact_row_resolved=resolved_regime is not None,
+            detail=(
+                None
+                if resolved_regime is not None
+                else regime_error or "Exact-row regime resolution failed"
+            ),
+        )
+        health = aggregate_health_status(
+            freshness_statuses=(feature_freshness, regime_freshness)
+        )
+        if feature_freshness.freshness_status != "FRESH":
+            reason_code = feature_freshness.reason_code
+        elif resolved_regime is None:
+            reason_code = REGIME_ROW_INCOMPATIBLE
+        else:
+            reason_code = HEALTH_HEALTHY
+        detail = (
+            regime_freshness.detail
+            if regime_freshness.freshness_status != "FRESH"
+            else feature_freshness.detail
+        )
+        return FreshnessEvaluation(
+            symbol=symbol,
+            row_id=f"{row['symbol']}|{interval_begin_text}",
+            interval_begin=interval_begin_text,
+            as_of_time=as_of_time_text,
+            health_overall_status=health.health_overall_status,
+            freshness_status=_overall_freshness_status(
+                feature_freshness,
+                regime_freshness,
+            ),
+            reason_code=reason_code,
+            feature_freshness=feature_freshness,
+            regime_freshness=regime_freshness,
+            regime_label=None if resolved_regime is None else resolved_regime.regime_label,
+            regime_run_id=None if resolved_regime is None else resolved_regime.regime_run_id,
+            detail=detail,
+        )
+    # pylint: enable=too-many-locals
+
+    def _build_health_snapshot(
+        self,
+        freshness_rows: list[FreshnessEvaluation],
+    ) -> ReliabilityHealthSnapshot:
+        overall_status = (
+            "HEALTHY"
+            if all(row.health_overall_status == "HEALTHY" for row in freshness_rows)
+            else "DEGRADED"
+        )
+        reason_code = (
+            HEALTH_HEALTHY
+            if overall_status == "HEALTHY"
+            else next(
+                row.reason_code
+                for row in freshness_rows
+                if row.health_overall_status != "HEALTHY"
+            )
+        )
+        freshness_status = (
+            "FRESH"
+            if all(row.freshness_status == "FRESH" for row in freshness_rows)
+            else next(
+                row.freshness_status
+                for row in freshness_rows
+                if row.freshness_status != "FRESH"
+            )
+        )
+        return ReliabilityHealthSnapshot(
+            service_name=self.settings.inference.service_name,
+            checked_at=utc_now(),
+            health_overall_status=overall_status,
+            reason_code=reason_code,
+            freshness_status=freshness_status,
+            symbols=tuple(
+                SymbolFreshnessSnapshot(
+                    symbol=row.symbol,
+                    row_id=row.row_id,
+                    interval_begin=(
+                        None
+                        if row.interval_begin is None
+                        else _parse_cached_rfc3339(row.interval_begin)
+                    ),
+                    as_of_time=(
+                        None
+                        if row.as_of_time is None
+                        else _parse_cached_rfc3339(row.as_of_time)
+                    ),
+                    health_overall_status=row.health_overall_status,
+                    freshness_status=row.freshness_status,
+                    reason_code=row.reason_code,
+                    feature_freshness=row.feature_freshness,
+                    regime_freshness=row.regime_freshness,
+                )
+                for row in freshness_rows
+            ),
+        )
+
+    async def _maybe_write_service_heartbeat(
+        self,
+        *,
+        health_overall_status: str,
+        reason_code: str,
+        detail: str | None,
+        observed_at: datetime,
+    ) -> None:
+        if (
+            self._last_heartbeat_at is not None
+            and (observed_at - self._last_heartbeat_at).total_seconds()
+            < self.reliability_config.heartbeat.write_interval_seconds
+        ):
+            return
+        self._last_heartbeat_at = observed_at
+        try:
+            await self.reliability_store.save_service_heartbeat(
+                ServiceHeartbeat(
+                    service_name=self.settings.inference.service_name,
+                    component_name="inference",
+                    heartbeat_at=observed_at,
+                    health_overall_status=health_overall_status,
+                    reason_code=reason_code,
+                    detail=detail,
+                )
+            )
+        except Exception:  # pylint: disable=broad-exception-caught
+            return
+
+    def _write_health_artifacts(
+        self,
+        health_snapshot: ReliabilityHealthSnapshot,
+    ) -> None:
+        payload = {
+            "service_name": health_snapshot.service_name,
+            "checked_at": to_rfc3339(health_snapshot.checked_at),
+            "health_overall_status": health_snapshot.health_overall_status,
+            "reason_code": health_snapshot.reason_code,
+            "freshness_status": health_snapshot.freshness_status,
+            "symbols": [
+                {
+                    "symbol": symbol.symbol,
+                    "row_id": symbol.row_id,
+                    "interval_begin": (
+                        None
+                        if symbol.interval_begin is None
+                        else to_rfc3339(symbol.interval_begin)
+                    ),
+                    "as_of_time": (
+                        None if symbol.as_of_time is None else to_rfc3339(symbol.as_of_time)
+                    ),
+                    "health_overall_status": symbol.health_overall_status,
+                    "freshness_status": symbol.freshness_status,
+                    "reason_code": symbol.reason_code,
+                    "feature_freshness_status": symbol.feature_freshness.freshness_status,
+                    "regime_freshness_status": symbol.regime_freshness.freshness_status,
+                }
+                for symbol in health_snapshot.symbols
+            ],
+        }
+        write_json_artifact(
+            self.reliability_config.artifacts.health_snapshot_path,
+            payload,
+        )
+        self._write_freshness_artifact(
+            [
+                FreshnessEvaluation(
+                    symbol=symbol.symbol,
+                    row_id=symbol.row_id,
+                    interval_begin=(
+                        None
+                        if symbol.interval_begin is None
+                        else to_rfc3339(symbol.interval_begin)
+                    ),
+                    as_of_time=(
+                        None
+                        if symbol.as_of_time is None
+                        else to_rfc3339(symbol.as_of_time)
+                    ),
+                    health_overall_status=symbol.health_overall_status,
+                    freshness_status=symbol.freshness_status,
+                    reason_code=symbol.reason_code,
+                    feature_freshness=symbol.feature_freshness,
+                    regime_freshness=symbol.regime_freshness,
+                )
+                for symbol in health_snapshot.symbols
+            ]
+        )
+
+    def _write_freshness_artifact(
+        self,
+        freshness_rows: list[FreshnessEvaluation],
+    ) -> None:
+        write_json_artifact(
+            self.reliability_config.artifacts.freshness_summary_path,
+            {
+                "generated_at": to_rfc3339(utc_now()),
+                "service_name": self.settings.inference.service_name,
+                "symbols": [
+                    {
+                        "symbol": row.symbol,
+                        "row_id": row.row_id,
+                        "interval_begin": row.interval_begin,
+                        "as_of_time": row.as_of_time,
+                        "health_overall_status": row.health_overall_status,
+                        "freshness_status": row.freshness_status,
+                        "reason_code": row.reason_code,
+                        "feature_freshness_status": row.feature_freshness.freshness_status,
+                        "feature_reason_code": row.feature_freshness.reason_code,
+                        "feature_age_seconds": row.feature_freshness.age_seconds,
+                        "regime_freshness_status": row.regime_freshness.freshness_status,
+                        "regime_reason_code": row.regime_freshness.reason_code,
+                        "regime_age_seconds": row.regime_freshness.age_seconds,
+                    }
+                    for row in freshness_rows
+                ],
+            },
+        )
+
+    # pylint: disable=too-many-arguments
+    def _build_reliability_hold(
+        self,
+        *,
+        symbol: str,
+        as_of_time: datetime | None,
+        row_id: str,
+        regime_label: str | None,
+        regime_run_id: str | None,
+        freshness: FreshnessEvaluation,
+        reason_code: str,
+        reason: str,
+    ) -> SignalResponse:
+        buy_threshold, sell_threshold = self._default_thresholds(regime_label)
+        effective_as_of_time = (
+            utc_now()
+            if as_of_time is None
+            else as_of_time
+        )
+        return SignalResponse(
+            symbol=symbol,
+            signal="HOLD",
+            reason=reason,
+            prob_up=0.5,
+            prob_down=0.5,
+            confidence=0.0,
+            predicted_class="UNKNOWN",
+            thresholds=ThresholdsResponse(
+                buy_prob_up=buy_threshold,
+                sell_prob_up=sell_threshold,
+            ),
+            row_id=row_id,
+            as_of_time=to_rfc3339(effective_as_of_time),
+            model_name=self.model_artifact.model_name,
+            regime_label=regime_label,
+            regime_run_id=regime_run_id,
+            trade_allowed=False,
+            signal_status="RELIABILITY_HOLD",
+            decision_source="reliability",
+            reason_code=reason_code,
+            freshness_status=freshness.freshness_status,
+            health_overall_status=freshness.health_overall_status,
+        )
+    # pylint: enable=too-many-arguments
+
+    def _default_thresholds(self, regime_label: str | None) -> tuple[float, float]:
+        if regime_label is not None:
+            policy = self.regime_runtime.policy_for(regime_label)
+            return policy.buy_prob_up, policy.sell_prob_up
+        return (
+            self.settings.inference.signal_buy_prob_up,
+            self.settings.inference.signal_sell_prob_up,
+        )
+
 
 def request_latency_ms(started_at: float) -> float:
     """Return elapsed request time in milliseconds."""
     return (perf_counter() - started_at) * 1000.0
+
+
+def _overall_freshness_status(*statuses: FreshnessStatus) -> str:
+    if any(status.freshness_status == "STALE" for status in statuses):
+        return "STALE"
+    if any(status.freshness_status == "UNKNOWN" for status in statuses):
+        return "UNKNOWN"
+    return "FRESH"
+
+
+def _fallback_row_id(symbol: str, interval_begin: datetime | None) -> str:
+    if interval_begin is None:
+        return f"{symbol}|MISSING"
+    return f"{symbol}|{to_rfc3339(interval_begin)}"
+
+
+def _parse_cached_rfc3339(value: str) -> datetime:
+    return parse_rfc3339(value)

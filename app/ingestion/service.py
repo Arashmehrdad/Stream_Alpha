@@ -28,6 +28,10 @@ from app.ingestion.normalizers import (
     normalize_trade_payload,
 )
 from app.ingestion.publisher import KafkaEventPublisher
+from app.reliability.config import default_reliability_config_path, load_reliability_config
+from app.reliability.schemas import ServiceHeartbeat
+from app.reliability.service import SERVICE_HEARTBEAT_DEGRADED, SERVICE_HEARTBEAT_HEALTHY
+from app.reliability.store import ReliabilityStore
 
 
 @dataclass(slots=True)
@@ -70,6 +74,10 @@ class ProducerService:  # pylint: disable=too-many-instance-attributes
             dsn=settings.postgres.dsn,
             tables=settings.tables,
         )
+        self.reliability_config = load_reliability_config(
+            default_reliability_config_path()
+        )
+        self.reliability_store = ReliabilityStore(settings.postgres.dsn)
         self._backoff = ExponentialBackoff(
             initial_delay_seconds=settings.retry.initial_delay_seconds,
             max_delay_seconds=settings.retry.max_delay_seconds,
@@ -151,6 +159,7 @@ class ProducerService:  # pylint: disable=too-many-instance-attributes
             try:
                 await self.db.connect()
                 await self.publisher.start()
+                await self.reliability_store.connect()
                 return
             except Exception as exc:  # pylint: disable=broad-exception-caught
                 delay_seconds = dependency_backoff.next_delay()
@@ -173,6 +182,8 @@ class ProducerService:  # pylint: disable=too-many-instance-attributes
             await self.publisher.stop()
         with suppress(Exception):
             await self.db.close()
+        with suppress(Exception):
+            await self.reliability_store.close()
 
     async def _run_stream_session(self) -> None:
         """Open one Kraken websocket session and process messages until it ends."""
@@ -455,10 +466,27 @@ class ProducerService:  # pylint: disable=too-many-instance-attributes
                 observed_at=observed_at,
                 details=details,
             )
+            with suppress(Exception):
+                await self.reliability_store.save_service_heartbeat(
+                    ServiceHeartbeat(
+                        service_name=self.settings.service_name,
+                        component_name="producer",
+                        heartbeat_at=observed_at,
+                        health_overall_status=(
+                            "HEALTHY" if self._kraken_connected else "DEGRADED"
+                        ),
+                        reason_code=(
+                            SERVICE_HEARTBEAT_HEALTHY
+                            if self._kraken_connected
+                            else SERVICE_HEARTBEAT_DEGRADED
+                        ),
+                        detail=json.dumps(details, sort_keys=True),
+                    )
+                )
             try:
                 await asyncio.wait_for(
                     self.stop_event.wait(),
-                    timeout=self.settings.heartbeat_interval_seconds,
+                    timeout=self.reliability_config.heartbeat.write_interval_seconds,
                 )
             except asyncio.TimeoutError:
                 continue

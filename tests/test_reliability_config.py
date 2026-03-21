@@ -15,9 +15,11 @@ def test_checked_in_reliability_config_loads() -> None:
 
     assert config.schema_version == "m13_reliability_v1"
     assert config.freshness.feed_max_age_seconds == 90
+    assert config.freshness.feature_max_age_seconds == 390
     assert config.heartbeat.stale_after_seconds == 45
     assert config.circuit_breaker.failure_threshold == 3
     assert config.recovery.stale_pending_signal_max_age_intervals == 1
+    assert config.artifacts.health_snapshot_path.endswith("health_snapshot.json")
 
 
 def test_invalid_reliability_config_is_rejected(tmp_path: Path) -> None:
@@ -40,6 +42,10 @@ def test_invalid_reliability_config_is_rejected(tmp_path: Path) -> None:
                 "  success_threshold: 1",
                 "recovery:",
                 "  stale_pending_signal_max_age_intervals: 1",
+                "artifacts:",
+                "  health_snapshot_path: artifacts/reliability/health_snapshot.json",
+                "  freshness_summary_path: artifacts/reliability/freshness_summary.json",
+                "  recovery_events_path: artifacts/reliability/recovery_events.jsonl",
             ]
         ),
         encoding="utf-8",

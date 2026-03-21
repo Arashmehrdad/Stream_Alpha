@@ -86,6 +86,7 @@ class PredictionResponse(BaseModel):
     decision_source: str | None = None
     reason_code: str | None = None
     freshness_status: str | None = None
+    health_overall_status: str | None = None
 
 
 class ThresholdsResponse(BaseModel):
@@ -109,13 +110,14 @@ class SignalResponse(BaseModel):
     row_id: str
     as_of_time: str
     model_name: str
-    regime_label: str
-    regime_run_id: str
+    regime_label: str | None
+    regime_run_id: str | None
     trade_allowed: bool
     signal_status: str | None = None
     decision_source: str | None = None
     reason_code: str | None = None
     freshness_status: str | None = None
+    health_overall_status: str | None = None
 
 
 class RegimeResponse(BaseModel):
@@ -137,6 +139,26 @@ class RegimeResponse(BaseModel):
     buy_prob_up: float
     sell_prob_up: float
     freshness_status: str | None = None
+    health_overall_status: str | None = None
+
+
+class FreshnessResponse(BaseModel):
+    """Exact-row freshness payload returned by `/freshness`."""
+
+    symbol: str
+    row_id: str | None
+    interval_begin: str | None
+    as_of_time: str | None
+    health_overall_status: str
+    freshness_status: str
+    reason_code: str
+    feature_freshness_status: str
+    feature_reason_code: str
+    feature_age_seconds: float | None
+    regime_freshness_status: str
+    regime_reason_code: str
+    regime_age_seconds: float | None
+    detail: str | None = None
 
 
 class LatencyStatsResponse(BaseModel):
@@ -158,3 +180,6 @@ class MetricsResponse(BaseModel):
     started_at: datetime
     uptime_seconds: float
     model_name: str | None
+    health_overall_status: str | None = None
+    reason_code: str | None = None
+    freshness_summary: dict[str, dict[str, str | float | None]] | None = None

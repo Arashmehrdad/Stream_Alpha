@@ -13,7 +13,12 @@ from app.common.config import Settings
 from app.common.logging import configure_logging
 from app.common.time import parse_rfc3339
 from app.inference.db import DatabaseUnavailableError
-from app.inference.schemas import FeatureRowResponse, HealthResponse, MetricsResponse
+from app.inference.schemas import (
+    FeatureRowResponse,
+    FreshnessResponse,
+    HealthResponse,
+    MetricsResponse,
+)
 from app.inference.schemas import PredictionResponse, RegimeResponse, SignalResponse
 from app.inference.service import (
     ArtifactSchemaMismatchError,
@@ -22,8 +27,10 @@ from app.inference.service import (
     request_latency_ms,
 )
 
-
-def create_app(service: InferenceService | None = None) -> FastAPI:
+# pylint: disable=too-many-statements
+def create_app(
+    service: InferenceService | None = None,
+) -> FastAPI:
     """Create the M4 FastAPI app with strict model loading."""
     if service is None:
         settings = Settings.from_env()
@@ -105,13 +112,18 @@ def create_app(service: InferenceService | None = None) -> FastAPI:
         symbol: str,
         interval_begin: str | None = None,
     ) -> PredictionResponse:
+        parsed_interval_begin = _parse_interval_begin(interval_begin)
         row = await _latest_row_or_error(
             service,
             symbol,
-            interval_begin=_parse_interval_begin(interval_begin),
+            interval_begin=parsed_interval_begin,
         )
         try:
-            return service.predict_from_row(row)
+            freshness = await service.freshness_evaluation(
+                symbol=symbol,
+                interval_begin=parsed_interval_begin,
+            )
+            return service.predict_from_row(row, freshness=freshness)
         except ArtifactSchemaMismatchError as error:
             raise HTTPException(status_code=500, detail=str(error)) from error
 
@@ -120,13 +132,21 @@ def create_app(service: InferenceService | None = None) -> FastAPI:
         symbol: str,
         interval_begin: str | None = None,
     ) -> RegimeResponse:
+        parsed_interval_begin = _parse_interval_begin(interval_begin)
         row = await _latest_row_or_error(
             service,
             symbol,
-            interval_begin=_parse_interval_begin(interval_begin),
+            interval_begin=parsed_interval_begin,
         )
         try:
-            return service.regime_from_row(row)
+            freshness = await service.freshness_evaluation(
+                symbol=symbol,
+                interval_begin=parsed_interval_begin,
+            )
+            return service.regime_from_row(
+                row,
+                freshness=freshness,
+            )
         except ArtifactSchemaMismatchError as error:
             raise HTTPException(status_code=500, detail=str(error)) from error
 
@@ -135,22 +155,41 @@ def create_app(service: InferenceService | None = None) -> FastAPI:
         symbol: str,
         interval_begin: str | None = None,
     ) -> SignalResponse:
-        row = await _latest_row_or_error(
-            service,
-            symbol,
-            interval_begin=_parse_interval_begin(interval_begin),
-        )
+        parsed_interval_begin = _parse_interval_begin(interval_begin)
         try:
-            prediction = service.predict_from_row(row)
-            return service.signal_from_prediction(prediction)
+            return await service.signal_for_request(
+                symbol=symbol,
+                interval_begin=parsed_interval_begin,
+            )
+        except InvalidSymbolError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        except DatabaseUnavailableError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
         except ArtifactSchemaMismatchError as error:
             raise HTTPException(status_code=500, detail=str(error)) from error
 
+    @app.get("/freshness", response_model=FreshnessResponse)
+    async def freshness(
+        symbol: str,
+        interval_begin: str | None = None,
+    ) -> FreshnessResponse:
+        parsed_interval_begin = _parse_interval_begin(interval_begin)
+        try:
+            return await service.freshness_response(
+                symbol=symbol,
+                interval_begin=parsed_interval_begin,
+            )
+        except InvalidSymbolError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        except DatabaseUnavailableError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+
     @app.get("/metrics", response_model=MetricsResponse)
     async def metrics() -> MetricsResponse:
-        return service.metrics_snapshot()
+        return await service.metrics_snapshot()
 
     return app
+# pylint: enable=too-many-statements
 
 
 async def _latest_row_or_error(

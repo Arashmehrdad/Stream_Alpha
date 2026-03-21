@@ -24,6 +24,8 @@ Milestone `M11` adds a minimum execution abstraction after M10 risk approval. It
 
 Milestone `M12` adds a guarded live trading foundation on top of the accepted execution layer. It adds a third `live` adapter mode for Alpaca Trading API account validation and order submission, requires explicit runtime arming plus local safety checks before any broker submission, keeps live orders tiny and whitelisted, and writes startup/live-status artifacts plus explicit live audit rows.
 
+Milestone `M13` foundation adds explicit reliability and recovery state around the accepted runtime paths. Packet 1 adds checked-in reliability config, typed freshness and breaker primitives, and additive PostgreSQL reliability tables. Packet 2 wires heartbeats, exact-row freshness evaluation, a trader-side inference breaker, stale pending-signal recovery, reliability artifacts, and compact dashboard reliability views without changing M4, M10, M11, or M12 authority boundaries.
+
 ## Repository Tree
 
 ```text
@@ -64,6 +66,13 @@ Milestone `M12` adds a guarded live trading foundation on top of the accepted ex
 |   |   |-- dataset.py
 |   |   |-- live.py
 |   |   `-- service.py
+|   |-- reliability
+|   |   |-- __init__.py
+|   |   |-- artifacts.py
+|   |   |-- config.py
+|   |   |-- schemas.py
+|   |   |-- service.py
+|   |   `-- store.py
 |   |-- trading
 |   |   |-- __init__.py
 |   |   |-- alpaca.py
@@ -101,6 +110,7 @@ Milestone `M12` adds a guarded live trading foundation on top of the accepted ex
 |       `-- service.py
 |-- configs
 |   |-- paper_trading.yaml
+|   |-- reliability.yaml
 |   |-- regime.m8.json
 |   |-- regime_signal_policy.json
 |   |-- redpanda-console-config.yml
@@ -326,6 +336,29 @@ M12 does not do:
 - add a live trading control plane, scheduler, or background recovery daemon
 - change M4 signal generation, M9 regime classification, or M10 risk sizing authority
 
+## M13 Scope
+
+M13 Packet 1 does:
+- add checked-in `configs/reliability.yaml`
+- add typed reliability config plus freshness, heartbeat, breaker, and recovery dataclasses
+- add additive PostgreSQL tables `service_heartbeats`, `reliability_state`, and `reliability_events`
+- add pure reliability helpers for freshness, breaker transitions, and pending-signal expiry
+
+M13 Packet 2 does:
+- write heartbeats from producer, features, inference, and the trading runner
+- add exact-row `GET /freshness?symbol=...` from the M4 inference API
+- degrade `GET /signal` to an explicit reliability `HOLD` when the exact canonical row is missing or stale
+- keep regime freshness tied to exact-row compatibility and exact-row resolution, not artifact age alone
+- add a trader-side inference breaker using the checked-in breaker primitives
+- clear stale carried-over pending signals on runner startup and record deterministic recovery events
+- write reliability artifacts under `artifacts/reliability/`
+- surface compact reliability status and per-symbol freshness in the dashboard
+
+M13 Packet 2 does not do:
+- change M4 model authority, M10 risk authority, or M11/M12 execution routing
+- add alert routing, deployment profiles, or a new orchestration stack
+- add stale-feed live blocking, recovery daemons, or explainability payload expansion
+
 ## Environment Variables
 
 Copy `.env.example` to `.env` before running the stack.
@@ -458,6 +491,7 @@ curl "http://127.0.0.1:8000/latest-features?symbol=BTC/USD"
 curl "http://127.0.0.1:8000/predict?symbol=BTC/USD"
 curl "http://127.0.0.1:8000/regime?symbol=BTC/USD"
 curl "http://127.0.0.1:8000/signal?symbol=BTC/USD"
+curl "http://127.0.0.1:8000/freshness?symbol=BTC/USD"
 curl "http://127.0.0.1:8000/metrics"
 ```
 
@@ -478,6 +512,27 @@ Example `GET /predict` response:
   "confidence": 0.61,
   "regime_label": "TREND_UP",
   "regime_run_id": "20260320T165813Z"
+}
+```
+
+Example `GET /freshness` response:
+
+```json
+{
+  "symbol": "BTC/USD",
+  "row_id": "BTC/USD|2026-03-21T11:55:00Z",
+  "interval_begin": "2026-03-21T11:55:00Z",
+  "as_of_time": "2026-03-21T12:00:00Z",
+  "health_overall_status": "HEALTHY",
+  "freshness_status": "FRESH",
+  "reason_code": "HEALTH_HEALTHY",
+  "feature_freshness_status": "FRESH",
+  "feature_reason_code": "FEATURE_FRESH",
+  "feature_age_seconds": 0.0,
+  "regime_freshness_status": "FRESH",
+  "regime_reason_code": "REGIME_FRESH",
+  "regime_age_seconds": 0.0,
+  "detail": "Exact-row regime resolution succeeded"
 }
 ```
 
@@ -549,6 +604,11 @@ M12 writes:
 - `artifacts/live/startup_checklist.json`
 - `artifacts/live/live_status.json`
 
+M13 writes:
+- `artifacts/reliability/health_snapshot.json`
+- `artifacts/reliability/freshness_summary.json`
+- `artifacts/reliability/recovery_events.jsonl`
+
 The dashboard shows the configured execution mode, a strong `LIVE` banner when `mode: live`, the current live safety state, and recent live order audit rows. This is a guarded live foundation only; stale-data protection and recovery maturity remain deferred.
 
 ### 13. Run the M6 Streamlit dashboard
@@ -593,7 +653,12 @@ Example `GET /signal` response:
   "model_name": "logistic_regression",
   "regime_label": "TREND_UP",
   "regime_run_id": "20260320T165813Z",
-  "trade_allowed": true
+  "trade_allowed": true,
+  "signal_status": "MODEL_SIGNAL",
+  "decision_source": "model",
+  "reason_code": "HEALTH_HEALTHY",
+  "freshness_status": "FRESH",
+  "health_overall_status": "HEALTHY"
 }
 ```
 
@@ -785,6 +850,19 @@ docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELE
 docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT execution_mode, lifecycle_state, broker_name, external_status, COUNT(*) AS event_rows FROM execution_order_events GROUP BY execution_mode, lifecycle_state, broker_name, external_status ORDER BY execution_mode, lifecycle_state, broker_name, external_status;"
 ```
 
+For M13 reliability checks:
+
+```powershell
+Get-Content configs\reliability.yaml
+curl "http://127.0.0.1:8000/freshness?symbol=BTC/USD"
+Get-Content artifacts\reliability\health_snapshot.json
+Get-Content artifacts\reliability\freshness_summary.json
+Get-Content artifacts\reliability\recovery_events.jsonl
+docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT service_name, component_name, heartbeat_at, health_overall_status, reason_code FROM service_heartbeats ORDER BY heartbeat_at DESC LIMIT 20;"
+docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT service_name, component_name, breaker_state, health_overall_status, reason_code, updated_at FROM reliability_state ORDER BY updated_at DESC;"
+docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT service_name, component_name, event_type, reason_code, event_time FROM reliability_events ORDER BY event_time DESC LIMIT 20;"
+```
+
 ## Inspect Topics
 
 Open Redpanda Console at [http://localhost:8080](http://localhost:8080).
@@ -844,6 +922,7 @@ docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c \"SEL
 - M7 rollback only switches the promoted champion pointer and does not mutate old promoted snapshots.
 - M9 resolves regimes from the latest saved M8 thresholds artifact by default; there is no online threshold fitting or adaptive retuning.
 - M12 guarded live mirrors only the explicit due order-request path through the broker adapter. Stale-feed protection, recovery orchestration, and richer broker reconciliation are intentionally deferred.
+- M13 Packet 2 adds freshness, breakers, and stale pending-signal recovery, but it intentionally does not add alert routing, stale-data live blocking, or automatic recovery orchestration yet.
 - This is still a single-broker local stack for development, not a highly available deployment.
 
 ## M12 Guarded Live Validation

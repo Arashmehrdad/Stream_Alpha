@@ -10,6 +10,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from app.reliability.schemas import RecoveryEvent, ReliabilityState, ServiceHeartbeat
 from app.trading.config import PaperTradingConfig, RiskConfig
 from app.trading.runner import PaperTradingRunner
 from app.trading.schemas import (
@@ -17,6 +18,7 @@ from app.trading.schemas import (
     OrderLifecycleEvent,
     OrderRequest,
     PaperEngineState,
+    PendingSignalState,
     ServiceRiskState,
     SignalDecision,
 )
@@ -73,6 +75,9 @@ class FakeRepository:  # pylint: disable=too-many-instance-attributes
         self.ledger = []
         self.risk_state = None
         self.risk_decisions = []
+        self.reliability_states = {}
+        self.reliability_events = []
+        self.heartbeats = []
         self.order_requests: dict[str, OrderRequest] = {}
         self.order_events: dict[tuple[int, str], OrderLifecycleEvent] = {}
         self.position_id = 0
@@ -139,6 +144,17 @@ class FakeRepository:  # pylint: disable=too-many-instance-attributes
     async def save_engine_state(self, state) -> None:
         self.states[state.symbol] = state
 
+    async def fetch_latest_feature_row(
+        self,
+        *,
+        symbol: str,
+        source_exchange: str,
+        interval_minutes: int,
+    ):
+        del source_exchange, interval_minutes
+        matching = [row for row in self.candles if row.symbol == symbol]
+        return None if not matching else matching[-1]
+
     async def load_service_risk_state(self, *, service_name: str, execution_mode: str):
         del service_name, execution_mode
         return self.risk_state
@@ -148,6 +164,23 @@ class FakeRepository:  # pylint: disable=too-many-instance-attributes
 
     async def insert_risk_decision(self, entry) -> None:
         self.risk_decisions.append(entry)
+
+    async def load_reliability_state(self, *, service_name: str, component_name: str):
+        del service_name
+        return self.reliability_states.get(component_name)
+
+    async def save_reliability_state(self, state: ReliabilityState) -> None:
+        self.reliability_states[state.component_name] = state
+
+    async def insert_reliability_event(self, event: RecoveryEvent) -> RecoveryEvent:
+        stored = replace(event, event_id=len(self.reliability_events) + 1)
+        self.reliability_events.append(stored)
+        return stored
+
+    async def save_service_heartbeat(self, heartbeat: ServiceHeartbeat) -> ServiceHeartbeat:
+        stored = replace(heartbeat, heartbeat_id=len(self.heartbeats) + 1)
+        self.heartbeats.append(stored)
+        return stored
 
     async def load_positions(self, *, service_name: str, execution_mode: str):
         del service_name, execution_mode
@@ -176,11 +209,15 @@ class FakeRepository:  # pylint: disable=too-many-instance-attributes
 
 
 class FakeSignalClient:
+    def __init__(self) -> None:
+        self.calls = 0
+
     async def close(self) -> None:
         return None
 
     async def fetch_signal(self, *, symbol: str, interval_begin):
         del symbol
+        self.calls += 1
         first_candle = _candle(0).interval_begin
         signal = "BUY" if interval_begin == first_candle else "HOLD"
         return SignalDecision(
@@ -242,3 +279,75 @@ def test_runner_persists_one_risk_decision_per_processed_signal(tmp_path: Path) 
 
     assert len(repository.risk_decisions) == 2
     assert len(repository.order_requests) == 1
+
+
+def test_runner_startup_clears_stale_pending_signal_and_records_recovery_event(
+    tmp_path: Path,
+) -> None:
+    repository = FakeRepository([_candle(0), _candle(1), _candle(2)])
+    repository.states["BTC/USD"] = PaperEngineState(
+        service_name="paper-trader",
+        symbol="BTC/USD",
+        pending_signal=PendingSignalState(
+            signal="BUY",
+            signal_interval_begin=_candle(0).interval_begin,
+            signal_as_of_time=_candle(0).as_of_time,
+            row_id=f"BTC/USD|{_candle(0).interval_begin.isoformat().replace('+00:00', 'Z')}",
+            reason="buy",
+            prob_up=0.7,
+            prob_down=0.3,
+            confidence=0.7,
+            predicted_class="UP",
+            model_name="logistic_regression",
+            regime_label="TREND_UP",
+            approved_notional=1000.0,
+            risk_outcome="APPROVED",
+            risk_reason_codes=("BUY_APPROVED",),
+        ),
+    )
+    runner = PaperTradingRunner(
+        config=_config(tmp_path),
+        repository=repository,
+        signal_client=FakeSignalClient(),
+    )
+
+    asyncio.run(runner.startup())
+
+    assert repository.states["BTC/USD"].pending_signal is None
+    assert repository.reliability_events
+    assert repository.reliability_events[-1].reason_code == (
+        "RECOVERY_STALE_PENDING_SIGNAL_CLEARED"
+    )
+    assert repository.heartbeats
+    asyncio.run(runner.shutdown())
+
+
+def test_runner_skips_signal_fetch_when_breaker_is_open(tmp_path: Path) -> None:
+    repository = FakeRepository([_candle(0)])
+    signal_client = FakeSignalClient()
+    repository.reliability_states["signal_client"] = ReliabilityState(
+        service_name="paper-trader",
+        component_name="signal_client",
+        health_overall_status="UNAVAILABLE",
+        freshness_status="STALE",
+        breaker_state="OPEN",
+        failure_count=3,
+        success_count=0,
+        opened_at=datetime.now(timezone.utc),
+        reason_code="SIGNAL_FETCH_FAILED",
+        detail="breaker open",
+    )
+    runner = PaperTradingRunner(
+        config=_config(tmp_path),
+        repository=repository,
+        signal_client=signal_client,
+    )
+
+    asyncio.run(runner.run_once())
+
+    assert signal_client.calls == 0
+    assert len(repository.risk_decisions) == 0
+    assert repository.reliability_events
+    assert repository.reliability_events[-1].reason_code == (
+        "SIGNAL_FETCH_SKIPPED_BREAKER_OPEN"
+    )

@@ -21,6 +21,8 @@ from app.trading.repository import (
     LIVE_SAFETY_TABLE,
     ORDER_EVENTS_TABLE,
     POSITIONS_TABLE,
+    RELIABILITY_EVENTS_TABLE,
+    RELIABILITY_STATE_TABLE,
     STATE_TABLE,
 )
 from app.trading.schemas import PaperPosition
@@ -59,6 +61,9 @@ class ApiHealthSnapshot:
     regime_artifact_path: str | None = None
     database: str | None = None
     started_at: datetime | None = None
+    health_overall_status: str | None = None
+    reason_code: str | None = None
+    freshness_status: str | None = None
     error: str | None = None
 
 
@@ -83,6 +88,34 @@ class SignalSnapshot:
     trade_allowed: bool | None = None
     buy_threshold: float | None = None
     sell_threshold: float | None = None
+    signal_status: str | None = None
+    decision_source: str | None = None
+    reason_code: str | None = None
+    freshness_status: str | None = None
+    health_overall_status: str | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class FreshnessSnapshot:
+    """Exact-row freshness snapshot from the M13 `/freshness` endpoint."""
+
+    symbol: str
+    checked_at: datetime
+    available: bool
+    row_id: str | None = None
+    interval_begin: datetime | None = None
+    as_of_time: datetime | None = None
+    health_overall_status: str | None = None
+    freshness_status: str | None = None
+    reason_code: str | None = None
+    feature_freshness_status: str | None = None
+    feature_reason_code: str | None = None
+    feature_age_seconds: float | None = None
+    regime_freshness_status: str | None = None
+    regime_reason_code: str | None = None
+    regime_age_seconds: float | None = None
+    detail: str | None = None
     error: str | None = None
 
 
@@ -171,6 +204,37 @@ class LiveSafetySnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class ReliabilityStateSnapshot:
+    """Read-only trader-side reliability breaker state."""
+
+    service_name: str
+    component_name: str
+    health_overall_status: str
+    freshness_status: str | None
+    breaker_state: str
+    failure_count: int
+    success_count: int
+    reason_code: str | None
+    detail: str | None
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class RecoveryEventSnapshot:
+    """Latest persisted reliability or recovery event."""
+
+    service_name: str
+    component_name: str
+    event_type: str
+    event_time: datetime
+    reason_code: str
+    health_overall_status: str | None = None
+    freshness_status: str | None = None
+    breaker_state: str | None = None
+    detail: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class EngineStateSnapshot:
     """Persisted per-symbol paper-trading engine state."""
 
@@ -197,6 +261,8 @@ class DatabaseSnapshot:
     recent_order_events: tuple[OrderAuditSnapshot, ...] = field(default_factory=tuple)
     engine_states: tuple[EngineStateSnapshot, ...] = field(default_factory=tuple)
     live_safety_state: LiveSafetySnapshot | None = None
+    reliability_states: tuple[ReliabilityStateSnapshot, ...] = field(default_factory=tuple)
+    latest_recovery_event: RecoveryEventSnapshot | None = None
     latest_prices: dict[str, float] = field(default_factory=dict)
     cash_balance: float | None = None
     error: str | None = None
@@ -208,6 +274,7 @@ class DashboardSnapshot:
 
     api_health: ApiHealthSnapshot
     signals: tuple[SignalSnapshot, ...]
+    freshness: tuple[FreshnessSnapshot, ...]
     database: DatabaseSnapshot
 
 
@@ -232,6 +299,8 @@ class DashboardDataSources:
         self._state_table = _quote_table_name(STATE_TABLE)
         self._order_events_table = _quote_table_name(ORDER_EVENTS_TABLE)
         self._live_safety_table = _quote_table_name(LIVE_SAFETY_TABLE)
+        self._reliability_state_table = _quote_table_name(RELIABILITY_STATE_TABLE)
+        self._reliability_events_table = _quote_table_name(RELIABILITY_EVENTS_TABLE)
 
     async def load_snapshot(self) -> DashboardSnapshot:
         """Load one point-in-time dashboard snapshot from API and PostgreSQL."""
@@ -246,10 +315,12 @@ class DashboardDataSources:
     async def _load_with_http_client(self, http_client: Any) -> DashboardSnapshot:
         api_health = await self._load_api_health(http_client)
         signals = await self._load_signals(http_client)
+        freshness = await self._load_freshness(http_client)
         database = await self._load_database_snapshot()
         return DashboardSnapshot(
             api_health=api_health,
             signals=signals,
+            freshness=freshness,
             database=database,
         )
 
@@ -296,6 +367,19 @@ class DashboardDataSources:
             ),
             database=None if payload.get("database") is None else str(payload["database"]),
             started_at=started_at,
+            health_overall_status=(
+                None
+                if payload.get("health_overall_status") is None
+                else str(payload["health_overall_status"])
+            ),
+            reason_code=(
+                None if payload.get("reason_code") is None else str(payload["reason_code"])
+            ),
+            freshness_status=(
+                None
+                if payload.get("freshness_status") is None
+                else str(payload["freshness_status"])
+            ),
             error=None if response.status_code == 200 else f"HTTP {response.status_code}",
         )
 
@@ -325,6 +409,33 @@ class DashboardDataSources:
                     )
                 )
         return tuple(signals)
+
+    async def _load_freshness(self, http_client: Any) -> tuple[FreshnessSnapshot, ...]:
+        freshness_rows: list[FreshnessSnapshot] = []
+        for symbol in self._trading_config.symbols:
+            checked_at = utc_now()
+            try:
+                response = await http_client.get("/freshness", params={"symbol": symbol})
+                if response.status_code != 200:
+                    raise RuntimeError(f"HTTP {response.status_code}")
+                payload = response.json()
+                freshness_rows.append(
+                    _freshness_from_payload(
+                        symbol=symbol,
+                        payload=payload,
+                        checked_at=checked_at,
+                    )
+                )
+            except Exception as error:  # pylint: disable=broad-exception-caught
+                freshness_rows.append(
+                    FreshnessSnapshot(
+                        symbol=symbol,
+                        checked_at=checked_at,
+                        available=False,
+                        error=str(error),
+                    )
+                )
+        return tuple(freshness_rows)
 
     async def _load_database_snapshot(self) -> DatabaseSnapshot:  # pylint: disable=too-many-locals
         # One read-only snapshot is easier to reason about than interleaved queries
@@ -426,6 +537,29 @@ class DashboardDataSources:
                 self._trading_config.service_name,
                 self._trading_config.execution.mode,
             )
+            reliability_state_rows = await connection.fetch(
+                f"""
+                SELECT service_name, component_name, health_overall_status,
+                       freshness_status, breaker_state, failure_count,
+                       success_count, reason_code, details, updated_at
+                FROM {self._reliability_state_table}
+                WHERE service_name = $1
+                ORDER BY component_name ASC
+                """,
+                self._trading_config.service_name,
+            )
+            latest_recovery_row = await connection.fetchrow(
+                f"""
+                SELECT service_name, component_name, event_type, event_time,
+                       reason_code, health_overall_status, freshness_status,
+                       breaker_state, details
+                FROM {self._reliability_events_table}
+                WHERE service_name = $1
+                ORDER BY event_time DESC, id DESC
+                LIMIT 1
+                """,
+                self._trading_config.service_name,
+            )
             cash_delta = float(
                 await connection.fetchval(
                     f"""
@@ -463,6 +597,14 @@ class DashboardDataSources:
         live_safety_state = (
             None if live_safety_row is None else _live_safety_from_row(live_safety_row)
         )
+        reliability_states = tuple(
+            _reliability_state_from_row(row) for row in reliability_state_rows
+        )
+        latest_recovery_event = (
+            None
+            if latest_recovery_row is None
+            else _recovery_event_from_row(latest_recovery_row)
+        )
         latest_prices = {row.symbol: row.close_price for row in latest_features}
         return DatabaseSnapshot(
             available=True,
@@ -474,6 +616,8 @@ class DashboardDataSources:
             recent_order_events=recent_order_events,
             engine_states=engine_states,
             live_safety_state=live_safety_state,
+            reliability_states=reliability_states,
+            latest_recovery_event=latest_recovery_event,
             latest_prices=latest_prices,
             cash_balance=self._trading_config.risk.initial_cash + cash_delta,
         )
@@ -541,6 +685,67 @@ def _signal_from_payload(
         ),
         buy_threshold=float(thresholds["buy_prob_up"]),
         sell_threshold=float(thresholds["sell_prob_up"]),
+        signal_status=(
+            None if payload.get("signal_status") is None else str(payload["signal_status"])
+        ),
+        decision_source=(
+            None
+            if payload.get("decision_source") is None
+            else str(payload["decision_source"])
+        ),
+        reason_code=(
+            None if payload.get("reason_code") is None else str(payload["reason_code"])
+        ),
+        freshness_status=(
+            None
+            if payload.get("freshness_status") is None
+            else str(payload["freshness_status"])
+        ),
+        health_overall_status=(
+            None
+            if payload.get("health_overall_status") is None
+            else str(payload["health_overall_status"])
+        ),
+    )
+
+
+def _freshness_from_payload(
+    *,
+    symbol: str,
+    payload: Mapping[str, Any],
+    checked_at: datetime,
+) -> FreshnessSnapshot:
+    interval_begin = None
+    if isinstance(payload.get("interval_begin"), str):
+        interval_begin = parse_rfc3339(str(payload["interval_begin"]))
+    as_of_time = None
+    if isinstance(payload.get("as_of_time"), str):
+        as_of_time = parse_rfc3339(str(payload["as_of_time"]))
+    return FreshnessSnapshot(
+        symbol=symbol,
+        checked_at=checked_at,
+        available=True,
+        row_id=None if payload.get("row_id") is None else str(payload["row_id"]),
+        interval_begin=interval_begin,
+        as_of_time=as_of_time,
+        health_overall_status=str(payload["health_overall_status"]),
+        freshness_status=str(payload["freshness_status"]),
+        reason_code=str(payload["reason_code"]),
+        feature_freshness_status=str(payload["feature_freshness_status"]),
+        feature_reason_code=str(payload["feature_reason_code"]),
+        feature_age_seconds=(
+            None
+            if payload.get("feature_age_seconds") is None
+            else float(payload["feature_age_seconds"])
+        ),
+        regime_freshness_status=str(payload["regime_freshness_status"]),
+        regime_reason_code=str(payload["regime_reason_code"]),
+        regime_age_seconds=(
+            None
+            if payload.get("regime_age_seconds") is None
+            else float(payload["regime_age_seconds"])
+        ),
+        detail=None if payload.get("detail") is None else str(payload["detail"]),
     )
 
 
@@ -709,4 +914,43 @@ def _live_safety_from_row(row: Mapping[str, Any]) -> LiveSafetySnapshot:
             else str(row["last_failure_reason"])
         ),
         updated_at=row["updated_at"],
+    )
+
+
+def _reliability_state_from_row(row: Mapping[str, Any]) -> ReliabilityStateSnapshot:
+    return ReliabilityStateSnapshot(
+        service_name=str(row["service_name"]),
+        component_name=str(row["component_name"]),
+        health_overall_status=str(row["health_overall_status"]),
+        freshness_status=(
+            None if row["freshness_status"] is None else str(row["freshness_status"])
+        ),
+        breaker_state=str(row["breaker_state"]),
+        failure_count=int(row["failure_count"]),
+        success_count=int(row["success_count"]),
+        reason_code=None if row["reason_code"] is None else str(row["reason_code"]),
+        detail=None if row["details"] is None else str(row["details"]),
+        updated_at=row["updated_at"],
+    )
+
+
+def _recovery_event_from_row(row: Mapping[str, Any]) -> RecoveryEventSnapshot:
+    return RecoveryEventSnapshot(
+        service_name=str(row["service_name"]),
+        component_name=str(row["component_name"]),
+        event_type=str(row["event_type"]),
+        event_time=row["event_time"],
+        reason_code=str(row["reason_code"]),
+        health_overall_status=(
+            None
+            if row["health_overall_status"] is None
+            else str(row["health_overall_status"])
+        ),
+        freshness_status=(
+            None if row["freshness_status"] is None else str(row["freshness_status"])
+        ),
+        breaker_state=(
+            None if row["breaker_state"] is None else str(row["breaker_state"])
+        ),
+        detail=None if row["details"] is None else str(row["details"]),
     )

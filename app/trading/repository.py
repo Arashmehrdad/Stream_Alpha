@@ -778,8 +778,37 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                 symbol,
                 interval_minutes,
                 last_processed_interval_begin,
-            )
+        )
         return [_candle_from_row(row) for row in rows]
+
+    async def fetch_latest_feature_row(
+        self,
+        *,
+        symbol: str,
+        source_exchange: str,
+        interval_minutes: int,
+    ) -> FeatureCandle | None:
+        """Load the latest finalized canonical feature row for one symbol."""
+        pool = self._require_pool()
+        row = await pool.fetchrow(
+            f"""
+            SELECT id, source_exchange, symbol, interval_minutes, interval_begin,
+                   interval_end, as_of_time, raw_event_id, open_price,
+                   high_price, low_price, close_price, realized_vol_12
+            FROM {self._source_table}
+            WHERE source_exchange = $1
+              AND symbol = $2
+              AND interval_minutes = $3
+            ORDER BY as_of_time DESC, interval_begin DESC
+            LIMIT 1
+            """,
+            source_exchange,
+            symbol,
+            interval_minutes,
+        )
+        if row is None:
+            return None
+        return _candle_from_row(row)
 
     async def load_open_positions(
         self,

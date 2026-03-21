@@ -136,6 +136,29 @@ class _HealthyHttpClient:
                     "regime_artifact_path": "artifacts/regime/m8/20260320T120000Z/thresholds.json",
                     "database": "healthy",
                     "started_at": "2026-03-20T12:00:00Z",
+                    "health_overall_status": "HEALTHY",
+                    "reason_code": "HEALTH_HEALTHY",
+                    "freshness_status": "FRESH",
+                },
+            )
+        if path == "/freshness":
+            return _Response(
+                200,
+                {
+                    "symbol": "BTC/USD",
+                    "row_id": "BTC/USD|2026-03-20T11:55:00Z",
+                    "interval_begin": "2026-03-20T11:55:00Z",
+                    "as_of_time": "2026-03-20T12:00:00Z",
+                    "health_overall_status": "HEALTHY",
+                    "freshness_status": "FRESH",
+                    "reason_code": "HEALTH_HEALTHY",
+                    "feature_freshness_status": "FRESH",
+                    "feature_reason_code": "FEATURE_FRESH",
+                    "feature_age_seconds": 0.0,
+                    "regime_freshness_status": "FRESH",
+                    "regime_reason_code": "REGIME_FRESH",
+                    "regime_age_seconds": 0.0,
+                    "detail": "Exact-row regime resolution succeeded",
                 },
             )
         return _Response(
@@ -155,6 +178,11 @@ class _HealthyHttpClient:
                 "regime_label": "TREND_UP",
                 "regime_run_id": "20260320T120000Z",
                 "trade_allowed": True,
+                "signal_status": "MODEL_SIGNAL",
+                "decision_source": "model",
+                "reason_code": "HEALTH_HEALTHY",
+                "freshness_status": "FRESH",
+                "health_overall_status": "HEALTHY",
             },
         )
 
@@ -193,8 +221,11 @@ def test_dashboard_snapshot_parses_regime_fields_from_api_payloads() -> None:
 
     assert snapshot.api_health.regime_loaded is True
     assert snapshot.api_health.regime_run_id == "20260320T120000Z"
+    assert snapshot.api_health.health_overall_status == "HEALTHY"
     assert snapshot.signals[0].regime_label == "TREND_UP"
     assert snapshot.signals[0].trade_allowed is True
+    assert snapshot.signals[0].decision_source == "model"
+    assert snapshot.freshness[0].freshness_status == "FRESH"
 
 
 class _RecordingConnection:

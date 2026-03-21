@@ -21,8 +21,11 @@ FEED_FRESH = "FEED_FRESH"
 FEED_STALE = "FEED_STALE"
 FEATURE_FRESH = "FEATURE_FRESH"
 FEATURE_STALE = "FEATURE_STALE"
+FEATURE_ROW_MISSING = "FEATURE_ROW_MISSING"
+FEATURE_INPUTS_MISSING = "FEATURE_INPUTS_MISSING"
 REGIME_FRESH = "REGIME_FRESH"
 REGIME_STALE = "REGIME_STALE"
+REGIME_ROW_INCOMPATIBLE = "REGIME_ROW_INCOMPATIBLE"
 HEALTH_HEALTHY = "HEALTH_HEALTHY"
 HEALTH_DEGRADED_FRESHNESS = "HEALTH_DEGRADED_FRESHNESS"
 HEALTH_UNAVAILABLE_BREAKER_OPEN = "HEALTH_UNAVAILABLE_BREAKER_OPEN"
@@ -31,6 +34,14 @@ BREAKER_HALF_OPENED = "BREAKER_HALF_OPENED"
 BREAKER_RESTORED = "BREAKER_RESTORED"
 BREAKER_REOPENED = "BREAKER_REOPENED"
 BREAKER_CLOSED = "BREAKER_CLOSED"
+SIGNAL_FETCH_FAILED = "SIGNAL_FETCH_FAILED"
+SIGNAL_FETCH_SKIPPED_BREAKER_OPEN = "SIGNAL_FETCH_SKIPPED_BREAKER_OPEN"
+RECOVERY_STALE_PENDING_SIGNAL_CLEARED = "RECOVERY_STALE_PENDING_SIGNAL_CLEARED"
+RELIABILITY_HOLD_MISSING_FEATURE_ROW = "RELIABILITY_HOLD_MISSING_FEATURE_ROW"
+RELIABILITY_HOLD_STALE_FEATURE_ROW = "RELIABILITY_HOLD_STALE_FEATURE_ROW"
+RELIABILITY_HOLD_INPUTS_MISSING = "RELIABILITY_HOLD_INPUTS_MISSING"
+SERVICE_HEARTBEAT_HEALTHY = "SERVICE_HEARTBEAT_HEALTHY"
+SERVICE_HEARTBEAT_DEGRADED = "SERVICE_HEARTBEAT_DEGRADED"
 PENDING_SIGNAL_VALID = "PENDING_SIGNAL_VALID"
 PENDING_SIGNAL_EXPIRED = "PENDING_SIGNAL_EXPIRED"
 
@@ -74,15 +85,36 @@ def evaluate_regime_freshness(
     observed_at: datetime | None,
     evaluated_at: datetime,
     max_age_seconds: int,
+    exact_row_resolved: bool,
+    detail: str | None = None,
 ) -> FreshnessStatus:
-    """Evaluate regime freshness with explicit reason codes."""
-    return _evaluate_freshness(
+    """Evaluate regime freshness from exact-row compatibility, not artifact age alone."""
+    age_seconds = (
+        None
+        if observed_at is None
+        else max(0.0, (evaluated_at - observed_at).total_seconds())
+    )
+    if not exact_row_resolved:
+        return FreshnessStatus(
+            component_name="regime",
+            freshness_status="STALE" if observed_at is not None else "UNKNOWN",
+            observed_at=observed_at,
+            evaluated_at=evaluated_at,
+            age_seconds=age_seconds,
+            max_age_seconds=max_age_seconds,
+            reason_code=REGIME_ROW_INCOMPATIBLE,
+            detail=detail or "Exact-row regime resolution failed",
+        )
+
+    return FreshnessStatus(
         component_name="regime",
+        freshness_status="FRESH",
         observed_at=observed_at,
         evaluated_at=evaluated_at,
+        age_seconds=age_seconds,
         max_age_seconds=max_age_seconds,
-        fresh_reason=REGIME_FRESH,
-        stale_reason=REGIME_STALE,
+        reason_code=REGIME_FRESH,
+        detail=detail or "Exact-row regime resolution succeeded",
     )
 
 
