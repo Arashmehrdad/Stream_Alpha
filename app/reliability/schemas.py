@@ -134,3 +134,56 @@ class ReliabilityHealthSnapshot:
     reason_code: str
     freshness_status: FreshnessLevel
     symbols: tuple[SymbolFreshnessSnapshot, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True, slots=True)
+class FeatureLagSnapshot:
+    """Inspectable per-symbol feature consumer lag state."""
+
+    service_name: str
+    component_name: str
+    symbol: str
+    evaluated_at: datetime
+    latest_raw_event_received_at: datetime | None
+    latest_feature_interval_begin: datetime | None
+    latest_feature_as_of_time: datetime | None
+    time_lag_seconds: float | None
+    processing_lag_seconds: float | None
+    time_lag_reason_code: str
+    processing_lag_reason_code: str
+    lag_breach: bool
+    health_overall_status: HealthOverallStatus
+    reason_code: str
+    detail: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ServiceHealthSnapshot:
+    """Latest heartbeat-driven health summary for one runtime component."""
+
+    service_name: str
+    component_name: str
+    checked_at: datetime
+    heartbeat_at: datetime | None
+    heartbeat_age_seconds: float | None
+    heartbeat_freshness_status: FreshnessLevel
+    health_overall_status: HealthOverallStatus
+    reason_code: str
+    detail: str | None = None
+    feed_freshness_status: FreshnessLevel | None = None
+    feed_reason_code: str | None = None
+    feed_age_seconds: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SystemReliabilitySnapshot:
+    """Canonical cross-service reliability summary for operators."""
+
+    service_name: str
+    checked_at: datetime
+    health_overall_status: HealthOverallStatus
+    reason_codes: tuple[str, ...] = field(default_factory=tuple)
+    lag_breach_active: bool = False
+    services: tuple[ServiceHealthSnapshot, ...] = field(default_factory=tuple)
+    lag_by_symbol: tuple[FeatureLagSnapshot, ...] = field(default_factory=tuple)
+    latest_recovery_event: RecoveryEvent | None = None

@@ -13,15 +13,20 @@ from dashboards.data_sources import (
     DashboardSnapshot,
     DatabaseSnapshot,
     EngineStateSnapshot,
+    FeatureLagSummarySnapshot,
     FreshnessSnapshot,
     LiveSafetySnapshot,
     OrderAuditSnapshot,
     RecoveryEventSnapshot,
     ReliabilityStateSnapshot,
     SignalSnapshot,
+    ServiceHealthSummarySnapshot,
+    SystemReliabilitySnapshot,
 )
 from dashboards.view_models import (
+    build_feature_lag_rows,
     build_reliability_status_rows,
+    build_service_health_rows,
     build_drawdown_curve_rows,
     build_equity_curve_rows,
     build_latest_signal_rows,
@@ -367,6 +372,7 @@ def test_reliability_rows_surface_breaker_and_latest_recovery_event() -> None:
             health_overall_status="DEGRADED",
             reason_code="HEALTH_DEGRADED_FRESHNESS",
         ),
+        system_reliability=None,
         reliability_states=(
             ReliabilityStateSnapshot(
                 service_name="paper-trader",
@@ -397,12 +403,124 @@ def test_reliability_rows_surface_breaker_and_latest_recovery_event() -> None:
     assert rows == [
         {
             "overall_health": "DEGRADED",
-            "health_reason_code": "HEALTH_DEGRADED_FRESHNESS",
+            "health_reason_codes": "HEALTH_DEGRADED_FRESHNESS",
+            "lag_breach_active": None,
             "breaker_state": "OPEN",
             "breaker_reason_code": "SIGNAL_FETCH_FAILED",
             "latest_recovery_event_type": "PENDING_SIGNAL_EXPIRED",
             "latest_recovery_reason_code": "RECOVERY_STALE_PENDING_SIGNAL_CLEARED",
             "latest_recovery_time": "2026-03-21T12:00:00Z",
+        }
+    ]
+
+
+def test_service_health_and_feature_lag_rows_surface_canonical_summary() -> None:
+    checked_at = datetime(2026, 3, 21, 12, 0, tzinfo=timezone.utc)
+    system_reliability = SystemReliabilitySnapshot(
+        available=True,
+        checked_at=checked_at,
+        service_name="streamalpha",
+        health_overall_status="DEGRADED",
+        reason_codes=("SIGNAL_FETCH_FAILED", "FEATURE_LAG_BREACH"),
+        lag_breach_active=True,
+        services=(
+            ServiceHealthSummarySnapshot(
+                service_name="producer",
+                component_name="producer",
+                checked_at=checked_at,
+                heartbeat_at=checked_at,
+                heartbeat_age_seconds=0.0,
+                heartbeat_freshness_status="FRESH",
+                health_overall_status="HEALTHY",
+                reason_code="SERVICE_HEARTBEAT_HEALTHY",
+                detail="producer healthy",
+                feed_freshness_status="FRESH",
+                feed_reason_code="FEED_FRESH",
+                feed_age_seconds=0.0,
+            ),
+        ),
+        lag_by_symbol=(
+            FeatureLagSummarySnapshot(
+                service_name="features",
+                component_name="features",
+                symbol="BTC/USD",
+                evaluated_at=checked_at,
+                latest_raw_event_received_at=checked_at,
+                latest_feature_interval_begin=checked_at - timedelta(minutes=5),
+                latest_feature_as_of_time=checked_at - timedelta(minutes=5),
+                time_lag_seconds=600.0,
+                processing_lag_seconds=600.0,
+                time_lag_reason_code="FEATURE_TIME_LAG_BREACH",
+                processing_lag_reason_code="FEATURE_PROCESSING_LAG_BREACH",
+                lag_breach=True,
+                health_overall_status="DEGRADED",
+                reason_code="FEATURE_LAG_BREACH",
+                detail="lag breach",
+            ),
+        ),
+        latest_recovery_event=RecoveryEventSnapshot(
+            service_name="features",
+            component_name="BTC/USD",
+            event_type="FEATURE_LAG_TRANSITION",
+            event_time=checked_at,
+            reason_code="FEATURE_LAG_BREACH_DETECTED",
+            health_overall_status="DEGRADED",
+            freshness_status="STALE",
+            detail="lag breach",
+        ),
+    )
+
+    reliability_rows = build_reliability_status_rows(
+        api_health=ApiHealthSnapshot(
+            available=True,
+            checked_at=checked_at,
+            status="degraded",
+            health_overall_status="DEGRADED",
+            reason_code="HEALTH_DEGRADED_FRESHNESS",
+        ),
+        system_reliability=system_reliability,
+        reliability_states=tuple(),
+        latest_recovery_event=None,
+    )
+    service_rows = build_service_health_rows(system_reliability)
+    lag_rows = build_feature_lag_rows(system_reliability)
+
+    assert reliability_rows == [
+        {
+            "overall_health": "DEGRADED",
+            "health_reason_codes": "SIGNAL_FETCH_FAILED,FEATURE_LAG_BREACH",
+            "lag_breach_active": True,
+            "latest_recovery_event_type": "FEATURE_LAG_TRANSITION",
+            "latest_recovery_reason_code": "FEATURE_LAG_BREACH_DETECTED",
+            "latest_recovery_time": "2026-03-21T12:00:00Z",
+        }
+    ]
+    assert service_rows == [
+        {
+            "service_name": "producer",
+            "component_name": "producer",
+            "health_overall_status": "HEALTHY",
+            "heartbeat_freshness_status": "FRESH",
+            "heartbeat_age_seconds": 0.0,
+            "reason_code": "SERVICE_HEARTBEAT_HEALTHY",
+            "feed_freshness_status": "FRESH",
+            "feed_age_seconds": 0.0,
+            "detail": "producer healthy",
+        }
+    ]
+    assert lag_rows == [
+        {
+            "symbol": "BTC/USD",
+            "lag_breach": True,
+            "health_overall_status": "DEGRADED",
+            "reason_code": "FEATURE_LAG_BREACH",
+            "time_lag_seconds": 600.0,
+            "time_lag_reason_code": "FEATURE_TIME_LAG_BREACH",
+            "processing_lag_seconds": 600.0,
+            "processing_lag_reason_code": "FEATURE_PROCESSING_LAG_BREACH",
+            "latest_raw_event_received_at": "2026-03-21T12:00:00Z",
+            "latest_feature_as_of_time": "2026-03-21T11:55:00Z",
+            "detail": "lag breach",
         }
     ]
 

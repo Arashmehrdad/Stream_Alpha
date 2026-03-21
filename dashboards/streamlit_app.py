@@ -13,7 +13,9 @@ from app.trading.config import load_paper_trading_config
 from dashboards.data_sources import DashboardDataSources
 from dashboards.view_models import (
     age_text,
+    build_feature_lag_rows,
     build_reliability_status_rows,
+    build_service_health_rows,
     build_drawdown_curve_rows,
     build_equity_curve_rows,
     build_feature_snapshot_rows,
@@ -89,9 +91,12 @@ def main() -> None:
     )
     reliability_rows = build_reliability_status_rows(
         api_health=snapshot.api_health,
+        system_reliability=snapshot.system_reliability,
         reliability_states=snapshot.database.reliability_states,
         latest_recovery_event=snapshot.database.latest_recovery_event,
     )
+    service_health_rows = build_service_health_rows(snapshot.system_reliability)
+    lag_rows = build_feature_lag_rows(snapshot.system_reliability)
     freshness_rows = build_symbol_freshness_rows(snapshot.freshness)
 
     with overview_tab:
@@ -100,6 +105,8 @@ def main() -> None:
             snapshot=snapshot,
             latest_signals=latest_signals,
             reliability_rows=reliability_rows,
+            service_health_rows=service_health_rows,
+            lag_rows=lag_rows,
             freshness_rows=freshness_rows,
         )
 
@@ -118,12 +125,14 @@ def main() -> None:
         )
 
 # pylint: disable=too-many-locals
-def _render_overview(
+def _render_overview(  # pylint: disable=too-many-arguments
     *,
     trading_config,
     snapshot,
     latest_signals,
     reliability_rows,
+    service_health_rows,
+    lag_rows,
     freshness_rows,
 ) -> None:
     health_columns = st.columns(4)
@@ -173,6 +182,12 @@ def _render_overview(
             healthy=trader_freshness.state == "healthy",
         )
 
+    if snapshot.system_reliability is None or not snapshot.system_reliability.available:
+        st.warning(
+            "Canonical reliability summary is unavailable. "
+            "The dashboard is showing fallback degraded state where possible."
+        )
+
     if overview_metrics is None:
         st.error("Trading KPIs are unavailable because PostgreSQL could not be read.")
     else:
@@ -191,6 +206,8 @@ def _render_overview(
 
     render_table("Latest Signals", latest_signals)
     render_table("Reliability Status", reliability_rows)
+    render_table("Per-Service Health", service_health_rows)
+    render_table("Feature Consumer Lag", lag_rows)
     render_table("Per-Symbol Freshness", freshness_rows)
     if api_health.regime_loaded:
         st.caption(

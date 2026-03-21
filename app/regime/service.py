@@ -305,7 +305,7 @@ def build_by_symbol_summary(
     return summary_rows
 
 
-def build_overall_summary(
+def build_overall_summary(  # pylint: disable=too-many-arguments
     *,
     created_at: datetime,
     run_id: str,
@@ -341,7 +341,7 @@ def build_overall_summary(
     }
 
 
-def build_run_manifest(
+def build_run_manifest(  # pylint: disable=too-many-arguments
     *,
     artifact_dir: Path,
     created_at: datetime,

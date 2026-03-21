@@ -235,6 +235,61 @@ class RecoveryEventSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class ServiceHealthSummarySnapshot:
+    """Per-service status from the canonical reliability summary endpoint."""
+
+    service_name: str
+    component_name: str
+    checked_at: datetime
+    heartbeat_at: datetime | None
+    heartbeat_age_seconds: float | None
+    heartbeat_freshness_status: str
+    health_overall_status: str
+    reason_code: str
+    detail: str | None = None
+    feed_freshness_status: str | None = None
+    feed_reason_code: str | None = None
+    feed_age_seconds: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class FeatureLagSummarySnapshot:
+    """Per-symbol feature lag status from the canonical reliability summary."""
+
+    service_name: str
+    component_name: str
+    symbol: str
+    evaluated_at: datetime
+    latest_raw_event_received_at: datetime | None
+    latest_feature_interval_begin: datetime | None
+    latest_feature_as_of_time: datetime | None
+    time_lag_seconds: float | None
+    processing_lag_seconds: float | None
+    time_lag_reason_code: str
+    processing_lag_reason_code: str
+    lag_breach: bool
+    health_overall_status: str
+    reason_code: str
+    detail: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SystemReliabilitySnapshot:
+    """Canonical cross-service reliability snapshot from the API."""
+
+    available: bool
+    checked_at: datetime
+    service_name: str | None = None
+    health_overall_status: str | None = None
+    reason_codes: tuple[str, ...] = field(default_factory=tuple)
+    lag_breach_active: bool | None = None
+    services: tuple[ServiceHealthSummarySnapshot, ...] = field(default_factory=tuple)
+    lag_by_symbol: tuple[FeatureLagSummarySnapshot, ...] = field(default_factory=tuple)
+    latest_recovery_event: RecoveryEventSnapshot | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class EngineStateSnapshot:
     """Persisted per-symbol paper-trading engine state."""
 
@@ -276,6 +331,7 @@ class DashboardSnapshot:
     signals: tuple[SignalSnapshot, ...]
     freshness: tuple[FreshnessSnapshot, ...]
     database: DatabaseSnapshot
+    system_reliability: SystemReliabilitySnapshot | None = None
 
 
 class DashboardDataSources:
@@ -314,6 +370,7 @@ class DashboardDataSources:
 
     async def _load_with_http_client(self, http_client: Any) -> DashboardSnapshot:
         api_health = await self._load_api_health(http_client)
+        system_reliability = await self._load_system_reliability(http_client)
         signals = await self._load_signals(http_client)
         freshness = await self._load_freshness(http_client)
         database = await self._load_database_snapshot()
@@ -322,6 +379,7 @@ class DashboardDataSources:
             signals=signals,
             freshness=freshness,
             database=database,
+            system_reliability=system_reliability,
         )
 
     async def _load_api_health(self, http_client: Any) -> ApiHealthSnapshot:
@@ -382,6 +440,21 @@ class DashboardDataSources:
             ),
             error=None if response.status_code == 200 else f"HTTP {response.status_code}",
         )
+
+    async def _load_system_reliability(self, http_client: Any) -> SystemReliabilitySnapshot:
+        checked_at = utc_now()
+        try:
+            response = await http_client.get("/reliability/system")
+            payload = response.json()
+            if response.status_code != 200:
+                raise RuntimeError(f"HTTP {response.status_code}")
+        except Exception as error:  # pylint: disable=broad-exception-caught
+            return SystemReliabilitySnapshot(
+                available=False,
+                checked_at=checked_at,
+                error=str(error),
+            )
+        return _system_reliability_from_payload(payload=payload, checked_at=checked_at)
 
     async def _load_signals(self, http_client: Any) -> tuple[SignalSnapshot, ...]:
         signals: list[SignalSnapshot] = []
@@ -749,6 +822,134 @@ def _freshness_from_payload(
     )
 
 
+def _system_reliability_from_payload(
+    *,
+    payload: Mapping[str, Any],
+    checked_at: datetime,
+) -> SystemReliabilitySnapshot:
+    latest_recovery_event_payload = payload.get("latest_recovery_event")
+    latest_recovery_event = None
+    if isinstance(latest_recovery_event_payload, Mapping):
+        latest_recovery_event = _recovery_event_from_row(
+            latest_recovery_event_payload
+        )
+    services_payload = payload.get("services", [])
+    lag_payload = payload.get("lag_by_symbol", [])
+    return SystemReliabilitySnapshot(
+        available=True,
+        checked_at=checked_at,
+        service_name=(
+            None if payload.get("service_name") is None else str(payload["service_name"])
+        ),
+        health_overall_status=(
+            None
+            if payload.get("health_overall_status") is None
+            else str(payload["health_overall_status"])
+        ),
+        reason_codes=tuple(str(code) for code in payload.get("reason_codes", [])),
+        lag_breach_active=(
+            None
+            if payload.get("lag_breach_active") is None
+            else bool(payload["lag_breach_active"])
+        ),
+        services=tuple(
+            _service_health_from_payload(service_payload)
+            for service_payload in services_payload
+            if isinstance(service_payload, Mapping)
+        ),
+        lag_by_symbol=tuple(
+            _feature_lag_from_payload(lag_snapshot)
+            for lag_snapshot in lag_payload
+            if isinstance(lag_snapshot, Mapping)
+        ),
+        latest_recovery_event=latest_recovery_event,
+    )
+
+
+def _service_health_from_payload(
+    payload: Mapping[str, Any],
+) -> ServiceHealthSummarySnapshot:
+    heartbeat_at = None
+    if isinstance(payload.get("heartbeat_at"), str):
+        heartbeat_at = parse_rfc3339(str(payload["heartbeat_at"]))
+    checked_at = (
+        utc_now()
+        if not isinstance(payload.get("checked_at"), str)
+        else parse_rfc3339(str(payload["checked_at"]))
+    )
+    return ServiceHealthSummarySnapshot(
+        service_name=str(payload["service_name"]),
+        component_name=str(payload["component_name"]),
+        checked_at=checked_at,
+        heartbeat_at=heartbeat_at,
+        heartbeat_age_seconds=(
+            None
+            if payload.get("heartbeat_age_seconds") is None
+            else float(payload["heartbeat_age_seconds"])
+        ),
+        heartbeat_freshness_status=str(payload["heartbeat_freshness_status"]),
+        health_overall_status=str(payload["health_overall_status"]),
+        reason_code=str(payload["reason_code"]),
+        detail=None if payload.get("detail") is None else str(payload["detail"]),
+        feed_freshness_status=(
+            None
+            if payload.get("feed_freshness_status") is None
+            else str(payload["feed_freshness_status"])
+        ),
+        feed_reason_code=(
+            None if payload.get("feed_reason_code") is None else str(payload["feed_reason_code"])
+        ),
+        feed_age_seconds=(
+            None
+            if payload.get("feed_age_seconds") is None
+            else float(payload["feed_age_seconds"])
+        ),
+    )
+
+
+def _feature_lag_from_payload(
+    payload: Mapping[str, Any],
+) -> FeatureLagSummarySnapshot:
+    latest_raw_event_received_at = None
+    if isinstance(payload.get("latest_raw_event_received_at"), str):
+        latest_raw_event_received_at = parse_rfc3339(
+            str(payload["latest_raw_event_received_at"])
+        )
+    latest_feature_interval_begin = None
+    if isinstance(payload.get("latest_feature_interval_begin"), str):
+        latest_feature_interval_begin = parse_rfc3339(
+            str(payload["latest_feature_interval_begin"])
+        )
+    latest_feature_as_of_time = None
+    if isinstance(payload.get("latest_feature_as_of_time"), str):
+        latest_feature_as_of_time = parse_rfc3339(
+            str(payload["latest_feature_as_of_time"])
+        )
+    return FeatureLagSummarySnapshot(
+        service_name=str(payload["service_name"]),
+        component_name=str(payload["component_name"]),
+        symbol=str(payload["symbol"]),
+        evaluated_at=parse_rfc3339(str(payload["evaluated_at"])),
+        latest_raw_event_received_at=latest_raw_event_received_at,
+        latest_feature_interval_begin=latest_feature_interval_begin,
+        latest_feature_as_of_time=latest_feature_as_of_time,
+        time_lag_seconds=(
+            None if payload.get("time_lag_seconds") is None else float(payload["time_lag_seconds"])
+        ),
+        processing_lag_seconds=(
+            None
+            if payload.get("processing_lag_seconds") is None
+            else float(payload["processing_lag_seconds"])
+        ),
+        time_lag_reason_code=str(payload["time_lag_reason_code"]),
+        processing_lag_reason_code=str(payload["processing_lag_reason_code"]),
+        lag_breach=bool(payload["lag_breach"]),
+        health_overall_status=str(payload["health_overall_status"]),
+        reason_code=str(payload["reason_code"]),
+        detail=None if payload.get("detail") is None else str(payload["detail"]),
+    )
+
+
 def _feature_row_from_mapping(row: Mapping[str, Any]) -> LatestFeatureSnapshot:
     return LatestFeatureSnapshot(
         symbol=str(row["symbol"]),
@@ -935,11 +1136,15 @@ def _reliability_state_from_row(row: Mapping[str, Any]) -> ReliabilityStateSnaps
 
 
 def _recovery_event_from_row(row: Mapping[str, Any]) -> RecoveryEventSnapshot:
+    event_time = row["event_time"]
+    if isinstance(event_time, str):
+        event_time = parse_rfc3339(event_time)
+    detail = row.get("details", row.get("detail"))
     return RecoveryEventSnapshot(
         service_name=str(row["service_name"]),
         component_name=str(row["component_name"]),
         event_type=str(row["event_type"]),
-        event_time=row["event_time"],
+        event_time=event_time,
         reason_code=str(row["reason_code"]),
         health_overall_status=(
             None
@@ -952,5 +1157,5 @@ def _recovery_event_from_row(row: Mapping[str, Any]) -> RecoveryEventSnapshot:
         breaker_state=(
             None if row["breaker_state"] is None else str(row["breaker_state"])
         ),
-        detail=None if row["details"] is None else str(row["details"]),
+        detail=None if detail is None else str(detail),
     )

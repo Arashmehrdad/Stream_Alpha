@@ -183,3 +183,67 @@ class MetricsResponse(BaseModel):
     health_overall_status: str | None = None
     reason_code: str | None = None
     freshness_summary: dict[str, dict[str, str | float | None]] | None = None
+
+
+class ReliabilityEventResponse(BaseModel):
+    """Operator-facing reliability event payload."""
+
+    service_name: str
+    component_name: str
+    event_type: str
+    event_time: datetime
+    reason_code: str
+    health_overall_status: str | None = None
+    freshness_status: str | None = None
+    breaker_state: str | None = None
+    detail: str | None = None
+
+
+class ServiceReliabilityResponse(BaseModel):
+    """Per-service heartbeat summary for the canonical reliability endpoint."""
+
+    service_name: str
+    component_name: str
+    checked_at: datetime
+    heartbeat_at: datetime | None
+    heartbeat_age_seconds: float | None
+    heartbeat_freshness_status: str
+    health_overall_status: str
+    reason_code: str
+    detail: str | None = None
+    feed_freshness_status: str | None = None
+    feed_reason_code: str | None = None
+    feed_age_seconds: float | None = None
+
+
+class FeatureLagResponse(BaseModel):
+    """Per-symbol feature consumer lag payload."""
+
+    service_name: str
+    component_name: str
+    symbol: str
+    evaluated_at: datetime
+    latest_raw_event_received_at: datetime | None
+    latest_feature_interval_begin: datetime | None
+    latest_feature_as_of_time: datetime | None
+    time_lag_seconds: float | None
+    processing_lag_seconds: float | None
+    time_lag_reason_code: str
+    processing_lag_reason_code: str
+    lag_breach: bool
+    health_overall_status: str
+    reason_code: str
+    detail: str | None = None
+
+
+class SystemReliabilityResponse(BaseModel):
+    """Canonical cross-service reliability summary."""
+
+    service_name: str
+    checked_at: datetime
+    health_overall_status: str
+    reason_codes: list[str]
+    lag_breach_active: bool
+    services: list[ServiceReliabilityResponse]
+    lag_by_symbol: list[FeatureLagResponse]
+    latest_recovery_event: ReliabilityEventResponse | None = None

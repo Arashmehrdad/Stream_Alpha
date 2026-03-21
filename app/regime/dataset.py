@@ -80,8 +80,12 @@ async def _load_regime_dataset_with_fallback(
             last_error = error
             continue
     if last_error is None:
-        raise ValueError("No PostgreSQL DSN candidates were available for regime loading")
-    raise ValueError(f"Could not connect to PostgreSQL for regime loading: {last_error}") from last_error
+        raise ValueError(
+            "No PostgreSQL DSN candidates were available for regime loading"
+        )
+    raise ValueError(
+        f"Could not connect to PostgreSQL for regime loading: {last_error}"
+    ) from last_error
 
 
 async def _load_regime_dataset(dsn: str, config: RegimeConfig) -> RegimeDataset:

@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from time import perf_counter
@@ -31,6 +31,7 @@ from app.reliability.schemas import (
     FreshnessStatus,
     ReliabilityHealthSnapshot,
     ServiceHeartbeat,
+    SystemReliabilitySnapshot,
     SymbolFreshnessSnapshot,
 )
 from app.reliability.service import (
@@ -43,12 +44,19 @@ from app.reliability.service import (
     SERVICE_HEARTBEAT_DEGRADED,
     SERVICE_HEARTBEAT_HEALTHY,
     aggregate_health_status,
+    aggregate_system_reliability,
+    build_service_health_snapshot,
+    build_signal_client_health_snapshot,
     evaluate_feature_freshness,
     evaluate_regime_freshness,
 )
 from app.reliability.store import ReliabilityStore
 from app.regime.live import LiveRegimeRuntime, load_live_regime_runtime
+from app.trading.config import load_paper_trading_config
 from app.training.registry import resolve_inference_model_path
+
+
+_PAPER_TRADING_CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "paper_trading.yaml"
 
 
 class InvalidSymbolError(ValueError):
@@ -198,6 +206,7 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
             thresholds_path=settings.inference.regime_thresholds_path,
             signal_policy_path=settings.inference.regime_signal_policy_path,
         )
+        self.trading_config = load_paper_trading_config(_PAPER_TRADING_CONFIG_PATH)
         self._symbols = set(settings.kraken.symbols)
         self._last_heartbeat_at: datetime | None = None
         self._validate_thresholds()
@@ -501,6 +510,138 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
             freshness_summary=freshness_summary,
         )
 
+    async def system_reliability_snapshot(
+        self,
+    ) -> tuple[int, SystemReliabilitySnapshot]:
+        """Return the canonical cross-service reliability summary."""
+        evaluated_at = utc_now()
+        try:
+            await self._refresh_inference_health_snapshot(evaluated_at)
+            producer_heartbeat = await self.reliability_store.load_latest_service_heartbeat(
+                service_name=self.settings.service_name,
+                component_name="producer",
+            )
+            feature_heartbeat = await self.reliability_store.load_latest_service_heartbeat(
+                service_name=self.settings.features.service_name,
+                component_name="features",
+            )
+            inference_heartbeat = await self.reliability_store.load_latest_service_heartbeat(
+                service_name=self.settings.inference.service_name,
+                component_name="inference",
+            )
+            trading_runner_heartbeat = (
+                await self.reliability_store.load_latest_service_heartbeat(
+                    service_name=self.trading_config.service_name,
+                    component_name="trading_runner",
+                )
+            )
+            signal_client_state = await self.reliability_store.load_reliability_state(
+                service_name=self.trading_config.service_name,
+                component_name="signal_client",
+            )
+            lag_by_symbol = await self.reliability_store.load_feature_lag_states(
+                service_name=self.settings.features.service_name,
+                component_name="features",
+            )
+            latest_recovery_event = await self.reliability_store.load_latest_recovery_event()
+        except Exception:  # pylint: disable=broad-exception-caught
+            snapshot = SystemReliabilitySnapshot(
+                service_name=self.settings.app_name,
+                checked_at=evaluated_at,
+                health_overall_status="UNAVAILABLE",
+                reason_codes=("DATABASE_UNAVAILABLE",),
+                lag_breach_active=False,
+                services=(),
+                lag_by_symbol=(),
+                latest_recovery_event=None,
+            )
+            self._write_system_reliability_artifact(snapshot)
+            return 503, snapshot
+
+        snapshot = aggregate_system_reliability(
+            service_name=self.settings.app_name,
+            evaluated_at=evaluated_at,
+            services=(
+                build_service_health_snapshot(
+                    service_name=self.settings.service_name,
+                    component_name="producer",
+                    heartbeat=producer_heartbeat,
+                    evaluated_at=evaluated_at,
+                    heartbeat_stale_after_seconds=(
+                        self.reliability_config.heartbeat.stale_after_seconds
+                    ),
+                    feed_max_age_seconds=self.reliability_config.freshness.feed_max_age_seconds,
+                ),
+                build_service_health_snapshot(
+                    service_name=self.settings.features.service_name,
+                    component_name="features",
+                    heartbeat=feature_heartbeat,
+                    evaluated_at=evaluated_at,
+                    heartbeat_stale_after_seconds=(
+                        self.reliability_config.heartbeat.stale_after_seconds
+                    ),
+                ),
+                build_service_health_snapshot(
+                    service_name=self.settings.inference.service_name,
+                    component_name="inference",
+                    heartbeat=inference_heartbeat,
+                    evaluated_at=evaluated_at,
+                    heartbeat_stale_after_seconds=(
+                        self.reliability_config.heartbeat.stale_after_seconds
+                    ),
+                ),
+                build_service_health_snapshot(
+                    service_name=self.trading_config.service_name,
+                    component_name="trading_runner",
+                    heartbeat=trading_runner_heartbeat,
+                    evaluated_at=evaluated_at,
+                    heartbeat_stale_after_seconds=(
+                        self.reliability_config.heartbeat.stale_after_seconds
+                    ),
+                ),
+                build_signal_client_health_snapshot(
+                    service_name=self.trading_config.service_name,
+                    component_name="signal_client",
+                    state=signal_client_state,
+                    evaluated_at=evaluated_at,
+                    heartbeat_stale_after_seconds=(
+                        self.reliability_config.heartbeat.stale_after_seconds
+                    ),
+                ),
+            ),
+            lag_by_symbol=lag_by_symbol,
+            latest_recovery_event=latest_recovery_event,
+        )
+        try:
+            await self.reliability_store.save_system_reliability_state(snapshot)
+        except Exception:  # pylint: disable=broad-exception-caught
+            pass
+        self._write_system_reliability_artifact(snapshot)
+        return 200, snapshot
+
+    async def _refresh_inference_health_snapshot(
+        self,
+        evaluated_at: datetime,
+    ) -> ReliabilityHealthSnapshot:
+        """Refresh the inference heartbeat before cross-service aggregation."""
+        freshness_rows = await self._freshness_summary_rows(evaluated_at=evaluated_at)
+        health_snapshot = self._build_health_snapshot(
+            freshness_rows,
+            checked_at=evaluated_at,
+        )
+        await self._maybe_write_service_heartbeat(
+            health_overall_status=health_snapshot.health_overall_status,
+            reason_code=(
+                SERVICE_HEARTBEAT_HEALTHY
+                if health_snapshot.health_overall_status == "HEALTHY"
+                else SERVICE_HEARTBEAT_DEGRADED
+            ),
+            detail=health_snapshot.reason_code,
+            observed_at=health_snapshot.checked_at,
+        )
+        self._write_health_artifacts(health_snapshot)
+        return health_snapshot
+
     async def freshness_response(
         self,
         *,
@@ -656,9 +797,12 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
         except ValueError as error:
             raise ArtifactSchemaMismatchError(str(error)) from error
 
-    async def _freshness_summary_rows(self) -> list[FreshnessEvaluation]:
+    async def _freshness_summary_rows(
+        self,
+        evaluated_at: datetime | None = None,
+    ) -> list[FreshnessEvaluation]:
         rows: list[FreshnessEvaluation] = []
-        evaluated_at = utc_now()
+        effective_evaluated_at = utc_now() if evaluated_at is None else evaluated_at
         for symbol in self.settings.kraken.symbols:
             row = await self.latest_feature_row(symbol)
             rows.append(
@@ -666,7 +810,7 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
                     symbol=symbol,
                     row=row,
                     interval_begin=None,
-                    evaluated_at=evaluated_at,
+                    evaluated_at=effective_evaluated_at,
                 )
             )
         return rows
@@ -781,6 +925,8 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
     def _build_health_snapshot(
         self,
         freshness_rows: list[FreshnessEvaluation],
+        *,
+        checked_at: datetime | None = None,
     ) -> ReliabilityHealthSnapshot:
         overall_status = (
             "HEALTHY"
@@ -807,7 +953,7 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
         )
         return ReliabilityHealthSnapshot(
             service_name=self.settings.inference.service_name,
-            checked_at=utc_now(),
+            checked_at=utc_now() if checked_at is None else checked_at,
             health_overall_status=overall_status,
             reason_code=reason_code,
             freshness_status=freshness_status,
@@ -922,6 +1068,15 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
                 )
                 for symbol in health_snapshot.symbols
             ]
+        )
+
+    def _write_system_reliability_artifact(
+        self,
+        system_snapshot: SystemReliabilitySnapshot,
+    ) -> None:
+        write_json_artifact(
+            self.reliability_config.artifacts.system_health_path,
+            asdict(system_snapshot),
         )
 
     def _write_freshness_artifact(

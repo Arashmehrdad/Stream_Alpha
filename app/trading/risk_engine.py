@@ -330,7 +330,7 @@ def build_pending_signal_state(
     return None
 
 
-def build_risk_decision_log_entry(
+def build_risk_decision_log_entry(  # pylint: disable=too-many-arguments
     *,
     service_name: str,
     execution_mode: str,

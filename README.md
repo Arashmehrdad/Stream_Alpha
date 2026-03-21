@@ -24,7 +24,7 @@ Milestone `M11` adds a minimum execution abstraction after M10 risk approval. It
 
 Milestone `M12` adds a guarded live trading foundation on top of the accepted execution layer. It adds a third `live` adapter mode for Alpaca Trading API account validation and order submission, requires explicit runtime arming plus local safety checks before any broker submission, keeps live orders tiny and whitelisted, and writes startup/live-status artifacts plus explicit live audit rows.
 
-Milestone `M13` foundation adds explicit reliability and recovery state around the accepted runtime paths. Packet 1 adds checked-in reliability config, typed freshness and breaker primitives, and additive PostgreSQL reliability tables. Packet 2 wires heartbeats, exact-row freshness evaluation, a trader-side inference breaker, stale pending-signal recovery, reliability artifacts, and compact dashboard reliability views without changing M4, M10, M11, or M12 authority boundaries.
+Milestone `M13` foundation adds explicit reliability and recovery state around the accepted runtime paths. Packet 1 adds checked-in reliability config, typed freshness and breaker primitives, and additive PostgreSQL reliability tables. Packet 2 wires heartbeats, exact-row freshness evaluation, a trader-side inference breaker, stale pending-signal recovery, reliability artifacts, and compact dashboard reliability views. Packet 3 finalizes M13 with explicit feature-consumer lag detection, canonical cross-service health aggregation, feed-freshness visibility, and one unified operator-facing reliability summary without changing M4, M10, M11, or M12 authority boundaries.
 
 ## Repository Tree
 
@@ -359,6 +359,23 @@ M13 Packet 2 does not do:
 - add alert routing, deployment profiles, or a new orchestration stack
 - add stale-feed live blocking, recovery daemons, or explainability payload expansion
 
+M13 Packet 3 does:
+- track finalized feature time lag per symbol from `evaluated_at - latest_feature_as_of_time`
+- track feature consumer processing lag per symbol from `latest_raw_event_received_at - latest_feature_as_of_time`
+- persist lag snapshots under `reliability_lag_state` with explicit lag breach reason codes
+- use producer heartbeat exchange-activity timestamps so feed staleness is visible in aggregate health
+- add canonical cross-service aggregation across `producer`, `features`, `inference`, `trading_runner`, and `signal_client`
+- persist canonical system snapshots under `reliability_system_state`
+- add read-only `GET /reliability/system`
+- write `artifacts/reliability/system_health.json` and `artifacts/reliability/lag_summary.json`
+- surface one overall reliability status, per-service heartbeat health, lag breach state, and the latest recovery event in the existing dashboard
+
+M13 Packet 3 does not do:
+- change M4 prediction or signal generation authority
+- change M10 risk approval or sizing authority
+- change M11/M12 execution routing or live safety controls
+- add alert routing, deployment profiles, explainability, RL, sentiment/news, or strategy rewrites
+
 ## Environment Variables
 
 Copy `.env.example` to `.env` before running the stack.
@@ -492,6 +509,7 @@ curl "http://127.0.0.1:8000/predict?symbol=BTC/USD"
 curl "http://127.0.0.1:8000/regime?symbol=BTC/USD"
 curl "http://127.0.0.1:8000/signal?symbol=BTC/USD"
 curl "http://127.0.0.1:8000/freshness?symbol=BTC/USD"
+curl "http://127.0.0.1:8000/reliability/system"
 curl "http://127.0.0.1:8000/metrics"
 ```
 
@@ -608,8 +626,10 @@ M13 writes:
 - `artifacts/reliability/health_snapshot.json`
 - `artifacts/reliability/freshness_summary.json`
 - `artifacts/reliability/recovery_events.jsonl`
+- `artifacts/reliability/system_health.json`
+- `artifacts/reliability/lag_summary.json`
 
-The dashboard shows the configured execution mode, a strong `LIVE` banner when `mode: live`, the current live safety state, and recent live order audit rows. This is a guarded live foundation only; stale-data protection and recovery maturity remain deferred.
+The dashboard shows the configured execution mode, a strong `LIVE` banner when `mode: live`, the current live safety state, recent live order audit rows, and the canonical M13 reliability summary. This remains a guarded live foundation; alert routing and automatic recovery orchestration are still intentionally deferred.
 
 ### 13. Run the M6 Streamlit dashboard
 
@@ -628,6 +648,7 @@ The dashboard defaults to [http://localhost:8501](http://localhost:8501).
 ```powershell
 curl "http://127.0.0.1:8000/health"
 curl "http://127.0.0.1:8000/signal?symbol=BTC/USD"
+curl "http://127.0.0.1:8000/reliability/system"
 docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT COUNT(*) AS feature_rows FROM feature_ohlc;"
 docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT COUNT(*) AS open_positions FROM paper_positions WHERE status = 'OPEN';"
 docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT COUNT(*) AS ledger_rows FROM paper_trade_ledger;"
@@ -850,18 +871,70 @@ docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELE
 docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT execution_mode, lifecycle_state, broker_name, external_status, COUNT(*) AS event_rows FROM execution_order_events GROUP BY execution_mode, lifecycle_state, broker_name, external_status ORDER BY execution_mode, lifecycle_state, broker_name, external_status;"
 ```
 
-For M13 reliability checks:
+## M13 Reliability Validation
+
+1. Verify stale input downgrade to `HOLD`.
+Use an exact `interval_begin` whose canonical row is older than `freshness.feature_max_age_seconds`, then confirm the inference API refuses to return a model-driven decision for that row.
+
+```powershell
+docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT symbol, interval_begin, as_of_time FROM feature_ohlc ORDER BY as_of_time ASC LIMIT 5;"
+curl "http://127.0.0.1:8000/signal?symbol=BTC/USD&interval_begin=<older interval_begin>"
+```
+
+Expect `signal=HOLD`, `decision_source=reliability`, and `reason_code=RELIABILITY_HOLD_STALE_FEATURE_ROW` or `RELIABILITY_HOLD_MISSING_FEATURE_ROW`.
+
+2. Verify stale pending-signal cleanup on restart.
+Seed one stale `pending_signal_action` in `paper_engine_state`, restart the runner once, then confirm the carried signal was cleared and audited as a recovery action.
+
+```powershell
+python scripts\run_paper_trader.py --config configs\paper_trading.yaml --once
+docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT symbol, pending_signal_action, pending_signal_interval_begin FROM paper_engine_state ORDER BY symbol;"
+docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT component_name, event_type, reason_code, event_time FROM reliability_events WHERE reason_code = 'RECOVERY_STALE_PENDING_SIGNAL_CLEARED' ORDER BY event_time DESC LIMIT 10;"
+```
+
+3. Verify signal-client breaker transitions.
+Temporarily make the inference API unreachable for the runner, run the trader until signal fetches fail, then restore the API and run again so the breaker can recover.
+
+```powershell
+docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT component_name, breaker_state, health_overall_status, reason_code, updated_at FROM reliability_state WHERE component_name = 'signal_client';"
+docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT component_name, event_type, reason_code, event_time FROM reliability_events WHERE component_name = 'signal_client' ORDER BY event_time DESC LIMIT 10;"
+```
+
+Expect explicit `OPEN`, `HALF_OPEN`, and `CLOSED` transitions plus persisted transition events.
+
+4. Verify heartbeat persistence.
+All core services should continue writing additive heartbeats without changing their authority boundaries.
 
 ```powershell
 Get-Content configs\reliability.yaml
-curl "http://127.0.0.1:8000/freshness?symbol=BTC/USD"
+docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT service_name, component_name, heartbeat_at, health_overall_status, reason_code FROM service_heartbeats ORDER BY heartbeat_at DESC LIMIT 20;"
 Get-Content artifacts\reliability\health_snapshot.json
 Get-Content artifacts\reliability\freshness_summary.json
-Get-Content artifacts\reliability\recovery_events.jsonl
-docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT service_name, component_name, heartbeat_at, health_overall_status, reason_code FROM service_heartbeats ORDER BY heartbeat_at DESC LIMIT 20;"
-docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT service_name, component_name, breaker_state, health_overall_status, reason_code, updated_at FROM reliability_state ORDER BY updated_at DESC;"
-docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT service_name, component_name, event_type, reason_code, event_time FROM reliability_events ORDER BY event_time DESC LIMIT 20;"
 ```
+
+5. Verify lag breach visibility.
+Keep producer ingesting while the feature consumer is stopped for longer than the configured lag thresholds, then inspect the persisted lag state, lag artifact, and transition events.
+
+```powershell
+Get-Content configs\reliability.yaml
+Get-Content artifacts\reliability\lag_summary.json
+docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT symbol, health_overall_status, reason_code, time_lag_seconds, processing_lag_seconds, evaluated_at FROM reliability_lag_state ORDER BY symbol ASC;"
+docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT component_name, event_type, reason_code, event_time FROM reliability_events WHERE event_type = 'FEATURE_LAG_TRANSITION' ORDER BY event_time DESC LIMIT 10;"
+```
+
+Expect `lag_breach_active=true` and explicit lag reason codes such as `FEATURE_LAG_BREACH`, `FEATURE_TIME_LAG_BREACH`, and `FEATURE_PROCESSING_LAG_BREACH`.
+
+6. Verify the canonical reliability summary.
+The API, persisted snapshot, and dashboard should agree on one overall operator-visible view of producer, features, inference, runner, lag, feed freshness, and the latest recovery event.
+
+```powershell
+curl "http://127.0.0.1:8000/reliability/system"
+Get-Content artifacts\reliability\system_health.json
+Get-Content artifacts\reliability\recovery_events.jsonl
+docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT service_name, checked_at, health_overall_status, reason_codes, lag_breach_active FROM reliability_system_state ORDER BY checked_at DESC LIMIT 10;"
+```
+
+Expect one explicit overall status in `HEALTHY`, `DEGRADED`, or `UNAVAILABLE`, explicit aggregate reason codes, producer feed-freshness visibility, per-service heartbeat status, lag breach state, and the latest recovery event. The dashboard should show the same system-level summary in `Reliability Status`, `Per-Service Health`, and `Feature Consumer Lag`.
 
 ## Inspect Topics
 
@@ -922,7 +995,7 @@ docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c \"SEL
 - M7 rollback only switches the promoted champion pointer and does not mutate old promoted snapshots.
 - M9 resolves regimes from the latest saved M8 thresholds artifact by default; there is no online threshold fitting or adaptive retuning.
 - M12 guarded live mirrors only the explicit due order-request path through the broker adapter. Stale-feed protection, recovery orchestration, and richer broker reconciliation are intentionally deferred.
-- M13 Packet 2 adds freshness, breakers, and stale pending-signal recovery, but it intentionally does not add alert routing, stale-data live blocking, or automatic recovery orchestration yet.
+- M13 Packet 3 adds lag visibility and a canonical cross-service reliability summary, but it intentionally does not add alert routing, stale-data live blocking, or automatic recovery orchestration.
 - This is still a single-broker local stack for development, not a highly available deployment.
 
 ## M12 Guarded Live Validation

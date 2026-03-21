@@ -5,24 +5,36 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
 from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from aiokafka import AIOKafkaConsumer
 
 from app.common.config import Settings
-from app.common.time import utc_now
+from app.common.time import to_rfc3339, utc_now
 from app.features.db import FeatureStore
 from app.features.engine import MIN_FINALIZED_CANDLES
+from app.features.models import FeatureOhlcRow
 from app.features.models import deserialize_ohlc_event
 from app.features.state import FeatureStateManager
+from app.reliability.artifacts import append_jsonl_artifact, write_json_artifact
 from app.reliability.config import default_reliability_config_path, load_reliability_config
-from app.reliability.schemas import ServiceHeartbeat
-from app.reliability.service import SERVICE_HEARTBEAT_DEGRADED, SERVICE_HEARTBEAT_HEALTHY
+from app.reliability.schemas import FeatureLagSnapshot, RecoveryEvent, ServiceHeartbeat
+from app.reliability.service import (
+    FEATURE_LAG_BREACH,
+    FEATURE_LAG_BREACH_CLEARED,
+    FEATURE_LAG_BREACH_DETECTED,
+    FEATURE_LAG_OK,
+    SERVICE_HEARTBEAT_DEGRADED,
+    SERVICE_HEARTBEAT_HEALTHY,
+    evaluate_feature_consumer_lag,
+)
 from app.reliability.store import ReliabilityStore
 
 
@@ -83,9 +95,14 @@ class FeatureConsumerService:  # pylint: disable=too-many-instance-attributes
             1,
             min(settings.features.finalization_grace_seconds, 5),
         )
+        self._lag_component_name = "features"
         self._last_feature_write_at = None
         self._last_event_received_at = None
         self._persisted_feature_rows = 0
+        self._latest_raw_event_received_at_by_symbol: dict[str, datetime] = {}
+        self._latest_feature_interval_begin_by_symbol: dict[str, datetime] = {}
+        self._latest_feature_as_of_time_by_symbol: dict[str, datetime] = {}
+        self._lag_breach_by_symbol: dict[str, bool] = {}
 
     def request_stop(self) -> None:
         """Trigger a graceful service shutdown."""
@@ -133,6 +150,11 @@ class FeatureConsumerService:  # pylint: disable=too-many-instance-attributes
     async def _bootstrap_state(self) -> None:
         bootstrap_now = utc_now()
         candles = await self.db.load_bootstrap_candles(self._bootstrap_candles)
+        for candle in candles:
+            self._record_raw_event_received(
+                symbol=candle.symbol,
+                received_at=candle.received_at,
+            )
         feature_rows = self.state.bootstrap(
             candles,
             now=bootstrap_now,
@@ -140,8 +162,7 @@ class FeatureConsumerService:  # pylint: disable=too-many-instance-attributes
         )
         for row in feature_rows:
             await self.db.upsert_feature_row(row)
-            self._last_feature_write_at = row.as_of_time
-            self._persisted_feature_rows += 1
+            self._record_feature_row_persisted(row)
         self.logger.info(
             "Feature bootstrap complete",
             extra={
@@ -206,12 +227,14 @@ class FeatureConsumerService:  # pylint: disable=too-many-instance-attributes
             )
             return
 
-        self._last_event_received_at = event.received_at
+        self._record_raw_event_received(
+            symbol=event.symbol,
+            received_at=event.received_at,
+        )
         feature_rows = self.state.apply_event(event, computed_at=utc_now())
         for row in feature_rows:
             await self.db.upsert_feature_row(row)
-            self._last_feature_write_at = row.as_of_time
-            self._persisted_feature_rows += 1
+            self._record_feature_row_persisted(row)
 
     async def _sweep_loop(self) -> None:
         while not self.stop_event.is_set():
@@ -219,8 +242,7 @@ class FeatureConsumerService:  # pylint: disable=too-many-instance-attributes
             feature_rows = self.state.sweep(now=current_time, computed_at=current_time)
             for row in feature_rows:
                 await self.db.upsert_feature_row(row)
-                self._last_feature_write_at = row.as_of_time
-                self._persisted_feature_rows += 1
+                self._record_feature_row_persisted(row)
 
             try:
                 await asyncio.wait_for(
@@ -249,36 +271,48 @@ class FeatureConsumerService:  # pylint: disable=too-many-instance-attributes
     async def _heartbeat_loop(self) -> None:
         while not self.stop_event.is_set():
             observed_at = utc_now()
+            lag_snapshots: list[FeatureLagSnapshot] = []
+            with suppress(Exception):
+                lag_snapshots = await self._sync_feature_lag_state(observed_at)
+            lag_breach_active = any(snapshot.lag_breach for snapshot in lag_snapshots)
+            lag_breach_symbols = [
+                snapshot.symbol
+                for snapshot in lag_snapshots
+                if snapshot.lag_breach
+            ]
+            if lag_breach_active:
+                heartbeat_status = "DEGRADED"
+                heartbeat_reason_code = FEATURE_LAG_BREACH
+            elif self._last_feature_write_at is not None:
+                heartbeat_status = "HEALTHY"
+                heartbeat_reason_code = SERVICE_HEARTBEAT_HEALTHY
+            else:
+                heartbeat_status = "DEGRADED"
+                heartbeat_reason_code = SERVICE_HEARTBEAT_DEGRADED
             detail = {
                 "last_event_received_at": (
                     None
                     if self._last_event_received_at is None
-                    else self._last_event_received_at.isoformat().replace("+00:00", "Z")
+                    else to_rfc3339(self._last_event_received_at)
                 ),
                 "last_feature_write_at": (
                     None
                     if self._last_feature_write_at is None
-                    else self._last_feature_write_at.isoformat().replace("+00:00", "Z")
+                    else to_rfc3339(self._last_feature_write_at)
                 ),
                 "persisted_feature_rows": self._persisted_feature_rows,
+                "lag_breach_active": lag_breach_active,
+                "lag_breach_symbols": lag_breach_symbols,
             }
             with suppress(Exception):
                 await self.reliability_store.save_service_heartbeat(
                     ServiceHeartbeat(
                         service_name=self.settings.features.service_name,
-                        component_name="features",
+                        component_name=self._lag_component_name,
                         heartbeat_at=observed_at,
-                        health_overall_status=(
-                            "HEALTHY"
-                            if self._last_feature_write_at is not None
-                            else "DEGRADED"
-                        ),
-                        reason_code=(
-                            SERVICE_HEARTBEAT_HEALTHY
-                            if self._last_feature_write_at is not None
-                            else SERVICE_HEARTBEAT_DEGRADED
-                        ),
-                        detail=str(detail),
+                        health_overall_status=heartbeat_status,
+                        reason_code=heartbeat_reason_code,
+                        detail=json.dumps(detail, sort_keys=True),
                     )
                 )
             try:
@@ -288,3 +322,193 @@ class FeatureConsumerService:  # pylint: disable=too-many-instance-attributes
                 )
             except asyncio.TimeoutError:
                 continue
+
+    def _record_raw_event_received(
+        self,
+        *,
+        symbol: str,
+        received_at: datetime,
+    ) -> None:
+        existing = self._latest_raw_event_received_at_by_symbol.get(symbol)
+        if existing is None or received_at > existing:
+            self._latest_raw_event_received_at_by_symbol[symbol] = received_at
+        if self._last_event_received_at is None or received_at > self._last_event_received_at:
+            self._last_event_received_at = received_at
+
+    def _record_feature_row_persisted(self, row: FeatureOhlcRow) -> None:
+        self._latest_feature_interval_begin_by_symbol[row.symbol] = row.interval_begin
+        self._latest_feature_as_of_time_by_symbol[row.symbol] = row.as_of_time
+        if self._last_feature_write_at is None or row.as_of_time > self._last_feature_write_at:
+            self._last_feature_write_at = row.as_of_time
+        self._persisted_feature_rows += 1
+
+    def _build_feature_lag_snapshots(
+        self,
+        evaluated_at: datetime,
+    ) -> list[FeatureLagSnapshot]:
+        return [
+            evaluate_feature_consumer_lag(
+                service_name=self.settings.features.service_name,
+                component_name=self._lag_component_name,
+                symbol=symbol,
+                evaluated_at=evaluated_at,
+                latest_raw_event_received_at=self._latest_raw_event_received_at_by_symbol.get(
+                    symbol
+                ),
+                latest_feature_interval_begin=self._latest_feature_interval_begin_by_symbol.get(
+                    symbol
+                ),
+                latest_feature_as_of_time=self._latest_feature_as_of_time_by_symbol.get(
+                    symbol
+                ),
+                feature_time_lag_max_seconds=(
+                    self.reliability_config.lag.feature_time_lag_max_seconds
+                ),
+                consumer_processing_lag_max_seconds=(
+                    self.reliability_config.lag.consumer_processing_lag_max_seconds
+                ),
+            )
+            for symbol in self.settings.kraken.symbols
+        ]
+
+    async def _sync_feature_lag_state(
+        self,
+        evaluated_at: datetime,
+    ) -> list[FeatureLagSnapshot]:
+        lag_snapshots = self._build_feature_lag_snapshots(evaluated_at)
+        for lag_snapshot in lag_snapshots:
+            await self.reliability_store.save_feature_lag_state(lag_snapshot)
+        await self._record_lag_transition_events(lag_snapshots)
+        self._write_lag_summary_artifact(
+            evaluated_at=evaluated_at,
+            lag_snapshots=lag_snapshots,
+        )
+        return lag_snapshots
+
+    async def _record_lag_transition_events(
+        self,
+        lag_snapshots: Sequence[FeatureLagSnapshot],
+    ) -> None:
+        for lag_snapshot in lag_snapshots:
+            previously_in_breach = self._lag_breach_by_symbol.get(lag_snapshot.symbol)
+            self._lag_breach_by_symbol[lag_snapshot.symbol] = lag_snapshot.lag_breach
+            symbol_observed = (
+                lag_snapshot.latest_raw_event_received_at is not None
+                or lag_snapshot.latest_feature_as_of_time is not None
+            )
+            if not symbol_observed:
+                continue
+            if previously_in_breach is None and not lag_snapshot.lag_breach:
+                continue
+            if previously_in_breach == lag_snapshot.lag_breach:
+                continue
+            await self._record_reliability_event(
+                RecoveryEvent(
+                    service_name=self.settings.features.service_name,
+                    component_name=lag_snapshot.symbol,
+                    event_type="FEATURE_LAG_TRANSITION",
+                    event_time=lag_snapshot.evaluated_at,
+                    reason_code=(
+                        FEATURE_LAG_BREACH_DETECTED
+                        if lag_snapshot.lag_breach
+                        else FEATURE_LAG_BREACH_CLEARED
+                    ),
+                    health_overall_status=lag_snapshot.health_overall_status,
+                    freshness_status="STALE" if lag_snapshot.lag_breach else "FRESH",
+                    breaker_state=None,
+                    detail=lag_snapshot.detail,
+                )
+            )
+
+    async def _record_reliability_event(self, event: RecoveryEvent) -> None:
+        await self.reliability_store.insert_reliability_event(event)
+        append_jsonl_artifact(
+            self.reliability_config.artifacts.recovery_events_path,
+            {
+                "service_name": event.service_name,
+                "component_name": event.component_name,
+                "event_type": event.event_type,
+                "event_time": to_rfc3339(event.event_time),
+                "reason_code": event.reason_code,
+                "health_overall_status": event.health_overall_status,
+                "freshness_status": event.freshness_status,
+                "breaker_state": event.breaker_state,
+                "detail": event.detail,
+            },
+        )
+
+    def _write_lag_summary_artifact(
+        self,
+        *,
+        evaluated_at: datetime,
+        lag_snapshots: Sequence[FeatureLagSnapshot],
+    ) -> None:
+        active_reason_codes = _unique_reason_codes(
+            [
+                lag_snapshot.reason_code
+                for lag_snapshot in lag_snapshots
+                if lag_snapshot.lag_breach
+            ]
+        )
+        write_json_artifact(
+            self.reliability_config.artifacts.lag_summary_path,
+            {
+                "generated_at": to_rfc3339(evaluated_at),
+                "service_name": self.settings.features.service_name,
+                "component_name": self._lag_component_name,
+                "lag_breach_active": any(
+                    lag_snapshot.lag_breach for lag_snapshot in lag_snapshots
+                ),
+                "reason_codes": (
+                    active_reason_codes if active_reason_codes else [FEATURE_LAG_OK]
+                ),
+                "thresholds": {
+                    "feature_time_lag_max_seconds": (
+                        self.reliability_config.lag.feature_time_lag_max_seconds
+                    ),
+                    "consumer_processing_lag_max_seconds": (
+                        self.reliability_config.lag.consumer_processing_lag_max_seconds
+                    ),
+                },
+                "symbols": [
+                    {
+                        "symbol": lag_snapshot.symbol,
+                        "evaluated_at": to_rfc3339(lag_snapshot.evaluated_at),
+                        "latest_raw_event_received_at": (
+                            None
+                            if lag_snapshot.latest_raw_event_received_at is None
+                            else to_rfc3339(lag_snapshot.latest_raw_event_received_at)
+                        ),
+                        "latest_feature_interval_begin": (
+                            None
+                            if lag_snapshot.latest_feature_interval_begin is None
+                            else to_rfc3339(lag_snapshot.latest_feature_interval_begin)
+                        ),
+                        "latest_feature_as_of_time": (
+                            None
+                            if lag_snapshot.latest_feature_as_of_time is None
+                            else to_rfc3339(lag_snapshot.latest_feature_as_of_time)
+                        ),
+                        "time_lag_seconds": lag_snapshot.time_lag_seconds,
+                        "processing_lag_seconds": lag_snapshot.processing_lag_seconds,
+                        "time_lag_reason_code": lag_snapshot.time_lag_reason_code,
+                        "processing_lag_reason_code": (
+                            lag_snapshot.processing_lag_reason_code
+                        ),
+                        "lag_breach": lag_snapshot.lag_breach,
+                        "health_overall_status": lag_snapshot.health_overall_status,
+                        "reason_code": lag_snapshot.reason_code,
+                        "detail": lag_snapshot.detail,
+                    }
+                    for lag_snapshot in lag_snapshots
+                ],
+            },
+        )
+
+
+def _unique_reason_codes(reason_codes: Sequence[str]) -> list[str]:
+    unique_codes: list[str] = []
+    for reason_code in reason_codes:
+        if reason_code not in unique_codes:
+            unique_codes.append(reason_code)
+    return unique_codes

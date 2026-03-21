@@ -19,7 +19,11 @@ def test_checked_in_reliability_config_loads() -> None:
     assert config.heartbeat.stale_after_seconds == 45
     assert config.circuit_breaker.failure_threshold == 3
     assert config.recovery.stale_pending_signal_max_age_intervals == 1
+    assert config.lag.feature_time_lag_max_seconds == 390
+    assert config.lag.consumer_processing_lag_max_seconds == 390
     assert config.artifacts.health_snapshot_path.endswith("health_snapshot.json")
+    assert config.artifacts.system_health_path.endswith("system_health.json")
+    assert config.artifacts.lag_summary_path.endswith("lag_summary.json")
 
 
 def test_invalid_reliability_config_is_rejected(tmp_path: Path) -> None:
@@ -42,10 +46,15 @@ def test_invalid_reliability_config_is_rejected(tmp_path: Path) -> None:
                 "  success_threshold: 1",
                 "recovery:",
                 "  stale_pending_signal_max_age_intervals: 1",
+                "lag:",
+                "  feature_time_lag_max_seconds: 390",
+                "  consumer_processing_lag_max_seconds: 390",
                 "artifacts:",
                 "  health_snapshot_path: artifacts/reliability/health_snapshot.json",
                 "  freshness_summary_path: artifacts/reliability/freshness_summary.json",
                 "  recovery_events_path: artifacts/reliability/recovery_events.jsonl",
+                "  system_health_path: artifacts/reliability/system_health.json",
+                "  lag_summary_path: artifacts/reliability/lag_summary.json",
             ]
         ),
         encoding="utf-8",

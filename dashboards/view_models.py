@@ -17,6 +17,7 @@ from app.trading.schemas import PaperPosition
 from dashboards.data_sources import (
     DashboardSnapshot,
     EngineStateSnapshot,
+    FeatureLagSummarySnapshot,
     FreshnessSnapshot,
     LatestFeatureSnapshot,
     LedgerEntrySnapshot,
@@ -25,6 +26,7 @@ from dashboards.data_sources import (
     RecoveryEventSnapshot,
     ReliabilityStateSnapshot,
     SignalSnapshot,
+    SystemReliabilitySnapshot,
 )
 
 
@@ -356,10 +358,35 @@ def build_symbol_freshness_rows(
 def build_reliability_status_rows(
     *,
     api_health,
+    system_reliability: SystemReliabilitySnapshot | None = None,
     reliability_states: tuple[ReliabilityStateSnapshot, ...],
     latest_recovery_event: RecoveryEventSnapshot | None,
 ) -> list[dict[str, Any]]:
     """Build one compact reliability summary table."""
+    if system_reliability is not None and system_reliability.available:
+        return [
+            {
+                "overall_health": system_reliability.health_overall_status,
+                "health_reason_codes": ",".join(system_reliability.reason_codes),
+                "lag_breach_active": system_reliability.lag_breach_active,
+                "latest_recovery_event_type": (
+                    None
+                    if system_reliability.latest_recovery_event is None
+                    else system_reliability.latest_recovery_event.event_type
+                ),
+                "latest_recovery_reason_code": (
+                    None
+                    if system_reliability.latest_recovery_event is None
+                    else system_reliability.latest_recovery_event.reason_code
+                ),
+                "latest_recovery_time": (
+                    None
+                    if system_reliability.latest_recovery_event is None
+                    else to_rfc3339(system_reliability.latest_recovery_event.event_time)
+                ),
+            }
+        ]
+
     if reliability_states:
         primary_state = reliability_states[0]
         breaker_state = primary_state.breaker_state
@@ -371,7 +398,8 @@ def build_reliability_status_rows(
     return [
         {
             "overall_health": api_health.health_overall_status or api_health.status,
-            "health_reason_code": api_health.reason_code,
+            "health_reason_codes": api_health.reason_code,
+            "lag_breach_active": None,
             "breaker_state": breaker_state,
             "breaker_reason_code": breaker_reason,
             "latest_recovery_event_type": (
@@ -387,6 +415,77 @@ def build_reliability_status_rows(
             ),
         }
     ]
+
+
+def build_service_health_rows(
+    system_reliability: SystemReliabilitySnapshot | None,
+) -> list[dict[str, Any]]:
+    """Build per-service heartbeat rows from the canonical reliability summary."""
+    if system_reliability is None or not system_reliability.available:
+        return [
+            {
+                "service_name": None,
+                "component_name": "system",
+                "health_overall_status": "UNAVAILABLE",
+                "heartbeat_freshness_status": None,
+                "heartbeat_age_seconds": None,
+                "reason_code": None if system_reliability is None else system_reliability.error,
+                "feed_freshness_status": None,
+                "feed_age_seconds": None,
+                "detail": None if system_reliability is None else system_reliability.error,
+            }
+        ]
+
+    return [
+        {
+            "service_name": service.service_name,
+            "component_name": service.component_name,
+            "health_overall_status": service.health_overall_status,
+            "heartbeat_freshness_status": service.heartbeat_freshness_status,
+            "heartbeat_age_seconds": round_or_none(service.heartbeat_age_seconds, 3),
+            "reason_code": service.reason_code,
+            "feed_freshness_status": service.feed_freshness_status,
+            "feed_age_seconds": round_or_none(service.feed_age_seconds, 3),
+            "detail": service.detail,
+        }
+        for service in system_reliability.services
+    ]
+
+
+def build_feature_lag_rows(
+    system_reliability: SystemReliabilitySnapshot | None,
+) -> list[dict[str, Any]]:
+    """Build per-symbol feature lag rows from the canonical reliability summary."""
+    if system_reliability is None or not system_reliability.available:
+        return []
+    return [
+        _feature_lag_row(snapshot)
+        for snapshot in system_reliability.lag_by_symbol
+    ]
+
+
+def _feature_lag_row(snapshot: FeatureLagSummarySnapshot) -> dict[str, Any]:
+    return {
+        "symbol": snapshot.symbol,
+        "lag_breach": snapshot.lag_breach,
+        "health_overall_status": snapshot.health_overall_status,
+        "reason_code": snapshot.reason_code,
+        "time_lag_seconds": round_or_none(snapshot.time_lag_seconds, 3),
+        "time_lag_reason_code": snapshot.time_lag_reason_code,
+        "processing_lag_seconds": round_or_none(snapshot.processing_lag_seconds, 3),
+        "processing_lag_reason_code": snapshot.processing_lag_reason_code,
+        "latest_raw_event_received_at": (
+            None
+            if snapshot.latest_raw_event_received_at is None
+            else to_rfc3339(snapshot.latest_raw_event_received_at)
+        ),
+        "latest_feature_as_of_time": (
+            None
+            if snapshot.latest_feature_as_of_time is None
+            else to_rfc3339(snapshot.latest_feature_as_of_time)
+        ),
+        "detail": snapshot.detail,
+    }
 
 
 def build_live_status_rows(

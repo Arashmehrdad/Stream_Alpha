@@ -1,5 +1,7 @@
 """Runtime loading and exact-row regime resolution for M9."""
 
+# pylint: disable=too-many-instance-attributes
+
 from __future__ import annotations
 
 import json
@@ -191,7 +193,11 @@ def resolve_thresholds_artifact_path(
             raise ValueError(f"Regime thresholds artifact does not exist: {path}")
         return path
 
-    root = default_thresholds_root() if thresholds_root is None else Path(thresholds_root).resolve()
+    root = (
+        default_thresholds_root()
+        if thresholds_root is None
+        else Path(thresholds_root).resolve()
+    )
     if not root.is_dir():
         raise ValueError(f"Regime thresholds root does not exist: {root}")
 
@@ -298,7 +304,8 @@ def load_signal_policy(explicit_path: str) -> dict[str, RegimePolicy]:
         sell_prob_up = float(policy_payload["sell_prob_up"])
         if sell_prob_up > buy_prob_up:
             raise ValueError(
-                f"Regime signal policy sell threshold cannot exceed buy threshold for {regime_label}"
+                "Regime signal policy sell threshold cannot exceed buy "
+                f"threshold for {regime_label}"
             )
         policies[regime_label] = RegimePolicy(
             regime_label=regime_label,

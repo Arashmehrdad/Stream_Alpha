@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 import logging
 from time import perf_counter
 from typing import Any
@@ -18,6 +19,7 @@ from app.inference.schemas import (
     FreshnessResponse,
     HealthResponse,
     MetricsResponse,
+    SystemReliabilityResponse,
 )
 from app.inference.schemas import PredictionResponse, RegimeResponse, SignalResponse
 from app.inference.service import (
@@ -187,6 +189,15 @@ def create_app(
     @app.get("/metrics", response_model=MetricsResponse)
     async def metrics() -> MetricsResponse:
         return await service.metrics_snapshot()
+
+    @app.get("/reliability/system", response_model=SystemReliabilityResponse)
+    async def reliability_system() -> JSONResponse:
+        status_code, snapshot = await service.system_reliability_snapshot()
+        payload = SystemReliabilityResponse.model_validate(asdict(snapshot))
+        return JSONResponse(
+            status_code=status_code,
+            content=payload.model_dump(mode="json"),
+        )
 
     return app
 # pylint: enable=too-many-statements

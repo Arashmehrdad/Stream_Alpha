@@ -1,6 +1,6 @@
 """API tests for the Stream Alpha M4 inference service."""
 
-# pylint: disable=duplicate-code,too-few-public-methods
+# pylint: disable=duplicate-code,missing-function-docstring,too-few-public-methods
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import json
 import joblib
 from fastapi.testclient import TestClient
 
+from app.common.time import to_rfc3339, utc_now
 from app.common.config import (
     FeatureSettings,
     InferenceSettings,
@@ -25,6 +26,12 @@ from app.common.config import (
 from app.inference.db import DatabaseUnavailableError
 from app.inference.main import create_app
 from app.inference.service import InferenceService, load_model_artifact
+from app.reliability.schemas import (
+    FeatureLagSnapshot,
+    RecoveryEvent,
+    ReliabilityState,
+    ServiceHeartbeat,
+)
 from app.regime.live import load_live_regime_runtime
 
 
@@ -85,6 +92,65 @@ class FakeDatabase:
         ):
             return None
         return self.row
+
+
+class FakeReliabilityStore:
+    """Minimal reliability-store stub for inference API tests."""
+
+    def __init__(
+        self,
+        *,
+        heartbeats: dict[tuple[str, str], ServiceHeartbeat] | None = None,
+        reliability_states: dict[tuple[str, str], ReliabilityState] | None = None,
+        lag_states: dict[tuple[str, str], list[FeatureLagSnapshot]] | None = None,
+        latest_recovery_event: RecoveryEvent | None = None,
+    ) -> None:
+        self.heartbeats = {} if heartbeats is None else heartbeats
+        self.reliability_states = (
+            {} if reliability_states is None else reliability_states
+        )
+        self.lag_states = {} if lag_states is None else lag_states
+        self.latest_recovery_event = latest_recovery_event
+        self.saved_system_snapshots = []
+
+    async def connect(self) -> None:
+        return None
+
+    async def close(self) -> None:
+        return None
+
+    async def save_service_heartbeat(self, heartbeat: ServiceHeartbeat) -> None:
+        self.heartbeats[(heartbeat.service_name, heartbeat.component_name)] = heartbeat
+
+    async def load_latest_service_heartbeat(
+        self,
+        *,
+        service_name: str,
+        component_name: str,
+    ) -> ServiceHeartbeat | None:
+        return self.heartbeats.get((service_name, component_name))
+
+    async def load_reliability_state(
+        self,
+        *,
+        service_name: str,
+        component_name: str,
+    ) -> ReliabilityState | None:
+        return self.reliability_states.get((service_name, component_name))
+
+    async def load_feature_lag_states(
+        self,
+        *,
+        service_name: str,
+        component_name: str,
+    ) -> list[FeatureLagSnapshot]:
+        return list(self.lag_states.get((service_name, component_name), []))
+
+    async def load_latest_recovery_event(self) -> RecoveryEvent | None:
+        return self.latest_recovery_event
+
+    async def save_system_reliability_state(self, snapshot) -> None:
+        self.saved_system_snapshots.append(snapshot)
 
 
 def _build_settings(model_path: str) -> Settings:
@@ -299,13 +365,20 @@ def _feature_row(
     }
 
 
-def _build_client(tmp_path: Path, *, prob_up: float, database: FakeDatabase) -> TestClient:
+def _build_client(
+    tmp_path: Path,
+    *,
+    prob_up: float,
+    database: FakeDatabase,
+    reliability_store: FakeReliabilityStore | None = None,
+) -> TestClient:
     artifact = load_model_artifact(str(_write_artifact(tmp_path, prob_up=prob_up)))
     service = InferenceService(
         _build_settings(str(_write_artifact(tmp_path, prob_up=prob_up))),
         database=database,
         model_artifact=artifact,
         regime_runtime=_build_regime_runtime(tmp_path),
+        reliability_store=reliability_store or FakeReliabilityStore(),
     )
     return TestClient(create_app(service))
 
@@ -332,6 +405,125 @@ def test_health_reports_success_and_dependency_failure(tmp_path: Path) -> None:
     assert unhealthy_response.status_code == 503
     assert unhealthy_response.json()["database"] == "unavailable"
     assert unhealthy_response.json()["health_overall_status"] == "UNAVAILABLE"
+
+
+def test_reliability_system_endpoint_returns_canonical_cross_service_summary(
+    tmp_path: Path,
+) -> None:
+    """`/reliability/system` should aggregate heartbeats, lag, and breaker state."""
+    now = utc_now().replace(microsecond=0)
+    reliability_store = FakeReliabilityStore(
+        heartbeats={
+            (
+                "producer",
+                "producer",
+                ): ServiceHeartbeat(
+                    service_name="producer",
+                    component_name="producer",
+                    heartbeat_at=now,
+                    health_overall_status="HEALTHY",
+                    reason_code="SERVICE_HEARTBEAT_HEALTHY",
+                    detail=(
+                        '{"last_exchange_activity_at":"'
+                        f'{to_rfc3339(now)}'
+                        '"}'
+                    ),
+                ),
+            (
+                "features",
+                "features",
+            ): ServiceHeartbeat(
+                service_name="features",
+                component_name="features",
+                heartbeat_at=now,
+                health_overall_status="HEALTHY",
+                reason_code="SERVICE_HEARTBEAT_HEALTHY",
+                detail='{"lag_breach_active":false}',
+            ),
+            (
+                "paper-trader",
+                "trading_runner",
+            ): ServiceHeartbeat(
+                service_name="paper-trader",
+                component_name="trading_runner",
+                heartbeat_at=now,
+                health_overall_status="HEALTHY",
+                reason_code="SERVICE_HEARTBEAT_HEALTHY",
+                detail="runner healthy",
+            ),
+        },
+        reliability_states={
+            (
+                "paper-trader",
+                "signal_client",
+            ): ReliabilityState(
+                service_name="paper-trader",
+                component_name="signal_client",
+                health_overall_status="DEGRADED",
+                breaker_state="HALF_OPEN",
+                failure_count=1,
+                success_count=0,
+                freshness_status="STALE",
+                last_heartbeat_at=now,
+                reason_code="SIGNAL_FETCH_FAILED",
+                detail="Signal fetch failed once",
+                updated_at=now,
+            )
+        },
+        lag_states={
+            (
+                "features",
+                "features",
+            ): [
+                FeatureLagSnapshot(
+                    service_name="features",
+                    component_name="features",
+                    symbol="BTC/USD",
+                    evaluated_at=now,
+                    latest_raw_event_received_at=now,
+                    latest_feature_interval_begin=now - timedelta(minutes=10),
+                    latest_feature_as_of_time=now - timedelta(minutes=10),
+                    time_lag_seconds=600.0,
+                    processing_lag_seconds=600.0,
+                    time_lag_reason_code="FEATURE_TIME_LAG_BREACH",
+                    processing_lag_reason_code="FEATURE_PROCESSING_LAG_BREACH",
+                    lag_breach=True,
+                    health_overall_status="DEGRADED",
+                    reason_code="FEATURE_LAG_BREACH",
+                    detail="feature lag breach",
+                )
+            ]
+        },
+        latest_recovery_event=RecoveryEvent(
+            service_name="features",
+            component_name="BTC/USD",
+            event_type="FEATURE_LAG_TRANSITION",
+            event_time=now,
+            reason_code="FEATURE_LAG_BREACH_DETECTED",
+            health_overall_status="DEGRADED",
+            freshness_status="STALE",
+            detail="feature lag breach",
+        ),
+    )
+    client = _build_client(
+        tmp_path,
+        prob_up=0.7,
+        database=FakeDatabase(row=_feature_row(base_time=now - timedelta(minutes=5))),
+        reliability_store=reliability_store,
+    )
+
+    response = client.get("/reliability/system")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["health_overall_status"] == "DEGRADED"
+    assert payload["lag_breach_active"] is True
+    assert payload["reason_codes"] == ["SIGNAL_FETCH_FAILED", "FEATURE_LAG_BREACH"]
+    assert payload["services"][0]["component_name"] == "producer"
+    assert payload["services"][0]["feed_freshness_status"] == "FRESH"
+    assert payload["lag_by_symbol"][0]["symbol"] == "BTC/USD"
+    assert payload["latest_recovery_event"]["reason_code"] == "FEATURE_LAG_BREACH_DETECTED"
+    assert len(reliability_store.saved_system_snapshots) == 1
 
 
 def test_predict_happy_path(tmp_path: Path) -> None:

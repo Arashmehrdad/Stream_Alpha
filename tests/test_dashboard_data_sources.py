@@ -161,6 +161,66 @@ class _HealthyHttpClient:
                     "detail": "Exact-row regime resolution succeeded",
                 },
             )
+        if path == "/reliability/system":
+            return _Response(
+                200,
+                {
+                    "service_name": "streamalpha",
+                    "checked_at": "2026-03-20T12:00:00Z",
+                    "health_overall_status": "DEGRADED",
+                    "reason_codes": [
+                        "SIGNAL_FETCH_FAILED",
+                        "FEATURE_LAG_BREACH",
+                    ],
+                    "lag_breach_active": True,
+                    "services": [
+                        {
+                            "service_name": "producer",
+                            "component_name": "producer",
+                            "checked_at": "2026-03-20T12:00:00Z",
+                            "heartbeat_at": "2026-03-20T12:00:00Z",
+                            "heartbeat_age_seconds": 0.0,
+                            "heartbeat_freshness_status": "FRESH",
+                            "health_overall_status": "HEALTHY",
+                            "reason_code": "SERVICE_HEARTBEAT_HEALTHY",
+                            "detail": "producer healthy",
+                            "feed_freshness_status": "FRESH",
+                            "feed_reason_code": "FEED_FRESH",
+                            "feed_age_seconds": 0.0,
+                        }
+                    ],
+                    "lag_by_symbol": [
+                        {
+                            "service_name": "features",
+                            "component_name": "features",
+                            "symbol": "BTC/USD",
+                            "evaluated_at": "2026-03-20T12:00:00Z",
+                            "latest_raw_event_received_at": "2026-03-20T12:00:00Z",
+                            "latest_feature_interval_begin": "2026-03-20T11:55:00Z",
+                            "latest_feature_as_of_time": "2026-03-20T11:55:00Z",
+                            "time_lag_seconds": 600.0,
+                            "processing_lag_seconds": 600.0,
+                            "time_lag_reason_code": "FEATURE_TIME_LAG_BREACH",
+                            "processing_lag_reason_code": "FEATURE_PROCESSING_LAG_BREACH",
+                            "lag_breach": True,
+                            "health_overall_status": "DEGRADED",
+                            "reason_code": "FEATURE_LAG_BREACH",
+                            "detail": "lag breach",
+                        }
+                    ],
+                    "latest_recovery_event": {
+                        "service_name": "features",
+                        "component_name": "BTC/USD",
+                        "event_type": "FEATURE_LAG_TRANSITION",
+                        "event_time": "2026-03-20T12:00:00Z",
+                        "reason_code": "FEATURE_LAG_BREACH_DETECTED",
+                        "health_overall_status": "DEGRADED",
+                        "freshness_status": "STALE",
+                        "breaker_state": None,
+                        "detail": "lag breach",
+                    },
+                },
+            )
         return _Response(
             200,
             {
@@ -204,6 +264,8 @@ def test_dashboard_snapshot_reports_api_and_db_failures() -> None:
 
     assert snapshot.api_health.available is False
     assert "api down" in (snapshot.api_health.error or "")
+    assert snapshot.system_reliability is not None
+    assert snapshot.system_reliability.available is False
     assert snapshot.database.available is False
     assert "db down" in (snapshot.database.error or "")
 
@@ -222,6 +284,10 @@ def test_dashboard_snapshot_parses_regime_fields_from_api_payloads() -> None:
     assert snapshot.api_health.regime_loaded is True
     assert snapshot.api_health.regime_run_id == "20260320T120000Z"
     assert snapshot.api_health.health_overall_status == "HEALTHY"
+    assert snapshot.system_reliability is not None
+    assert snapshot.system_reliability.available is True
+    assert snapshot.system_reliability.health_overall_status == "DEGRADED"
+    assert snapshot.system_reliability.lag_breach_active is True
     assert snapshot.signals[0].regime_label == "TREND_UP"
     assert snapshot.signals[0].trade_allowed is True
     assert snapshot.signals[0].decision_source == "model"

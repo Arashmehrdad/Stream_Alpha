@@ -28,7 +28,7 @@ from app.trading.schemas import (
 _USE_SIGNAL_PENDING = object()
 
 
-def process_candle(  # pylint: disable=too-many-arguments
+def process_candle(  # pylint: disable=too-many-arguments,too-many-locals
     *,
     config: PaperTradingConfig,
     candle: FeatureCandle,

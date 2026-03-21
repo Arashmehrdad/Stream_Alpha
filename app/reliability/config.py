@@ -47,12 +47,22 @@ class RecoveryConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class LagConfig:
+    """Explicit lag thresholds for finalized feature persistence visibility."""
+
+    feature_time_lag_max_seconds: int
+    consumer_processing_lag_max_seconds: int
+
+
+@dataclass(frozen=True, slots=True)
 class ReliabilityArtifactConfig:
     """Explicit reliability artifact destinations."""
 
     health_snapshot_path: str
     freshness_summary_path: str
     recovery_events_path: str
+    system_health_path: str
+    lag_summary_path: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +74,7 @@ class ReliabilityConfig:
     heartbeat: HeartbeatConfig
     circuit_breaker: CircuitBreakerConfig
     recovery: RecoveryConfig
+    lag: LagConfig
     artifacts: ReliabilityArtifactConfig
 
 
@@ -77,6 +88,7 @@ def load_reliability_config(config_path: Path) -> ReliabilityConfig:
     heartbeat_payload = _require_mapping(payload, "heartbeat")
     breaker_payload = _require_mapping(payload, "circuit_breaker")
     recovery_payload = _require_mapping(payload, "recovery")
+    lag_payload = _require_mapping(payload, "lag")
     artifacts_payload = _require_mapping(payload, "artifacts")
 
     config = ReliabilityConfig(
@@ -100,12 +112,22 @@ def load_reliability_config(config_path: Path) -> ReliabilityConfig:
                 recovery_payload["stale_pending_signal_max_age_intervals"]
             ),
         ),
+        lag=LagConfig(
+            feature_time_lag_max_seconds=int(
+                lag_payload["feature_time_lag_max_seconds"]
+            ),
+            consumer_processing_lag_max_seconds=int(
+                lag_payload["consumer_processing_lag_max_seconds"]
+            ),
+        ),
         artifacts=ReliabilityArtifactConfig(
             health_snapshot_path=str(artifacts_payload["health_snapshot_path"]).strip(),
             freshness_summary_path=str(
                 artifacts_payload["freshness_summary_path"]
             ).strip(),
             recovery_events_path=str(artifacts_payload["recovery_events_path"]).strip(),
+            system_health_path=str(artifacts_payload["system_health_path"]).strip(),
+            lag_summary_path=str(artifacts_payload["lag_summary_path"]).strip(),
         ),
     )
     _validate_config(config)
@@ -159,6 +181,14 @@ def _validate_config(config: ReliabilityConfig) -> None:
             config.recovery.stale_pending_signal_max_age_intervals,
             "recovery.stale_pending_signal_max_age_intervals must be positive",
         ),
+        (
+            config.lag.feature_time_lag_max_seconds,
+            "lag.feature_time_lag_max_seconds must be positive",
+        ),
+        (
+            config.lag.consumer_processing_lag_max_seconds,
+            "lag.consumer_processing_lag_max_seconds must be positive",
+        ),
     )
     for value, message in positive_checks:
         if value <= 0:
@@ -176,6 +206,14 @@ def _validate_config(config: ReliabilityConfig) -> None:
         (
             config.artifacts.recovery_events_path,
             "artifacts.recovery_events_path must not be empty",
+        ),
+        (
+            config.artifacts.system_health_path,
+            "artifacts.system_health_path must not be empty",
+        ),
+        (
+            config.artifacts.lag_summary_path,
+            "artifacts.lag_summary_path must not be empty",
         ),
     )
     for path_value, message in path_checks:
