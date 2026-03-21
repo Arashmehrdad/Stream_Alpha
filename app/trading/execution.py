@@ -171,6 +171,7 @@ def build_created_event(
         lifecycle_state="CREATED",
         event_time=event_time,
         reason_code="ORDER_REQUEST_CREATED",
+        decision_trace_id=order_request.decision_trace_id,
     )
 
 
@@ -589,6 +590,7 @@ def _terminal_lifecycle_events(  # pylint: disable=too-many-arguments
         lifecycle_state="ACCEPTED",
         event_time=fill_time,
         reason_code=accepted_reason_code,
+        decision_trace_id=order_request.decision_trace_id,
     )
 
     was_filled = (
@@ -607,6 +609,7 @@ def _terminal_lifecycle_events(  # pylint: disable=too-many-arguments
         lifecycle_state=terminal_state,
         event_time=fill_time,
         reason_code=terminal_reason,
+        decision_trace_id=order_request.decision_trace_id,
     )
     return (accepted_event, terminal_event)
 
@@ -733,6 +736,7 @@ def _build_live_rejection_result(  # pylint: disable=too-many-arguments
         probe_policy_active=probe_policy_active,
         probe_symbol=probe_symbol,
         probe_qty=probe_qty,
+        decision_trace_id=order_request.decision_trace_id,
     )
     return ExecutionResult(
         state=_advance_state(state=state, candle=candle, clear_pending=True),
@@ -768,6 +772,7 @@ def _build_live_broker_event(
         probe_policy_active=submit_result.probe_policy_active,
         probe_symbol=submit_result.probe_symbol,
         probe_qty=submit_result.probe_qty,
+        decision_trace_id=order_request.decision_trace_id,
     )
 
 

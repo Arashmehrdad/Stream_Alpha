@@ -395,3 +395,172 @@ def test_dashboard_snapshot_includes_live_safety_state_when_present() -> None:
     assert snapshot.database.live_safety_state is not None
     assert snapshot.database.live_safety_state.broker_name == "alpaca"
     assert snapshot.database.live_safety_state.account_id == "PA12345"
+
+
+def test_dashboard_snapshot_includes_recent_decision_traces_and_latest_blocked_trade() -> None:
+    class _TraceConnection(_RecordingConnection):
+        async def fetch(self, query: str, *params):
+            self.fetch_calls.append((query, params))
+            if "FROM \"decision_traces\"" in query:
+                return [
+                    {
+                        "id": 11,
+                        "service_name": "paper-trader",
+                        "execution_mode": "paper",
+                        "symbol": "BTC/USD",
+                        "signal": "BUY",
+                        "signal_row_id": "BTC/USD|2026-03-21T12:00:00Z",
+                        "signal_as_of_time": datetime(2026, 3, 21, 12, 5, tzinfo=timezone.utc),
+                        "model_name": "logistic_regression",
+                        "model_version": "m3-20260321T120000Z",
+                        "risk_outcome": "MODIFIED",
+                        "trace_payload": {
+                            "schema_version": "m14_decision_trace_v1",
+                            "service_name": "paper-trader",
+                            "execution_mode": "paper",
+                            "symbol": "BTC/USD",
+                            "signal_row_id": "BTC/USD|2026-03-21T12:00:00Z",
+                            "signal_interval_begin": "2026-03-21T12:00:00Z",
+                            "signal_as_of_time": "2026-03-21T12:05:00Z",
+                            "model_name": "logistic_regression",
+                            "model_version": "m3-20260321T120000Z",
+                            "prediction": {
+                                "model_name": "logistic_regression",
+                                "model_version": "m3-20260321T120000Z",
+                                "prob_up": 0.71,
+                                "prob_down": 0.29,
+                                "confidence": 0.71,
+                                "predicted_class": "UP",
+                                "top_features": [],
+                            },
+                            "signal": {
+                                "signal": "BUY",
+                                "reason": "buy",
+                            },
+                            "risk": {
+                                "outcome": "MODIFIED",
+                                "primary_reason_code": "VOLATILITY_SIZE_ADJUSTED",
+                                "reason_codes": ["VOLATILITY_SIZE_ADJUSTED"],
+                                "reason_texts": ["volatility clamp"],
+                                "requested_notional": 1000.0,
+                                "approved_notional": 500.0,
+                                "portfolio_context": {
+                                    "available_cash": 10000.0,
+                                    "open_position_count": 0,
+                                    "current_equity": 10000.0,
+                                    "total_open_exposure_notional": 0.0,
+                                    "current_symbol_exposure_notional": 0.0,
+                                },
+                                "service_risk_state": {
+                                    "trading_day": "2026-03-21",
+                                    "realized_pnl_today": 0.0,
+                                    "equity_high_watermark": 10000.0,
+                                    "current_equity": 10000.0,
+                                    "loss_streak_count": 0,
+                                    "kill_switch_enabled": False,
+                                },
+                                "ordered_adjustments": [],
+                            },
+                        },
+                        "json_report_path": "artifacts/rationale/paper-trader/paper/11.json",
+                        "markdown_report_path": "artifacts/rationale/paper-trader/paper/11.md",
+                        "created_at": datetime(2026, 3, 21, 12, 5, tzinfo=timezone.utc),
+                        "updated_at": datetime(2026, 3, 21, 12, 5, tzinfo=timezone.utc),
+                    }
+                ]
+            return []
+
+        async def fetchrow(self, query: str, *params):
+            self.fetchrow_calls.append((query, params))
+            if "risk_outcome = 'BLOCKED'" in query:
+                return {
+                    "id": 12,
+                    "service_name": "paper-trader",
+                    "execution_mode": "paper",
+                    "symbol": "ETH/USD",
+                    "signal": "BUY",
+                    "signal_row_id": "ETH/USD|2026-03-21T12:05:00Z",
+                    "signal_as_of_time": datetime(2026, 3, 21, 12, 10, tzinfo=timezone.utc),
+                    "model_name": "logistic_regression",
+                    "model_version": "m3-20260321T120000Z",
+                    "risk_outcome": "BLOCKED",
+                    "trace_payload": {
+                        "schema_version": "m14_decision_trace_v1",
+                        "service_name": "paper-trader",
+                        "execution_mode": "paper",
+                        "symbol": "ETH/USD",
+                        "signal_row_id": "ETH/USD|2026-03-21T12:05:00Z",
+                        "signal_interval_begin": "2026-03-21T12:05:00Z",
+                        "signal_as_of_time": "2026-03-21T12:10:00Z",
+                        "model_name": "logistic_regression",
+                        "model_version": "m3-20260321T120000Z",
+                        "prediction": {
+                            "model_name": "logistic_regression",
+                            "model_version": "m3-20260321T120000Z",
+                            "prob_up": 0.71,
+                            "prob_down": 0.29,
+                            "confidence": 0.71,
+                            "predicted_class": "UP",
+                            "top_features": [],
+                        },
+                        "signal": {
+                            "signal": "BUY",
+                            "reason": "buy",
+                        },
+                        "risk": {
+                            "outcome": "BLOCKED",
+                            "primary_reason_code": "TRADE_NOT_ALLOWED",
+                            "reason_codes": ["TRADE_NOT_ALLOWED"],
+                            "reason_texts": ["trade blocked"],
+                            "requested_notional": 1000.0,
+                            "approved_notional": 0.0,
+                            "portfolio_context": {
+                                "available_cash": 10000.0,
+                                "open_position_count": 0,
+                                "current_equity": 10000.0,
+                                "total_open_exposure_notional": 0.0,
+                                "current_symbol_exposure_notional": 0.0,
+                            },
+                            "service_risk_state": {
+                                "trading_day": "2026-03-21",
+                                "realized_pnl_today": 0.0,
+                                "equity_high_watermark": 10000.0,
+                                "current_equity": 10000.0,
+                                "loss_streak_count": 0,
+                                "kill_switch_enabled": False,
+                            },
+                            "ordered_adjustments": [],
+                        },
+                        "blocked_trade": {
+                            "blocked_stage": "risk",
+                            "reason_code": "TRADE_NOT_ALLOWED",
+                            "reason_texts": ["trade blocked"],
+                        },
+                    },
+                    "json_report_path": "artifacts/rationale/paper-trader/paper/12.json",
+                    "markdown_report_path": "artifacts/rationale/paper-trader/paper/12.md",
+                    "created_at": datetime(2026, 3, 21, 12, 10, tzinfo=timezone.utc),
+                    "updated_at": datetime(2026, 3, 21, 12, 10, tzinfo=timezone.utc),
+                }
+            return None
+
+    connection = _TraceConnection()
+
+    async def _db_connect(_dsn: str):
+        return connection
+
+    data_sources = DashboardDataSources(
+        settings=_settings(),
+        trading_config=_paper_config(),
+        http_client=_HealthyHttpClient(),
+        db_connect=_db_connect,
+    )
+
+    snapshot = asyncio.run(data_sources.load_snapshot())
+
+    assert snapshot.database.recent_decision_traces
+    assert snapshot.database.recent_decision_traces[0].decision_trace_id == 11
+    assert snapshot.database.recent_decision_traces[0].json_report_path.endswith("11.json")
+    assert snapshot.database.latest_blocked_trade is not None
+    assert snapshot.database.latest_blocked_trade.blocked_stage == "risk"
+    assert snapshot.database.latest_blocked_trade.primary_reason_code == "TRADE_NOT_ALLOWED"

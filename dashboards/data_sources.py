@@ -15,8 +15,10 @@ import httpx
 
 from app.common.config import Settings
 from app.common.time import parse_rfc3339, utc_now
+from app.explainability.schemas import DecisionTracePayload
 from app.trading.config import PaperTradingConfig
 from app.trading.repository import (
+    DECISION_TRACES_TABLE,
     LEDGER_TABLE,
     LIVE_SAFETY_TABLE,
     ORDER_EVENTS_TABLE,
@@ -304,6 +306,29 @@ class EngineStateSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class DecisionTraceSnapshot:
+    """Read-only recent decision trace summary for M14 operator visibility."""
+
+    decision_trace_id: int
+    service_name: str
+    execution_mode: str
+    symbol: str
+    signal: str
+    signal_row_id: str
+    signal_as_of_time: datetime
+    model_name: str
+    model_version: str
+    risk_outcome: str | None
+    primary_reason_code: str | None = None
+    reason_texts: tuple[str, ...] = field(default_factory=tuple)
+    blocked_stage: str | None = None
+    json_report_path: str | None = None
+    markdown_report_path: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class DatabaseSnapshot:
     """Read-only PostgreSQL snapshot for the dashboard."""
 
@@ -314,6 +339,8 @@ class DatabaseSnapshot:
     recent_closed_positions: tuple[PaperPosition, ...] = field(default_factory=tuple)
     recent_ledger_entries: tuple[LedgerEntrySnapshot, ...] = field(default_factory=tuple)
     recent_order_events: tuple[OrderAuditSnapshot, ...] = field(default_factory=tuple)
+    recent_decision_traces: tuple[DecisionTraceSnapshot, ...] = field(default_factory=tuple)
+    latest_blocked_trade: DecisionTraceSnapshot | None = None
     engine_states: tuple[EngineStateSnapshot, ...] = field(default_factory=tuple)
     live_safety_state: LiveSafetySnapshot | None = None
     reliability_states: tuple[ReliabilityStateSnapshot, ...] = field(default_factory=tuple)
@@ -354,6 +381,7 @@ class DashboardDataSources:
         self._ledger_table = _quote_table_name(LEDGER_TABLE)
         self._state_table = _quote_table_name(STATE_TABLE)
         self._order_events_table = _quote_table_name(ORDER_EVENTS_TABLE)
+        self._decision_traces_table = _quote_table_name(DECISION_TRACES_TABLE)
         self._live_safety_table = _quote_table_name(LIVE_SAFETY_TABLE)
         self._reliability_state_table = _quote_table_name(RELIABILITY_STATE_TABLE)
         self._reliability_events_table = _quote_table_name(RELIABILITY_EVENTS_TABLE)
@@ -584,6 +612,37 @@ class DashboardDataSources:
                 self._trading_config.execution.mode,
                 self._settings.dashboard.recent_ledger_limit,
             )
+            recent_decision_trace_rows = await connection.fetch(
+                f"""
+                SELECT id, service_name, execution_mode, symbol, signal, signal_row_id,
+                       signal_as_of_time, model_name, model_version, risk_outcome,
+                       trace_payload, json_report_path, markdown_report_path,
+                       created_at, updated_at
+                FROM {self._decision_traces_table}
+                WHERE service_name = $1 AND execution_mode = $2
+                ORDER BY signal_as_of_time DESC, id DESC
+                LIMIT $3
+                """,
+                self._trading_config.service_name,
+                self._trading_config.execution.mode,
+                self._settings.dashboard.recent_trades_limit,
+            )
+            latest_blocked_trade_row = await connection.fetchrow(
+                f"""
+                SELECT id, service_name, execution_mode, symbol, signal, signal_row_id,
+                       signal_as_of_time, model_name, model_version, risk_outcome,
+                       trace_payload, json_report_path, markdown_report_path,
+                       created_at, updated_at
+                FROM {self._decision_traces_table}
+                WHERE service_name = $1
+                  AND execution_mode = $2
+                  AND risk_outcome = 'BLOCKED'
+                ORDER BY signal_as_of_time DESC, id DESC
+                LIMIT 1
+                """,
+                self._trading_config.service_name,
+                self._trading_config.execution.mode,
+            )
             engine_state_rows = await connection.fetch(
                 f"""
                 SELECT service_name, execution_mode, symbol, last_processed_interval_begin,
@@ -666,6 +725,14 @@ class DashboardDataSources:
         recent_order_events = tuple(
             _order_audit_from_row(row) for row in recent_order_rows
         )
+        recent_decision_traces = tuple(
+            _decision_trace_from_row(row) for row in recent_decision_trace_rows
+        )
+        latest_blocked_trade = (
+            None
+            if latest_blocked_trade_row is None
+            else _decision_trace_from_row(latest_blocked_trade_row)
+        )
         engine_states = tuple(_engine_state_from_row(row) for row in engine_state_rows)
         live_safety_state = (
             None if live_safety_row is None else _live_safety_from_row(live_safety_row)
@@ -687,6 +754,8 @@ class DashboardDataSources:
             recent_closed_positions=recent_closed_positions,
             recent_ledger_entries=recent_ledger_entries,
             recent_order_events=recent_order_events,
+            recent_decision_traces=recent_decision_traces,
+            latest_blocked_trade=latest_blocked_trade,
             engine_states=engine_states,
             live_safety_state=live_safety_state,
             reliability_states=reliability_states,
@@ -992,6 +1061,11 @@ def _position_from_row(row: Mapping[str, Any]) -> PaperPosition:
         entry_regime_label=(
             None if row["entry_regime_label"] is None else str(row["entry_regime_label"])
         ),
+        entry_decision_trace_id=(
+            None
+            if row["entry_decision_trace_id"] is None
+            else int(row["entry_decision_trace_id"])
+        ),
         position_id=int(row["id"]),
         exit_reason=None if row["exit_reason"] is None else str(row["exit_reason"]),
         exit_signal_interval_begin=row["exit_signal_interval_begin"],
@@ -1015,6 +1089,11 @@ def _position_from_row(row: Mapping[str, Any]) -> PaperPosition:
         else float(row["realized_return"]),
         exit_regime_label=(
             None if row["exit_regime_label"] is None else str(row["exit_regime_label"])
+        ),
+        exit_decision_trace_id=(
+            None
+            if row["exit_decision_trace_id"] is None
+            else int(row["exit_decision_trace_id"])
         ),
         opened_at=row["opened_at"],
         closed_at=row["closed_at"],
@@ -1056,6 +1135,45 @@ def _engine_state_from_row(row: Mapping[str, Any]) -> EngineStateSnapshot:
         pending_regime_label=(
             None if row["pending_regime_label"] is None else str(row["pending_regime_label"])
         ),
+        updated_at=row["updated_at"],
+    )
+
+
+def _decision_trace_from_row(row: Mapping[str, Any]) -> DecisionTraceSnapshot:
+    trace_payload = DecisionTracePayload.model_validate(row["trace_payload"])
+    risk_payload = trace_payload.risk
+    blocked_trade = trace_payload.blocked_trade
+    return DecisionTraceSnapshot(
+        decision_trace_id=int(row["id"]),
+        service_name=str(row["service_name"]),
+        execution_mode=str(row["execution_mode"]),
+        symbol=str(row["symbol"]),
+        signal=str(row["signal"]),
+        signal_row_id=str(row["signal_row_id"]),
+        signal_as_of_time=row["signal_as_of_time"],
+        model_name=str(row["model_name"]),
+        model_version=str(row["model_version"]),
+        risk_outcome=(
+            None if row["risk_outcome"] is None else str(row["risk_outcome"])
+        ),
+        primary_reason_code=(
+            None if risk_payload is None else risk_payload.primary_reason_code
+        ),
+        reason_texts=(
+            ()
+            if risk_payload is None
+            else tuple(str(text) for text in risk_payload.reason_texts)
+        ),
+        blocked_stage=None if blocked_trade is None else blocked_trade.blocked_stage,
+        json_report_path=(
+            None if row["json_report_path"] is None else str(row["json_report_path"])
+        ),
+        markdown_report_path=(
+            None
+            if row["markdown_report_path"] is None
+            else str(row["markdown_report_path"])
+        ),
+        created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
 

@@ -16,6 +16,7 @@ from app.trading.schemas import PaperPosition
 
 from dashboards.data_sources import (
     DashboardSnapshot,
+    DecisionTraceSnapshot,
     EngineStateSnapshot,
     FeatureLagSummarySnapshot,
     FreshnessSnapshot,
@@ -327,6 +328,47 @@ def build_recent_order_audit_rows(
             "external_status": entry.external_status,
         }
         for entry in entries
+    ]
+
+
+def build_recent_decision_trace_rows(
+    traces: tuple[DecisionTraceSnapshot, ...],
+) -> list[dict[str, Any]]:
+    """Build the recent decision-trace table for minimal M14 visibility."""
+    return [
+        {
+            "decision_trace_id": trace.decision_trace_id,
+            "symbol": trace.symbol,
+            "signal": trace.signal,
+            "risk_outcome": trace.risk_outcome,
+            "primary_reason_code": trace.primary_reason_code,
+            "signal_as_of_time": to_rfc3339(trace.signal_as_of_time),
+            "model_version": trace.model_version,
+            "json_report_path": trace.json_report_path,
+            "markdown_report_path": trace.markdown_report_path,
+        }
+        for trace in traces
+    ]
+
+
+def build_latest_blocked_trade_rows(
+    trace: DecisionTraceSnapshot | None,
+) -> list[dict[str, Any]]:
+    """Build the latest blocked-trade rationale summary."""
+    if trace is None:
+        return []
+    return [
+        {
+            "decision_trace_id": trace.decision_trace_id,
+            "symbol": trace.symbol,
+            "signal": trace.signal,
+            "risk_outcome": trace.risk_outcome,
+            "blocked_stage": trace.blocked_stage,
+            "primary_reason_code": trace.primary_reason_code,
+            "reason_texts": "; ".join(trace.reason_texts),
+            "json_report_path": trace.json_report_path,
+            "markdown_report_path": trace.markdown_report_path,
+        }
     ]
 
 

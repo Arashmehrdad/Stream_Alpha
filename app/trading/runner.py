@@ -39,6 +39,7 @@ from app.trading.config import PaperTradingConfig
 from app.trading.decision_trace import (
     build_initial_decision_trace,
     enrich_decision_trace_with_risk,
+    write_rationale_reports,
 )
 from app.trading.execution import (
     build_created_event,
@@ -149,7 +150,7 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
             await self.run_once()
             await asyncio.sleep(self.config.poll_interval_seconds)
 
-    async def run_once(self) -> None:  # pylint: disable=too-many-locals,too-many-statements
+    async def run_once(self) -> None:  # pylint: disable=too-many-branches,too-many-locals,too-many-statements
         """Process all newly observed finalized candles exactly once."""
         if hasattr(self.execution_adapter, "begin_run"):
             self.execution_adapter.begin_run()
@@ -286,7 +287,20 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
                 persisted_open,
                 persisted_closed,
                 ledger_entries,
-            ) = await self._persist_execution_result(execution_result)
+            ) = await self._persist_execution_result(
+                execution_result,
+                order_request=due_order_request,
+            )
+            if due_order_request is not None and due_order_request.decision_trace_id is not None:
+                due_trace = await self.repository.load_decision_trace(
+                    decision_trace_id=due_order_request.decision_trace_id,
+                )
+                if due_trace is not None:
+                    await self._write_decision_trace_reports(
+                        trace=due_trace,
+                        order_request=due_order_request,
+                        lifecycle_events=execution_result.lifecycle_events,
+                    )
             if execution_result.live_safety_state is not None:
                 self.live_safety_state = execution_result.live_safety_state
                 await self.repository.save_live_safety_state(self.live_safety_state)
@@ -372,6 +386,10 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
                     decision_trace_id=decision_trace.decision_trace_id,
                 )
             )
+            decision_trace = await self._write_decision_trace_reports(
+                trace=decision_trace,
+                order_request=created_order_request,
+            )
             self.logger.info(
                 "Processed paper-trading candle",
                 extra={
@@ -422,11 +440,48 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
     async def _persist_execution_result(
         self,
         result,
+        *,
+        order_request: OrderRequest | None,
     ) -> tuple[PaperPosition | None, PaperPosition | None, tuple]:
         created_position = result.created_position
         open_position = result.open_position
         closed_position = result.closed_position
         ledger_entries = result.ledger_entries
+        decision_trace_id = None if order_request is None else order_request.decision_trace_id
+
+        if created_position is not None and decision_trace_id is not None:
+            created_position = replace(
+                created_position,
+                entry_decision_trace_id=decision_trace_id,
+            )
+            if open_position is not None and open_position.position_id is None:
+                open_position = replace(
+                    open_position,
+                    entry_decision_trace_id=decision_trace_id,
+                )
+        if closed_position is not None and decision_trace_id is not None:
+            closed_position = replace(
+                closed_position,
+                exit_decision_trace_id=decision_trace_id,
+            )
+        sell_trace_id = (
+            decision_trace_id
+            if decision_trace_id is not None
+            else None
+            if closed_position is None
+            else closed_position.entry_decision_trace_id
+        )
+        ledger_entries = tuple(
+            replace(
+                entry,
+                decision_trace_id=(
+                    decision_trace_id
+                    if entry.action == "BUY"
+                    else sell_trace_id
+                ),
+            )
+            for entry in ledger_entries
+        )
 
         if created_position is not None:
             position_id = await self.repository.insert_position(created_position)
@@ -452,6 +507,22 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
             await self.repository.insert_order_event_if_absent(event)
 
         return open_position, closed_position, ledger_entries
+
+    async def _write_decision_trace_reports(
+        self,
+        *,
+        trace,
+        order_request: OrderRequest | None,
+        lifecycle_events=(),
+    ):
+        report_root = Path(self.config.artifact_dir).parent / "rationale"
+        updated_trace = write_rationale_reports(
+            trace=trace,
+            artifact_root=report_root,
+            order_request=order_request,
+            lifecycle_events=lifecycle_events,
+        )
+        return await self.repository.update_decision_trace(updated_trace)
 
     async def _hydrate_due_order_request(
         self,
@@ -828,6 +899,7 @@ def _positions_to_rows(positions: list[PaperPosition]) -> list[dict[str, Any]]:
                 "stop_loss_price": position.stop_loss_price,
                 "take_profit_price": position.take_profit_price,
                 "entry_order_request_id": position.entry_order_request_id,
+                "entry_decision_trace_id": position.entry_decision_trace_id,
                 "entry_regime_label": position.entry_regime_label,
                 "exit_reason": position.exit_reason,
                 "exit_signal_interval_begin": None
@@ -853,6 +925,7 @@ def _positions_to_rows(positions: list[PaperPosition]) -> list[dict[str, Any]]:
                 "realized_return": position.realized_return,
                 "exit_regime_label": position.exit_regime_label,
                 "exit_order_request_id": position.exit_order_request_id,
+                "exit_decision_trace_id": position.exit_decision_trace_id,
                 "opened_at": None if position.opened_at is None else to_rfc3339(position.opened_at),
                 "closed_at": None if position.closed_at is None else to_rfc3339(position.closed_at),
             }

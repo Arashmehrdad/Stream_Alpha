@@ -16,6 +16,7 @@ from dashboards.view_models import (
     build_feature_lag_rows,
     build_reliability_status_rows,
     build_service_health_rows,
+    build_latest_blocked_trade_rows,
     build_drawdown_curve_rows,
     build_equity_curve_rows,
     build_feature_snapshot_rows,
@@ -24,6 +25,7 @@ from dashboards.view_models import (
     build_open_position_rows,
     build_overview_metrics,
     build_performance_by_regime_rows,
+    build_recent_decision_trace_rows,
     build_recent_closed_trade_rows,
     build_recent_ledger_rows,
     build_recent_order_audit_rows,
@@ -307,6 +309,12 @@ def _render_trading(
     recent_order_audit_rows = build_recent_order_audit_rows(
         snapshot.database.recent_order_events
     )
+    recent_decision_trace_rows = build_recent_decision_trace_rows(
+        snapshot.database.recent_decision_traces
+    )
+    latest_blocked_trade_rows = build_latest_blocked_trade_rows(
+        snapshot.database.latest_blocked_trade
+    )
     live_status_rows = build_live_status_rows(
         trading_config=trading_config,
         live_safety_state=snapshot.database.live_safety_state,
@@ -328,6 +336,9 @@ def _render_trading(
         else "Recent Order Audit",
         recent_order_audit_rows,
     )
+    render_table("Recent Decision Traces", recent_decision_trace_rows)
+    render_table("Latest Blocked Trade Rationale", latest_blocked_trade_rows)
+    _render_rationale_report_downloads(snapshot.database.recent_decision_traces)
     render_table("Performance By Regime", by_regime_rows)
 
     st.caption(
@@ -365,6 +376,61 @@ def _maybe_enable_auto_refresh(refresh_seconds: int) -> None:
         """,
         height=0,
         width=0,
+    )
+
+
+def _render_rationale_report_downloads(recent_traces) -> None:
+    if not recent_traces:
+        return
+    st.subheader("Rationale Reports")
+    selected_label = st.selectbox(
+        "Decision trace",
+        options=[
+            (
+                f"{trace.decision_trace_id} | {trace.symbol} | "
+                f"{trace.signal} | {trace.risk_outcome or 'PENDING'}"
+            )
+            for trace in recent_traces
+        ],
+        index=0,
+    )
+    selected_trace = next(
+        trace
+        for trace in recent_traces
+        if selected_label.startswith(f"{trace.decision_trace_id} |")
+    )
+    st.write(
+        "JSON report path: "
+        f"`{selected_trace.json_report_path or 'unavailable'}`"
+    )
+    st.write(
+        "Markdown report path: "
+        f"`{selected_trace.markdown_report_path or 'unavailable'}`"
+    )
+    _render_download_button(
+        label="Download JSON rationale report",
+        report_path=selected_trace.json_report_path,
+        mime_type="application/json",
+    )
+    _render_download_button(
+        label="Download Markdown rationale report",
+        report_path=selected_trace.markdown_report_path,
+        mime_type="text/markdown",
+    )
+
+
+def _render_download_button(*, label: str, report_path: str | None, mime_type: str) -> None:
+    if report_path is None:
+        return
+    path = Path(report_path)
+    if not path.exists():
+        st.caption(f"{label}: file not found at `{report_path}`")
+        return
+    st.download_button(
+        label=label,
+        data=path.read_bytes(),
+        file_name=path.name,
+        mime=mime_type,
     )
 
 

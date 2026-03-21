@@ -12,6 +12,7 @@ from dashboards.data_sources import (
     ApiHealthSnapshot,
     DashboardSnapshot,
     DatabaseSnapshot,
+    DecisionTraceSnapshot,
     EngineStateSnapshot,
     FeatureLagSummarySnapshot,
     FreshnessSnapshot,
@@ -25,6 +26,7 @@ from dashboards.data_sources import (
 )
 from dashboards.view_models import (
     build_feature_lag_rows,
+    build_latest_blocked_trade_rows,
     build_reliability_status_rows,
     build_service_health_rows,
     build_drawdown_curve_rows,
@@ -33,6 +35,7 @@ from dashboards.view_models import (
     build_live_status_rows,
     build_overview_metrics,
     build_performance_by_regime_rows,
+    build_recent_decision_trace_rows,
     build_recent_order_audit_rows,
     build_symbol_freshness_rows,
     build_trader_freshness,
@@ -332,6 +335,58 @@ def test_recent_order_audit_rows_and_execution_mode_are_available_for_rendering(
             "details": "filled at next open",
             "broker_name": "alpaca",
             "external_status": "filled",
+        }
+    ]
+
+
+def test_recent_decision_trace_rows_and_blocked_trade_rationale_are_available() -> None:
+    trace = DecisionTraceSnapshot(
+        decision_trace_id=21,
+        service_name="paper-trader",
+        execution_mode="paper",
+        symbol="BTC/USD",
+        signal="BUY",
+        signal_row_id="BTC/USD|2026-03-21T12:00:00Z",
+        signal_as_of_time=datetime(2026, 3, 21, 12, 5, tzinfo=timezone.utc),
+        model_name="logistic_regression",
+        model_version="m3-20260321T120000Z",
+        risk_outcome="BLOCKED",
+        primary_reason_code="TRADE_NOT_ALLOWED",
+        reason_texts=("trade blocked",),
+        blocked_stage="risk",
+        json_report_path="artifacts/rationale/paper-trader/paper/21.json",
+        markdown_report_path="artifacts/rationale/paper-trader/paper/21.md",
+        created_at=datetime(2026, 3, 21, 12, 5, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 3, 21, 12, 5, tzinfo=timezone.utc),
+    )
+
+    recent_rows = build_recent_decision_trace_rows((trace,))
+    blocked_rows = build_latest_blocked_trade_rows(trace)
+
+    assert recent_rows == [
+        {
+            "decision_trace_id": 21,
+            "symbol": "BTC/USD",
+            "signal": "BUY",
+            "risk_outcome": "BLOCKED",
+            "primary_reason_code": "TRADE_NOT_ALLOWED",
+            "signal_as_of_time": "2026-03-21T12:05:00Z",
+            "model_version": "m3-20260321T120000Z",
+            "json_report_path": "artifacts/rationale/paper-trader/paper/21.json",
+            "markdown_report_path": "artifacts/rationale/paper-trader/paper/21.md",
+        }
+    ]
+    assert blocked_rows == [
+        {
+            "decision_trace_id": 21,
+            "symbol": "BTC/USD",
+            "signal": "BUY",
+            "risk_outcome": "BLOCKED",
+            "blocked_stage": "risk",
+            "primary_reason_code": "TRADE_NOT_ALLOWED",
+            "reason_texts": "trade blocked",
+            "json_report_path": "artifacts/rationale/paper-trader/paper/21.json",
+            "markdown_report_path": "artifacts/rationale/paper-trader/paper/21.md",
         }
     ]
 

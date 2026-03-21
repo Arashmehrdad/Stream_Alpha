@@ -30,6 +30,8 @@ Milestone `M14` Packet 1 adds an M4-side explainability foundation only. It keep
 
 Milestone `M14` Packet 2 adds a canonical decision-trace and risk-rationale foundation around the accepted M4 -> M10 -> M11/M12 path. It persists one JSONB-backed `decision_traces` row per authoritative M4 signal, enriches that row with the M4 explanation payload plus explicit M10 risk rationale, and links `paper_risk_decisions`, `execution_order_requests`, and `paper_engine_state` to the same trace without changing any authority boundary or adding dashboard/report generation yet.
 
+Milestone `M14` Packet 3 finishes the remaining explainability linkage without drifting into M15 console maturity. It carries the same canonical trace id through execution-facing rows, writes deterministic JSON plus Markdown rationale reports under `artifacts/rationale/`, persists those report paths back into `decision_traces`, and adds one minimal dashboard view for recent traces, blocked-trade rationale, and report downloads.
+
 ## Repository Tree
 
 ```text
@@ -419,6 +421,18 @@ M14 Packet 2 does not do:
 - change M10 risk authority or sizing policy
 - change M11/M12 execution routing behavior beyond carrying trace ids
 - change M13 reliability behavior, dashboard layout, or report generation
+
+M14 Packet 3 does:
+- add `execution_order_events.decision_trace_id`, `paper_trade_ledger.decision_trace_id`, `paper_positions.entry_decision_trace_id`, and `paper_positions.exit_decision_trace_id`
+- carry the same canonical trace id through created order requests, lifecycle events, entry fills, exit fills, ledger rows, and open/closed positions where an authoritative trace exists
+- write one deterministic JSON report and one deterministic Markdown report per decision trace under `artifacts/rationale/`
+- persist `json_report_path` and `markdown_report_path` back into `decision_traces`
+- add a minimal dashboard table for recent decision traces, a latest blocked-trade rationale view, and local report download buttons without adding a new backend service
+
+M14 Packet 3 does not do:
+- change M4 signal authority, M10 risk authority, or M11/M12 execution routing authority
+- add M15 operator-console redesign, alerting, deployment automation, or a new orchestration service
+- duplicate the canonical rationale payload outside `decision_traces`
 
 ## Environment Variables
 
@@ -1046,6 +1060,29 @@ docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELE
 ```
 
 Expect `ordered_adjustments` to remain in the exact sequence applied by M10, with each step showing `reason_code`, `reason_text`, `before_notional`, and `after_notional`.
+
+7. Verify execution-facing trace linkage and rationale report generation.
+Run the trader through at least one created order request and one filled action, then confirm the same canonical trace id is visible on lifecycle rows, ledger rows, positions, and the persisted report paths.
+
+```powershell
+python scripts\run_paper_trader.py --once
+Get-ChildItem artifacts\rationale -Recurse
+docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT id, signal_row_id, json_report_path, markdown_report_path FROM decision_traces ORDER BY id DESC LIMIT 10;"
+docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT order_request_id, lifecycle_state, decision_trace_id, reason_code FROM execution_order_events ORDER BY id DESC LIMIT 10;"
+docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT id, action, order_request_id, decision_trace_id, signal_row_id FROM paper_trade_ledger ORDER BY id DESC LIMIT 10;"
+docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT id, status, entry_decision_trace_id, exit_decision_trace_id, entry_signal_row_id, exit_signal_row_id FROM paper_positions ORDER BY id DESC LIMIT 10;"
+```
+
+Expect deterministic `artifacts/rationale/<service_name>/<execution_mode>/<decision_trace_id>.json` and `.md` files, persisted report paths on `decision_traces`, and matching `decision_trace_id` values across order events, ledger rows, and the related position entry or exit fields.
+
+8. Verify minimal dashboard visibility for decision traces.
+Open the existing dashboard and confirm the trading tab now shows recent decision traces, the latest blocked-trade rationale, and local report download controls without any broader console redesign.
+
+```powershell
+streamlit run dashboards\streamlit_app.py
+```
+
+Expect `Recent Decision Traces`, `Latest Blocked Trade Rationale`, and `Rationale Reports` sections. The selected report should show both stored paths and offer JSON plus Markdown downloads when the files exist.
 
 ## Inspect Topics
 

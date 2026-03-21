@@ -148,6 +148,7 @@ class PaperPosition:  # pylint: disable=too-many-instance-attributes
     entry_approved_notional: float | None = None
     entry_risk_outcome: RiskOutcome | None = None
     entry_order_request_id: int | None = None
+    entry_decision_trace_id: int | None = None
     entry_risk_reason_codes: tuple[str, ...] = field(default_factory=tuple)
     position_id: int | None = None
     exit_reason: ExitReason | None = None
@@ -166,6 +167,7 @@ class PaperPosition:  # pylint: disable=too-many-instance-attributes
     realized_return: float | None = None
     exit_regime_label: str | None = None
     exit_order_request_id: int | None = None
+    exit_decision_trace_id: int | None = None
     opened_at: datetime | None = None
     closed_at: datetime | None = None
     updated_at: datetime | None = None
@@ -190,6 +192,7 @@ class TradeLedgerEntry:  # pylint: disable=too-many-instance-attributes
     execution_mode: ExecutionMode = "paper"
     position_id: int | None = None
     order_request_id: int | None = None
+    decision_trace_id: int | None = None
     signal_interval_begin: datetime | None = None
     signal_as_of_time: datetime | None = None
     signal_row_id: str | None = None
@@ -411,6 +414,8 @@ class DecisionTraceRecord:
     model_version: str
     payload: DecisionTracePayload
     risk_outcome: RiskOutcome | None = None
+    json_report_path: str | None = None
+    markdown_report_path: str | None = None
     decision_trace_id: int | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
@@ -437,6 +442,7 @@ class OrderLifecycleEvent:
     probe_policy_active: bool = False
     probe_symbol: str | None = None
     probe_qty: int | None = None
+    decision_trace_id: int | None = None
     event_id: int | None = None
     created_at: datetime | None = None
 

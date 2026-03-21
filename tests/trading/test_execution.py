@@ -373,6 +373,20 @@ def test_paper_mode_still_writes_positions_and_ledger(tmp_path: Path) -> None:
         "ACCEPTED",
         "FILLED",
     }
+    first_trace = sorted(
+        repository.decision_traces.values(),
+        key=lambda trace: trace.signal_interval_begin,
+    )[0]
+    assert repository.positions[0].entry_decision_trace_id == first_trace.decision_trace_id
+    assert repository.ledger[0].decision_trace_id == first_trace.decision_trace_id
+    assert all(
+        event.decision_trace_id == first_trace.decision_trace_id
+        for event in repository.order_events.values()
+    )
+    assert first_trace.json_report_path is not None
+    assert first_trace.markdown_report_path is not None
+    assert Path(first_trace.json_report_path).exists()
+    assert Path(first_trace.markdown_report_path).exists()
 
 
 def test_shadow_mode_writes_order_audit_and_shadow_state(tmp_path: Path) -> None:

@@ -224,6 +224,8 @@ async def _run_decision_trace_round_trip_test(trace: DecisionTraceRecord) -> Non
             replace(
                 stored_trace,
                 risk_outcome="BLOCKED",
+                json_report_path="artifacts/rationale/paper-trader/shadow/101.json",
+                markdown_report_path="artifacts/rationale/paper-trader/shadow/101.md",
                 payload=stored_trace.payload.model_copy(
                     update={
                         "risk": DecisionTraceRisk(
@@ -273,6 +275,14 @@ async def _run_decision_trace_round_trip_test(trace: DecisionTraceRecord) -> Non
         assert loaded_trace.payload.risk.outcome == "BLOCKED"
         assert loaded_trace.payload.blocked_trade is not None
         assert loaded_trace.payload.blocked_trade.blocked_stage == "risk"
+        assert (
+            loaded_trace.json_report_path
+            == "artifacts/rationale/paper-trader/shadow/101.json"
+        )
+        assert (
+            loaded_trace.markdown_report_path
+            == "artifacts/rationale/paper-trader/shadow/101.md"
+        )
 
         stored_request = await repository.ensure_order_request(
             OrderRequest(

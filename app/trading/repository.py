@@ -300,9 +300,11 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                 model_name,
                 model_version,
                 risk_outcome,
-                trace_payload
+                trace_payload,
+                json_report_path,
+                markdown_report_path
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13
             )
             ON CONFLICT (service_name, execution_mode, signal_row_id) DO NOTHING
             RETURNING *
@@ -318,6 +320,8 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
             trace.model_version,
             trace.risk_outcome,
             payload_json,
+            trace.json_report_path,
+            trace.markdown_report_path,
         )
         if row is None:
             existing_row = await pool.fetchrow(
@@ -357,8 +361,10 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                 model_version = $6,
                 risk_outcome = $7,
                 trace_payload = $8::jsonb,
+                json_report_path = $9,
+                markdown_report_path = $10,
                 updated_at = NOW()
-            WHERE id = $9
+            WHERE id = $11
             RETURNING *
             """,
             trace.symbol,
@@ -369,6 +375,8 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
             trace.model_version,
             trace.risk_outcome,
             json.dumps(trace.payload.model_dump(mode="json")),
+            trace.json_report_path,
+            trace.markdown_report_path,
             trace.decision_trace_id,
         )
         if row is None:
@@ -810,12 +818,18 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                 details,
                 probe_policy_active,
                 probe_symbol,
-                probe_qty
+                probe_qty,
+                decision_trace_id
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-                $16, $17
+                $16, $17, $18
             )
-            ON CONFLICT (order_request_id, lifecycle_state) DO NOTHING
+            ON CONFLICT (order_request_id, lifecycle_state)
+            DO UPDATE SET
+                decision_trace_id = COALESCE(
+                    {self._order_events_table}.decision_trace_id,
+                    EXCLUDED.decision_trace_id
+                )
             RETURNING *
             """,
             event.order_request_id,
@@ -835,6 +849,7 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
             event.probe_policy_active,
             event.probe_symbol,
             event.probe_qty,
+            event.decision_trace_id,
         )
         if row is None:
             existing_row = await pool.fetchrow(
@@ -998,17 +1013,19 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                     stop_loss_price,
                     take_profit_price,
                     entry_order_request_id,
+                    entry_decision_trace_id,
                     entry_regime_label,
                     entry_approved_notional,
                     entry_risk_outcome,
                     entry_risk_reason_codes,
                     exit_order_request_id,
+                    exit_decision_trace_id,
                     opened_at,
                     updated_at
                 ) VALUES (
                     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
                     $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
-                    $21, $22, $23, $24::text[], $25, $26, $27
+                    $21, $22, $23, $24, $25::text[], $26, $27, $28, $29
                 )
                 RETURNING id
                 """,
@@ -1032,11 +1049,13 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                 position.stop_loss_price,
                 position.take_profit_price,
                 position.entry_order_request_id,
+                position.entry_decision_trace_id,
                 position.entry_regime_label,
                 position.entry_approved_notional,
                 position.entry_risk_outcome,
                 list(position.entry_risk_reason_codes),
                 position.exit_order_request_id,
+                position.exit_decision_trace_id,
                 position.opened_at,
                 position.updated_at,
             )
@@ -1067,14 +1086,16 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                 realized_pnl = $15,
                 realized_return = $16,
                 entry_order_request_id = $17,
-                entry_regime_label = $18,
-                entry_approved_notional = $19,
-                entry_risk_outcome = $20,
-                entry_risk_reason_codes = $21::text[],
-                exit_regime_label = $22,
-                exit_order_request_id = $23,
-                closed_at = $24,
-                updated_at = $25
+                entry_decision_trace_id = $18,
+                entry_regime_label = $19,
+                entry_approved_notional = $20,
+                entry_risk_outcome = $21,
+                entry_risk_reason_codes = $22::text[],
+                exit_regime_label = $23,
+                exit_order_request_id = $24,
+                exit_decision_trace_id = $25,
+                closed_at = $26,
+                updated_at = $27
             WHERE id = $1
             """,
             position.position_id,
@@ -1094,12 +1115,14 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
             position.realized_pnl,
             position.realized_return,
             position.entry_order_request_id,
+            position.entry_decision_trace_id,
             position.entry_regime_label,
             position.entry_approved_notional,
             position.entry_risk_outcome,
             list(position.entry_risk_reason_codes),
             position.exit_regime_label,
             position.exit_order_request_id,
+            position.exit_decision_trace_id,
             position.closed_at,
             position.updated_at,
         )
@@ -1114,6 +1137,7 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                 execution_mode,
                 position_id,
                 order_request_id,
+                decision_trace_id,
                 symbol,
                 action,
                 reason,
@@ -1138,15 +1162,16 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                 cash_flow,
                 realized_pnl
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-                $12, $13, $14, $15, $16, $17, $18::text[], $19, $20, $21, $22,
-                $23, $24, $25, $26, $27
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                $13, $14, $15, $16, $17, $18, $19::text[], $20, $21, $22, $23,
+                $24, $25, $26, $27, $28
             )
             """,
             entry.service_name,
             entry.execution_mode,
             entry.position_id,
             entry.order_request_id,
+            entry.decision_trace_id,
             entry.symbol,
             entry.action,
             entry.reason,
@@ -1339,6 +1364,7 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                     stop_loss_price DOUBLE PRECISION NOT NULL,
                     take_profit_price DOUBLE PRECISION NOT NULL,
                     entry_order_request_id BIGINT NULL,
+                    entry_decision_trace_id BIGINT NULL,
                     entry_regime_label TEXT NULL,
                     entry_approved_notional DOUBLE PRECISION NULL,
                     entry_risk_outcome TEXT NULL,
@@ -1359,6 +1385,7 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                     realized_return DOUBLE PRECISION NULL,
                     exit_regime_label TEXT NULL,
                     exit_order_request_id BIGINT NULL,
+                    exit_decision_trace_id BIGINT NULL,
                     opened_at TIMESTAMPTZ NOT NULL,
                     closed_at TIMESTAMPTZ NULL,
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -1404,6 +1431,12 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
             await connection.execute(
                 f"""
                 ALTER TABLE {self._positions_table}
+                ADD COLUMN IF NOT EXISTS entry_decision_trace_id BIGINT NULL
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._positions_table}
                 ADD COLUMN IF NOT EXISTS exit_regime_label TEXT NULL
                 """
             )
@@ -1411,6 +1444,12 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                 f"""
                 ALTER TABLE {self._positions_table}
                 ADD COLUMN IF NOT EXISTS exit_order_request_id BIGINT NULL
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._positions_table}
+                ADD COLUMN IF NOT EXISTS exit_decision_trace_id BIGINT NULL
                 """
             )
             await connection.execute(f"DROP INDEX IF EXISTS {open_position_index}")
@@ -1429,6 +1468,7 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                     execution_mode TEXT NOT NULL DEFAULT 'paper',
                     position_id BIGINT NULL REFERENCES {self._positions_table}(id),
                     order_request_id BIGINT NULL,
+                    decision_trace_id BIGINT NULL,
                     symbol TEXT NOT NULL,
                     action TEXT NOT NULL,
                     reason TEXT NOT NULL,
@@ -1466,6 +1506,12 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                 f"""
                 ALTER TABLE {self._ledger_table}
                 ADD COLUMN IF NOT EXISTS order_request_id BIGINT NULL
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._ledger_table}
+                ADD COLUMN IF NOT EXISTS decision_trace_id BIGINT NULL
                 """
             )
             await connection.execute(
@@ -1646,6 +1692,8 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                     model_version TEXT NOT NULL,
                     risk_outcome TEXT NULL,
                     trace_payload JSONB NOT NULL,
+                    json_report_path TEXT NULL,
+                    markdown_report_path TEXT NULL,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
@@ -1661,6 +1709,18 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                 f"""
                 ALTER TABLE {self._decision_traces_table}
                 ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._decision_traces_table}
+                ADD COLUMN IF NOT EXISTS json_report_path TEXT NULL
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._decision_traces_table}
+                ADD COLUMN IF NOT EXISTS markdown_report_path TEXT NULL
                 """
             )
             await connection.execute(
@@ -1821,6 +1881,7 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                     probe_policy_active BOOLEAN NOT NULL DEFAULT FALSE,
                     probe_symbol TEXT NULL,
                     probe_qty INTEGER NULL,
+                    decision_trace_id BIGINT NULL,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
                 """
@@ -1871,6 +1932,12 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                 f"""
                 ALTER TABLE {self._order_events_table}
                 ADD COLUMN IF NOT EXISTS probe_qty INTEGER NULL
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._order_events_table}
+                ADD COLUMN IF NOT EXISTS decision_trace_id BIGINT NULL
                 """
             )
             await connection.execute(
@@ -2116,6 +2183,11 @@ def _position_from_row(row: asyncpg.Record) -> PaperPosition:
             if row["entry_order_request_id"] is None
             else int(row["entry_order_request_id"])
         ),
+        entry_decision_trace_id=(
+            None
+            if row["entry_decision_trace_id"] is None
+            else int(row["entry_decision_trace_id"])
+        ),
         entry_regime_label=(
             None if row["entry_regime_label"] is None else str(row["entry_regime_label"])
         ),
@@ -2158,6 +2230,11 @@ def _position_from_row(row: asyncpg.Record) -> PaperPosition:
             None
             if row["exit_order_request_id"] is None
             else int(row["exit_order_request_id"])
+        ),
+        exit_decision_trace_id=(
+            None
+            if row["exit_decision_trace_id"] is None
+            else int(row["exit_decision_trace_id"])
         ),
         opened_at=row["opened_at"],
         closed_at=row["closed_at"],
@@ -2308,6 +2385,14 @@ def _decision_trace_from_row(row: asyncpg.Record) -> DecisionTraceRecord:
         model_version=str(row["model_version"]),
         payload=DecisionTracePayload.model_validate(_jsonb_to_object(row["trace_payload"])),
         risk_outcome=None if row["risk_outcome"] is None else str(row["risk_outcome"]),
+        json_report_path=(
+            None if row["json_report_path"] is None else str(row["json_report_path"])
+        ),
+        markdown_report_path=(
+            None
+            if row["markdown_report_path"] is None
+            else str(row["markdown_report_path"])
+        ),
         decision_trace_id=int(row["id"]),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
@@ -2341,6 +2426,11 @@ def _order_event_from_row(row: asyncpg.Record) -> OrderLifecycleEvent:
         probe_policy_active=bool(row["probe_policy_active"]),
         probe_symbol=None if row["probe_symbol"] is None else str(row["probe_symbol"]),
         probe_qty=None if row["probe_qty"] is None else int(row["probe_qty"]),
+        decision_trace_id=(
+            None
+            if row["decision_trace_id"] is None
+            else int(row["decision_trace_id"])
+        ),
         event_id=int(row["id"]),
         created_at=row["created_at"],
     )
@@ -2356,6 +2446,7 @@ def ledger_rows_to_csv(entries: Sequence[TradeLedgerEntry]) -> list[dict[str, ob
                 "execution_mode": entry.execution_mode,
                 "position_id": entry.position_id,
                 "order_request_id": entry.order_request_id,
+                "decision_trace_id": entry.decision_trace_id,
                 "symbol": entry.symbol,
                 "action": entry.action,
                 "reason": entry.reason,

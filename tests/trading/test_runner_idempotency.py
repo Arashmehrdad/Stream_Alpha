@@ -473,6 +473,59 @@ def test_runner_modified_buy_links_order_request_to_same_decision_trace(tmp_path
     assert order_request.model_version == "m3-20260320T090000Z"
 
 
+def test_runner_sell_exit_links_closed_position_and_ledger_to_exit_trace(tmp_path: Path) -> None:
+    repository = FakeRepository([_candle(0), _candle(1), _candle(2)])
+    signal_client = StaticSignalClient(signal="HOLD")
+
+    async def _fetch_signal(*, symbol: str, interval_begin):
+        del symbol
+        signal = "BUY" if interval_begin == _candle(0).interval_begin else "SELL" if interval_begin == _candle(1).interval_begin else "HOLD"
+        return SignalDecision(
+            symbol="BTC/USD",
+            signal=signal,
+            reason=signal.lower(),
+            prob_up=0.7 if signal == "BUY" else 0.3 if signal == "SELL" else 0.5,
+            prob_down=0.3 if signal == "BUY" else 0.7 if signal == "SELL" else 0.5,
+            confidence=0.7 if signal != "HOLD" else 0.5,
+            predicted_class="UP" if signal == "BUY" else "DOWN",
+            row_id=f"BTC/USD|{interval_begin.isoformat().replace('+00:00', 'Z')}",
+            as_of_time=interval_begin + timedelta(minutes=5),
+            model_name="logistic_regression",
+            model_version="m3-20260320T090000Z",
+        )
+
+    signal_client.fetch_signal = _fetch_signal  # type: ignore[method-assign]
+    runner = PaperTradingRunner(
+        config=_config(tmp_path),
+        repository=repository,
+        signal_client=signal_client,
+    )
+
+    asyncio.run(runner.run_once())
+
+    traces = sorted(
+        repository.decision_traces.values(),
+        key=lambda trace: trace.signal_interval_begin,
+    )
+    buy_trace = traces[0]
+    sell_trace = traces[1]
+    closed_position = next(position for position in repository.positions if position.status == "CLOSED")
+    sell_ledger = next(entry for entry in repository.ledger if entry.action == "SELL")
+    sell_events = [
+        event
+        for event in repository.order_events.values()
+        if event.action == "SELL"
+    ]
+
+    assert closed_position.entry_decision_trace_id == buy_trace.decision_trace_id
+    assert closed_position.exit_decision_trace_id == sell_trace.decision_trace_id
+    assert sell_ledger.decision_trace_id == sell_trace.decision_trace_id
+    assert all(
+        event.decision_trace_id == sell_trace.decision_trace_id
+        for event in sell_events
+    )
+
+
 def test_runner_reliability_hold_path_stays_non_actionable(tmp_path: Path) -> None:
     repository = FakeRepository([_candle(0)])
     runner = PaperTradingRunner(

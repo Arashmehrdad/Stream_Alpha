@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
+from pathlib import Path
 
 from app.trading.config import PaperTradingConfig, RiskConfig
 from app.trading.decision_trace import (
     build_initial_decision_trace,
     build_risk_section,
     enrich_decision_trace_with_risk,
+    write_rationale_reports,
 )
 from app.trading.risk_engine import (
     MAX_ASSET_EXPOSURE_CLAMPED,
@@ -19,6 +22,8 @@ from app.trading.risk_engine import (
 )
 from app.trading.schemas import (
     FeatureCandle,
+    OrderLifecycleEvent,
+    OrderRequest,
     PaperEngineState,
     PortfolioContext,
     SignalDecision,
@@ -189,3 +194,106 @@ def test_risk_rationale_builder_marks_blocked_buy_at_risk_stage() -> None:
     assert enriched_trace.payload.blocked_trade is not None
     assert enriched_trace.payload.blocked_trade.blocked_stage == "risk"
     assert enriched_trace.payload.blocked_trade.reason_texts
+
+
+def test_rationale_reports_are_written_deterministically(tmp_path: Path) -> None:
+    """One canonical trace should always render to the same JSON and Markdown paths."""
+    portfolio = _portfolio()
+    signal = _signal()
+    config = _config()
+    service_risk_state = default_service_risk_state(
+        service_name=config.service_name,
+        trading_day=_candle().as_of_time.date(),
+        initial_cash=config.risk.initial_cash,
+        kill_switch_enabled=config.risk.kill_switch_enabled,
+    )
+    decision = evaluate_risk(
+        config=config,
+        candle=_candle(),
+        signal=signal,
+        engine_state=PaperEngineState(service_name=config.service_name, symbol=signal.symbol),
+        open_position=None,
+        portfolio=portfolio,
+        service_risk_state=service_risk_state,
+    )
+    trace = enrich_decision_trace_with_risk(
+        trace=build_initial_decision_trace(
+            service_name=config.service_name,
+            execution_mode="paper",
+            signal=signal,
+        ),
+        decision=decision,
+        portfolio=portfolio,
+        service_risk_state=service_risk_state,
+    )
+    trace = replace(trace, decision_trace_id=42)
+    order_request = OrderRequest(
+        service_name=config.service_name,
+        execution_mode="paper",
+        symbol=signal.symbol,
+        action="BUY",
+        signal_interval_begin=_candle().interval_begin,
+        signal_as_of_time=_candle().as_of_time,
+        signal_row_id=signal.row_id,
+        target_fill_interval_begin=_candle().interval_end,
+        requested_notional=decision.requested_notional,
+        approved_notional=decision.approved_notional,
+        idempotency_key="trace-42-buy",
+        model_name=signal.model_name,
+        model_version=signal.model_version,
+        confidence=signal.confidence,
+        regime_label=signal.regime_label,
+        regime_run_id=signal.regime_run_id,
+        risk_outcome=decision.outcome,
+        risk_reason_codes=decision.reason_codes,
+        decision_trace_id=42,
+        order_request_id=7,
+    )
+    lifecycle_events = (
+        OrderLifecycleEvent(
+            order_request_id=7,
+            service_name=config.service_name,
+            execution_mode="paper",
+            symbol=signal.symbol,
+            action="BUY",
+            lifecycle_state="CREATED",
+            event_time=_candle().as_of_time,
+            reason_code="ORDER_REQUEST_CREATED",
+            decision_trace_id=42,
+            event_id=1,
+        ),
+        OrderLifecycleEvent(
+            order_request_id=7,
+            service_name=config.service_name,
+            execution_mode="paper",
+            symbol=signal.symbol,
+            action="BUY",
+            lifecycle_state="FILLED",
+            event_time=_candle().interval_end,
+            reason_code="PAPER_ORDER_FILLED",
+            decision_trace_id=42,
+            event_id=2,
+        ),
+    )
+
+    updated_trace = write_rationale_reports(
+        trace=trace,
+        artifact_root=tmp_path / "artifacts" / "rationale",
+        order_request=order_request,
+        lifecycle_events=lifecycle_events,
+    )
+
+    assert updated_trace.json_report_path == (
+        tmp_path / "artifacts" / "rationale" / "paper-trader" / "paper" / "42.json"
+    ).as_posix()
+    assert updated_trace.markdown_report_path == (
+        tmp_path / "artifacts" / "rationale" / "paper-trader" / "paper" / "42.md"
+    ).as_posix()
+    json_path = Path(updated_trace.json_report_path)
+    markdown_path = Path(updated_trace.markdown_report_path)
+    assert json_path.exists()
+    assert markdown_path.exists()
+    assert '"decision_trace_id": 42' in json_path.read_text(encoding="utf-8")
+    assert '"execution_intent"' in json_path.read_text(encoding="utf-8")
+    assert "# Decision Trace 42" in markdown_path.read_text(encoding="utf-8")
+    assert "## Lifecycle Events" in markdown_path.read_text(encoding="utf-8")
