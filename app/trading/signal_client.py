@@ -70,4 +70,24 @@ class SignalClient:
                 if payload.get("trade_allowed") is None
                 else bool(payload["trade_allowed"])
             ),
+            signal_status=(
+                None
+                if payload.get("signal_status") is None
+                else str(payload["signal_status"])
+            ),
+            decision_source=(
+                None
+                if payload.get("decision_source") is None
+                else str(payload["decision_source"])
+            ),
+            reason_code=(
+                None
+                if payload.get("reason_code") is None
+                else str(payload["reason_code"])
+            ),
+            freshness_status=(
+                None
+                if payload.get("freshness_status") is None
+                else str(payload["freshness_status"])
+            ),
         )

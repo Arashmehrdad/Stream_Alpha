@@ -22,6 +22,9 @@ class HealthResponse(BaseModel):
     regime_artifact_path: str | None
     database: str
     started_at: datetime
+    health_overall_status: str | None = None
+    reason_code: str | None = None
+    freshness_status: str | None = None
 
 
 class FeatureRowResponse(BaseModel):  # pylint: disable=too-many-instance-attributes
@@ -80,6 +83,9 @@ class PredictionResponse(BaseModel):
     confidence: float
     regime_label: str
     regime_run_id: str
+    decision_source: str | None = None
+    reason_code: str | None = None
+    freshness_status: str | None = None
 
 
 class ThresholdsResponse(BaseModel):
@@ -106,6 +112,10 @@ class SignalResponse(BaseModel):
     regime_label: str
     regime_run_id: str
     trade_allowed: bool
+    signal_status: str | None = None
+    decision_source: str | None = None
+    reason_code: str | None = None
+    freshness_status: str | None = None
 
 
 class RegimeResponse(BaseModel):
@@ -126,6 +136,7 @@ class RegimeResponse(BaseModel):
     trade_allowed: bool
     buy_prob_up: float
     sell_prob_up: float
+    freshness_status: str | None = None
 
 
 class LatencyStatsResponse(BaseModel):

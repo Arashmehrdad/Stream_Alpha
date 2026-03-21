@@ -12,6 +12,7 @@ from uuid import uuid4
 import asyncpg
 import pytest
 
+from app.reliability.schemas import RecoveryEvent, ReliabilityState, ServiceHeartbeat
 from app.trading.repository import TradingRepository
 from app.trading.schemas import PaperEngineState, PendingSignalState, TradeLedgerEntry
 
@@ -173,5 +174,106 @@ async def _run_insert_ledger_entry_round_trip_test(entry: TradeLedgerEntry) -> N
             """,
             entry.service_name,
             entry.execution_mode,
+        )
+        await repository.close()
+
+
+def test_reliability_round_trip_supports_heartbeat_state_and_events() -> None:
+    service_name = f"reliability-test-{uuid4().hex[:10]}"
+    heartbeat_at = datetime(2026, 3, 21, 12, 15, tzinfo=timezone.utc)
+    heartbeat = ServiceHeartbeat(
+        service_name=service_name,
+        component_name="signal_client",
+        heartbeat_at=heartbeat_at,
+        health_overall_status="HEALTHY",
+        reason_code="HEALTH_HEALTHY",
+        detail="initial heartbeat",
+    )
+    state = ReliabilityState(
+        service_name=service_name,
+        component_name="signal_client",
+        health_overall_status="DEGRADED",
+        freshness_status="STALE",
+        breaker_state="HALF_OPEN",
+        failure_count=2,
+        success_count=0,
+        last_heartbeat_at=heartbeat_at,
+        last_failure_at=heartbeat_at,
+        opened_at=heartbeat_at,
+        reason_code="HEALTH_DEGRADED_FRESHNESS",
+        detail="feature freshness degraded",
+    )
+    event = RecoveryEvent(
+        service_name=service_name,
+        component_name="signal_client",
+        event_type="BREAKER_TRANSITION",
+        event_time=heartbeat_at,
+        reason_code="BREAKER_HALF_OPENED",
+        health_overall_status="DEGRADED",
+        freshness_status="STALE",
+        breaker_state="HALF_OPEN",
+        detail="breaker moved to half-open",
+    )
+
+    asyncio.run(_run_reliability_round_trip_test(heartbeat, state, event))
+
+
+async def _run_reliability_round_trip_test(
+    heartbeat: ServiceHeartbeat,
+    state: ReliabilityState,
+    event: RecoveryEvent,
+) -> None:
+    repository = TradingRepository(dsn=_postgres_dsn(), source_table="feature_ohlc")
+    try:
+        await repository.connect()
+    except (OSError, asyncpg.CannotConnectNowError) as error:
+        pytest.skip(f"PostgreSQL not reachable for reliability round-trip test: {error}")
+        return
+
+    try:
+        stored_heartbeat = await repository.save_service_heartbeat(heartbeat)
+        await repository.save_reliability_state(state)
+        stored_event = await repository.insert_reliability_event(event)
+        loaded_state = await repository.load_reliability_state(
+            service_name=state.service_name,
+            component_name=state.component_name,
+        )
+        latest_heartbeat = await repository.load_latest_service_heartbeat(
+            service_name=heartbeat.service_name,
+            component_name=heartbeat.component_name,
+        )
+        assert stored_heartbeat.heartbeat_id is not None
+        assert latest_heartbeat is not None
+        assert latest_heartbeat.reason_code == "HEALTH_HEALTHY"
+        assert loaded_state is not None
+        assert loaded_state.breaker_state == "HALF_OPEN"
+        assert loaded_state.freshness_status == "STALE"
+        assert stored_event.event_id is not None
+        assert stored_event.reason_code == "BREAKER_HALF_OPENED"
+    finally:
+        pool = repository._require_pool()  # pylint: disable=protected-access
+        await pool.execute(
+            """
+            DELETE FROM reliability_events
+            WHERE service_name = $1 AND component_name = $2
+            """,
+            event.service_name,
+            event.component_name,
+        )
+        await pool.execute(
+            """
+            DELETE FROM reliability_state
+            WHERE service_name = $1 AND component_name = $2
+            """,
+            state.service_name,
+            state.component_name,
+        )
+        await pool.execute(
+            """
+            DELETE FROM service_heartbeats
+            WHERE service_name = $1 AND component_name = $2
+            """,
+            heartbeat.service_name,
+            heartbeat.component_name,
         )
         await repository.close()

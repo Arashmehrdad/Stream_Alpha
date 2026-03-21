@@ -61,6 +61,10 @@ class SignalDecision:
     regime_label: str | None = None
     regime_run_id: str | None = None
     trade_allowed: bool | None = None
+    signal_status: str | None = None
+    decision_source: str | None = None
+    reason_code: str | None = None
+    freshness_status: str | None = None
     approved_notional: float | None = None
     risk_outcome: RiskOutcome | None = None
     risk_reason_codes: tuple[str, ...] = field(default_factory=tuple)

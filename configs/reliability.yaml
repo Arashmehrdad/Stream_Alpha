@@ -1,0 +1,14 @@
+schema_version: m13_reliability_v1
+freshness:
+  feed_max_age_seconds: 90
+  feature_max_age_seconds: 120
+  regime_max_age_seconds: 86400
+heartbeat:
+  write_interval_seconds: 15
+  stale_after_seconds: 45
+circuit_breaker:
+  failure_threshold: 3
+  half_open_after_seconds: 60
+  success_threshold: 1
+recovery:
+  stale_pending_signal_max_age_intervals: 1

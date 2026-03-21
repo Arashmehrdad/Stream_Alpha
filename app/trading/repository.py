@@ -11,6 +11,7 @@ from datetime import date, datetime
 import asyncpg
 
 from app.common.time import to_rfc3339
+from app.reliability.schemas import RecoveryEvent, ReliabilityState, ServiceHeartbeat
 from app.trading.schemas import (
     FeatureCandle,
     LiveSafetyState,
@@ -33,6 +34,9 @@ RISK_DECISIONS_TABLE = "paper_risk_decisions"
 ORDER_REQUESTS_TABLE = "execution_order_requests"
 ORDER_EVENTS_TABLE = "execution_order_events"
 LIVE_SAFETY_TABLE = "execution_live_safety_state"
+HEARTBEATS_TABLE = "service_heartbeats"
+RELIABILITY_STATE_TABLE = "reliability_state"
+RELIABILITY_EVENTS_TABLE = "reliability_events"
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -72,6 +76,9 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
         self._order_requests_table = _quote_table_name(ORDER_REQUESTS_TABLE)
         self._order_events_table = _quote_table_name(ORDER_EVENTS_TABLE)
         self._live_safety_table = _quote_table_name(LIVE_SAFETY_TABLE)
+        self._heartbeats_table = _quote_table_name(HEARTBEATS_TABLE)
+        self._reliability_state_table = _quote_table_name(RELIABILITY_STATE_TABLE)
+        self._reliability_events_table = _quote_table_name(RELIABILITY_EVENTS_TABLE)
         self._pool: asyncpg.Pool | None = None
 
     async def connect(self) -> None:
@@ -391,6 +398,172 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
             state.failure_hard_stop_active,
             state.last_failure_reason,
         )
+
+    async def save_service_heartbeat(
+        self,
+        heartbeat: ServiceHeartbeat,
+    ) -> ServiceHeartbeat:
+        """Insert one reliability heartbeat row."""
+        pool = self._require_pool()
+        row = await pool.fetchrow(
+            f"""
+            INSERT INTO {self._heartbeats_table} (
+                service_name,
+                component_name,
+                heartbeat_at,
+                health_overall_status,
+                reason_code,
+                details
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6
+            )
+            RETURNING *
+            """,
+            heartbeat.service_name,
+            heartbeat.component_name,
+            heartbeat.heartbeat_at,
+            heartbeat.health_overall_status,
+            heartbeat.reason_code,
+            heartbeat.detail,
+        )
+        if row is None:
+            raise RuntimeError("Heartbeat insert returned no row")
+        return _heartbeat_from_row(row)
+
+    async def load_latest_service_heartbeat(
+        self,
+        *,
+        service_name: str,
+        component_name: str,
+    ) -> ServiceHeartbeat | None:
+        """Load the latest heartbeat row for one service component."""
+        pool = self._require_pool()
+        row = await pool.fetchrow(
+            f"""
+            SELECT *
+            FROM {self._heartbeats_table}
+            WHERE service_name = $1 AND component_name = $2
+            ORDER BY heartbeat_at DESC, id DESC
+            LIMIT $3
+            """,
+            service_name,
+            component_name,
+            1,
+        )
+        if row is None:
+            return None
+        return _heartbeat_from_row(row)
+
+    async def save_reliability_state(self, state: ReliabilityState) -> None:
+        """Upsert one reliability-state row."""
+        pool = self._require_pool()
+        await pool.execute(
+            f"""
+            INSERT INTO {self._reliability_state_table} (
+                service_name,
+                component_name,
+                health_overall_status,
+                freshness_status,
+                breaker_state,
+                failure_count,
+                success_count,
+                last_heartbeat_at,
+                last_success_at,
+                last_failure_at,
+                opened_at,
+                reason_code,
+                details,
+                updated_at
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW()
+            )
+            ON CONFLICT (service_name, component_name)
+            DO UPDATE SET
+                health_overall_status = EXCLUDED.health_overall_status,
+                freshness_status = EXCLUDED.freshness_status,
+                breaker_state = EXCLUDED.breaker_state,
+                failure_count = EXCLUDED.failure_count,
+                success_count = EXCLUDED.success_count,
+                last_heartbeat_at = EXCLUDED.last_heartbeat_at,
+                last_success_at = EXCLUDED.last_success_at,
+                last_failure_at = EXCLUDED.last_failure_at,
+                opened_at = EXCLUDED.opened_at,
+                reason_code = EXCLUDED.reason_code,
+                details = EXCLUDED.details,
+                updated_at = NOW()
+            """,
+            state.service_name,
+            state.component_name,
+            state.health_overall_status,
+            state.freshness_status,
+            state.breaker_state,
+            state.failure_count,
+            state.success_count,
+            state.last_heartbeat_at,
+            state.last_success_at,
+            state.last_failure_at,
+            state.opened_at,
+            state.reason_code,
+            state.detail,
+        )
+
+    async def load_reliability_state(
+        self,
+        *,
+        service_name: str,
+        component_name: str,
+    ) -> ReliabilityState | None:
+        """Load one persisted reliability-state row."""
+        pool = self._require_pool()
+        row = await pool.fetchrow(
+            f"""
+            SELECT *
+            FROM {self._reliability_state_table}
+            WHERE service_name = $1 AND component_name = $2
+            """,
+            service_name,
+            component_name,
+        )
+        if row is None:
+            return None
+        return _reliability_state_from_row(row)
+
+    async def insert_reliability_event(
+        self,
+        event: RecoveryEvent,
+    ) -> RecoveryEvent:
+        """Insert one reliability event audit row."""
+        pool = self._require_pool()
+        row = await pool.fetchrow(
+            f"""
+            INSERT INTO {self._reliability_events_table} (
+                service_name,
+                component_name,
+                event_type,
+                event_time,
+                reason_code,
+                health_overall_status,
+                freshness_status,
+                breaker_state,
+                details
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9
+            )
+            RETURNING *
+            """,
+            event.service_name,
+            event.component_name,
+            event.event_type,
+            event.event_time,
+            event.reason_code,
+            event.health_overall_status,
+            event.freshness_status,
+            event.breaker_state,
+            event.detail,
+        )
+        if row is None:
+            raise RuntimeError("Reliability event insert returned no row")
+        return _recovery_event_from_row(row)
 
     async def ensure_order_request(self, order_request: OrderRequest) -> OrderRequest:
         """Insert one deterministic M11 order request or return the existing row."""
@@ -913,7 +1086,7 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
         )
         return {str(row["symbol"]): float(row["close_price"]) for row in rows}
 
-    async def _ensure_schema(self) -> None:  # pylint: disable=too-many-statements
+    async def _ensure_schema(self) -> None:  # pylint: disable=too-many-locals,too-many-statements
         pool = self._require_pool()
         open_position_index = _build_index_name(
             _table_basename(POSITIONS_TABLE),
@@ -946,6 +1119,17 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
         order_events_unique = _build_index_name(
             _table_basename(ORDER_EVENTS_TABLE),
             "request_state_uidx",
+        )
+        heartbeats_index = _build_index_name(
+            _table_basename(HEARTBEATS_TABLE),
+            "service_component_heartbeat_idx",
+        )
+        reliability_state_primary_key = _quote_identifier(
+            f"{_table_basename(RELIABILITY_STATE_TABLE)}_pkey"
+        )
+        reliability_events_index = _build_index_name(
+            _table_basename(RELIABILITY_EVENTS_TABLE),
+            "service_component_event_time_idx",
         )
         live_safety_primary_key = _quote_identifier(
             f"{_table_basename(LIVE_SAFETY_TABLE)}_pkey"
@@ -1475,6 +1659,92 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                 ADD PRIMARY KEY (service_name, execution_mode)
                 """
             )
+            await connection.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {self._heartbeats_table} (
+                    id BIGSERIAL PRIMARY KEY,
+                    service_name TEXT NOT NULL,
+                    component_name TEXT NOT NULL,
+                    heartbeat_at TIMESTAMPTZ NOT NULL,
+                    health_overall_status TEXT NOT NULL,
+                    reason_code TEXT NOT NULL,
+                    details TEXT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            await connection.execute(
+                f"""
+                CREATE INDEX IF NOT EXISTS {heartbeats_index}
+                ON {self._heartbeats_table} (
+                    service_name,
+                    component_name,
+                    heartbeat_at DESC,
+                    id DESC
+                )
+                """
+            )
+            await connection.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {self._reliability_state_table} (
+                    service_name TEXT NOT NULL,
+                    component_name TEXT NOT NULL,
+                    health_overall_status TEXT NOT NULL,
+                    freshness_status TEXT NULL,
+                    breaker_state TEXT NOT NULL,
+                    failure_count INTEGER NOT NULL DEFAULT 0,
+                    success_count INTEGER NOT NULL DEFAULT 0,
+                    last_heartbeat_at TIMESTAMPTZ NULL,
+                    last_success_at TIMESTAMPTZ NULL,
+                    last_failure_at TIMESTAMPTZ NULL,
+                    opened_at TIMESTAMPTZ NULL,
+                    reason_code TEXT NULL,
+                    details TEXT NULL,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (service_name, component_name)
+                )
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._reliability_state_table}
+                DROP CONSTRAINT IF EXISTS {reliability_state_primary_key}
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._reliability_state_table}
+                ADD PRIMARY KEY (service_name, component_name)
+                """
+            )
+            await connection.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {self._reliability_events_table} (
+                    id BIGSERIAL PRIMARY KEY,
+                    service_name TEXT NOT NULL,
+                    component_name TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    event_time TIMESTAMPTZ NOT NULL,
+                    reason_code TEXT NOT NULL,
+                    health_overall_status TEXT NULL,
+                    freshness_status TEXT NULL,
+                    breaker_state TEXT NULL,
+                    details TEXT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            await connection.execute(
+                f"""
+                CREATE INDEX IF NOT EXISTS {reliability_events_index}
+                ON {self._reliability_events_table} (
+                    service_name,
+                    component_name,
+                    event_time DESC,
+                    id DESC
+                )
+                """
+            )
 
     def _require_pool(self) -> asyncpg.Pool:
         if self._pool is None:
@@ -1663,6 +1933,64 @@ def _live_safety_state_from_row(row: asyncpg.Record) -> LiveSafetyState:
             else str(row["last_failure_reason"])
         ),
         updated_at=row["updated_at"],
+    )
+
+
+def _heartbeat_from_row(row: asyncpg.Record) -> ServiceHeartbeat:
+    return ServiceHeartbeat(
+        service_name=str(row["service_name"]),
+        component_name=str(row["component_name"]),
+        heartbeat_at=row["heartbeat_at"],
+        health_overall_status=str(row["health_overall_status"]),
+        reason_code=str(row["reason_code"]),
+        detail=None if row["details"] is None else str(row["details"]),
+        heartbeat_id=int(row["id"]),
+        created_at=row["created_at"],
+    )
+
+
+def _reliability_state_from_row(row: asyncpg.Record) -> ReliabilityState:
+    return ReliabilityState(
+        service_name=str(row["service_name"]),
+        component_name=str(row["component_name"]),
+        health_overall_status=str(row["health_overall_status"]),
+        freshness_status=(
+            None if row["freshness_status"] is None else str(row["freshness_status"])
+        ),
+        breaker_state=str(row["breaker_state"]),
+        failure_count=int(row["failure_count"]),
+        success_count=int(row["success_count"]),
+        last_heartbeat_at=row["last_heartbeat_at"],
+        last_success_at=row["last_success_at"],
+        last_failure_at=row["last_failure_at"],
+        opened_at=row["opened_at"],
+        reason_code=None if row["reason_code"] is None else str(row["reason_code"]),
+        detail=None if row["details"] is None else str(row["details"]),
+        updated_at=row["updated_at"],
+    )
+
+
+def _recovery_event_from_row(row: asyncpg.Record) -> RecoveryEvent:
+    return RecoveryEvent(
+        service_name=str(row["service_name"]),
+        component_name=str(row["component_name"]),
+        event_type=str(row["event_type"]),
+        event_time=row["event_time"],
+        reason_code=str(row["reason_code"]),
+        health_overall_status=(
+            None
+            if row["health_overall_status"] is None
+            else str(row["health_overall_status"])
+        ),
+        freshness_status=(
+            None if row["freshness_status"] is None else str(row["freshness_status"])
+        ),
+        breaker_state=(
+            None if row["breaker_state"] is None else str(row["breaker_state"])
+        ),
+        detail=None if row["details"] is None else str(row["details"]),
+        event_id=int(row["id"]),
+        created_at=row["created_at"],
     )
 
 
