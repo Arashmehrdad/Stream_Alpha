@@ -55,6 +55,7 @@ class ApiHealthSnapshot:
     checked_at: datetime
     status: str
     service: str | None = None
+    runtime_profile: str | None = None
     model_loaded: bool = False
     model_name: str | None = None
     model_artifact_path: str | None = None
@@ -465,6 +466,11 @@ class DashboardDataSources:
             checked_at=checked_at,
             status=str(payload.get("status", "unknown")),
             service=None if payload.get("service") is None else str(payload["service"]),
+            runtime_profile=(
+                None
+                if payload.get("runtime_profile") is None
+                else str(payload["runtime_profile"])
+            ),
             model_loaded=bool(payload.get("model_loaded")),
             model_name=None if payload.get("model_name") is None else str(payload["model_name"]),
             model_artifact_path=(

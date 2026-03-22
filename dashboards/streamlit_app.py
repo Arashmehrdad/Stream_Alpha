@@ -10,7 +10,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from app.common.config import Settings
-from app.runtime.config import resolve_trading_config_path
+from app.runtime.config import resolve_runtime_profile, resolve_trading_config_path
 from app.trading.config import PaperTradingConfig, load_paper_trading_config
 from dashboards.data_sources import DashboardDataSources, DecisionTraceSnapshot
 from dashboards.view_models import (
@@ -69,15 +69,13 @@ def main() -> None:
     st.title("Stream Alpha")
     st.caption("Milestone M15 operator console foundation")
 
-    with st.sidebar:
-        _render_sidebar(settings=settings, trading_config=trading_config)
-
     snapshot = asyncio.run(
         DashboardDataSources(
             settings=settings,
             trading_config=trading_config,
         ).load_snapshot()
     )
+    runtime_profile = resolve_display_runtime_profile(snapshot=snapshot)
     reference_time = max(snapshot.api_health.checked_at, snapshot.database.checked_at)
     incidents = build_operator_incident_rows(
         snapshot=snapshot,
@@ -181,6 +179,17 @@ def main() -> None:
     )
     trader_freshness = build_trader_freshness(snapshot.database.engine_states)
 
+    render_runtime_profile_badge(
+        runtime_profile=runtime_profile,
+        execution_mode=trading_config.execution.mode,
+    )
+    with st.sidebar:
+        _render_sidebar(
+            settings=settings,
+            trading_config=trading_config,
+            runtime_profile=runtime_profile,
+        )
+
     render_operator_banner(banner)
     render_live_critical_state_strip(live_critical_strip)
     render_summary_cards(
@@ -278,11 +287,51 @@ def resolve_dashboard_trading_config_path() -> Path:
     return resolve_trading_config_path()
 
 
-def _render_sidebar(*, settings: Settings, trading_config: PaperTradingConfig) -> None:
+def resolve_display_runtime_profile(*, snapshot) -> str:
+    """Resolve the runtime profile from API truth or env fallback."""
+    snapshot_profile = getattr(snapshot.api_health, "runtime_profile", None)
+    if snapshot_profile is not None and str(snapshot_profile).strip():
+        try:
+            return _normalize_runtime_profile(snapshot_profile)
+        except ValueError:
+            pass
+    return _normalize_runtime_profile(resolve_runtime_profile())
+
+
+def render_runtime_profile_badge(
+    *,
+    runtime_profile: str,
+    execution_mode: str,
+) -> None:
+    """Render the compact runtime profile badge under the title."""
+    profile = _normalize_runtime_profile(runtime_profile)
+    st.markdown(
+        (
+            "<div style=\"display:flex; flex-wrap:wrap; gap:0.5rem; align-items:center; "
+            "margin:0.1rem 0 0.9rem 0;\">"
+            "<span style=\"font-size:0.95rem; font-weight:600;\">Runtime Profile:</span>"
+            f"<span style=\"{_runtime_profile_badge_style(profile)}\">{profile}</span>"
+            "<span style=\"font-size:0.95rem; font-weight:600; margin-left:0.75rem;\">"
+            "Execution Mode:</span>"
+            f"<span style=\"font-family:monospace; font-size:0.95rem;\">"
+            f"{execution_mode}</span>"
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+
+def _render_sidebar(
+    *,
+    settings: Settings,
+    trading_config: PaperTradingConfig,
+    runtime_profile: str,
+) -> None:
     st.header("Runtime")
     st.write(f"Inference API: `{settings.dashboard.inference_api_base_url}`")
     st.write(f"Feature source table: `{settings.tables.feature_ohlc}`")
     st.write(f"Paper trader service: `{trading_config.service_name}`")
+    st.write(f"Runtime profile: `{runtime_profile.lower()}`")
     st.write(f"Execution mode: `{trading_config.execution.mode}`")
     st.write(f"Refresh target: `{settings.dashboard.refresh_seconds}s`")
     if trading_config.execution.mode == "live":
@@ -293,6 +342,27 @@ def _render_sidebar(*, settings: Settings, trading_config: PaperTradingConfig) -
         )
     if st.button("Refresh now", width="stretch"):
         st.rerun()
+
+
+def _normalize_runtime_profile(profile: str) -> str:
+    """Normalize the operator-facing runtime profile label."""
+    return resolve_runtime_profile(profile, default=None).upper()
+
+
+def _runtime_profile_badge_style(profile: str) -> str:
+    """Return the inline style for the runtime profile pill."""
+    palette = {
+        "DEV": ("#f3f4f6", "#374151", "#d1d5db"),
+        "PAPER": ("#eff6ff", "#1d4ed8", "#bfdbfe"),
+        "SHADOW": ("#fff7ed", "#c2410c", "#fed7aa"),
+        "LIVE": ("#fef2f2", "#b91c1c", "#fecaca"),
+    }
+    background, foreground, border = palette[profile]
+    return (
+        "display:inline-block; padding:0.2rem 0.55rem; border-radius:999px; "
+        f"background:{background}; color:{foreground}; border:1px solid {border}; "
+        "font-size:0.82rem; font-weight:700; letter-spacing:0.02em;"
+    )
 
 
 def _render_market_view(

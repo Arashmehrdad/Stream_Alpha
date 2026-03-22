@@ -128,6 +128,7 @@ class _HealthyHttpClient:
                 {
                     "status": "ok",
                     "service": "inference",
+                    "runtime_profile": "paper",
                     "model_loaded": True,
                     "model_name": "logistic_regression",
                     "model_artifact_path": "artifacts/training/m3/model.joblib",
@@ -282,6 +283,7 @@ def test_dashboard_snapshot_parses_regime_fields_from_api_payloads() -> None:
     snapshot = asyncio.run(data_sources.load_snapshot())
 
     assert snapshot.api_health.regime_loaded is True
+    assert snapshot.api_health.runtime_profile == "paper"
     assert snapshot.api_health.regime_run_id == "20260320T120000Z"
     assert snapshot.api_health.health_overall_status == "HEALTHY"
     assert snapshot.system_reliability is not None
