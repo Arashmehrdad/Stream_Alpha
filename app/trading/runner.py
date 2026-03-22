@@ -187,10 +187,10 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
             system_reliability=self._last_system_reliability_snapshot,
         )
         self._startup_safety_report = await self._write_startup_safety_report()
-        await self._record_live_mode_activation()
         assert_live_startup_passed(checklist)
         assert_live_reconciliation_clear(self.live_safety_state)
         assert_live_health_gate_clear(self.live_safety_state)
+        await self._record_live_mode_activation()
 
     async def shutdown(self) -> None:
         """Close the signal client and repository."""

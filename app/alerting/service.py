@@ -23,7 +23,7 @@ from app.alerting.schemas import (
 )
 from app.common.serialization import make_json_safe
 from app.common.time import to_rfc3339, utc_now
-from app.reliability.service import FEED_STALE
+from app.reliability.service import FEATURE_LAG_BREACH, FEED_STALE
 from app.trading.live import LIVE_HEALTH_GATE_CLEAR, LIVE_RECONCILIATION_CLEAR
 from app.trading.risk_engine import MAX_DRAWDOWN_BREACHED, current_drawdown_pct
 from app.trading.schemas import (
@@ -590,6 +590,7 @@ class OperationalAlertService:
                 execution_mode=execution_mode,
                 evaluated_at=evaluated_at,
                 interval_minutes=interval_minutes,
+                system_reliability=system_reliability,
                 decision_traces=decision_traces,
             )
         )
@@ -599,10 +600,47 @@ class OperationalAlertService:
                 execution_mode=execution_mode,
                 evaluated_at=evaluated_at,
                 interval_minutes=interval_minutes,
+                system_reliability=system_reliability,
                 decision_traces=decision_traces,
             )
         )
         return tuple(observations)
+
+    def _signal_cadence_gate(
+        self,
+        *,
+        system_reliability: CanonicalSystemReliability | None,
+    ) -> tuple[bool, str | None, str]:
+        if system_reliability is None:
+            return (
+                False,
+                "SYSTEM_RELIABILITY_UNAVAILABLE",
+                (
+                    "Signal cadence evaluation is suppressed because "
+                    "system reliability is unavailable."
+                ),
+            )
+        producer_snapshot = next(
+            (
+                snapshot
+                for snapshot in system_reliability.services
+                if snapshot.component_name == "producer"
+            ),
+            None,
+        )
+        if producer_snapshot is not None and producer_snapshot.feed_reason_code == FEED_STALE:
+            return (
+                False,
+                FEED_STALE,
+                "Signal cadence evaluation is suppressed because the producer feed is stale.",
+            )
+        if system_reliability.lag_breach_active:
+            return (
+                False,
+                FEATURE_LAG_BREACH,
+                "Signal cadence evaluation is suppressed because a consumer lag breach is active.",
+            )
+        return True, None, "Signal cadence evaluation is clear."
 
     def _feed_stale_observations(
         self,
@@ -834,19 +872,30 @@ class OperationalAlertService:
         execution_mode: str,
         evaluated_at: datetime,
         interval_minutes: int,
+        system_reliability: CanonicalSystemReliability | None,
         decision_traces: Sequence[DecisionTraceRecord],
     ) -> AlertObservation:
         window_minutes = self.config.signals.silence_window_intervals * interval_minutes
         window_start = evaluated_at - timedelta(minutes=window_minutes)
-        traces_in_window = [
-            trace for trace in decision_traces if trace.signal_as_of_time >= window_start
+        cadence_allowed, suppression_reason_code, gating_detail = self._signal_cadence_gate(
+            system_reliability=system_reliability,
+        )
+        actionable_traces = [
+            trace
+            for trace in decision_traces
+            if trace.signal in _ACTIONABLE_SIGNALS
+        ]
+        actionable_traces_in_window = [
+            trace
+            for trace in actionable_traces
+            if trace.signal_as_of_time >= window_start
         ]
         latest_trace = max(
-            decision_traces,
+            actionable_traces,
             key=lambda trace: trace.signal_as_of_time,
             default=None,
         )
-        is_active = len(traces_in_window) == 0
+        is_active = cadence_allowed and len(actionable_traces_in_window) == 0
         return AlertObservation(
             service_name=service_name,
             execution_mode=execution_mode,
@@ -863,13 +912,17 @@ class OperationalAlertService:
                 source_component="decision_trace",
             ),
             summary_text=(
-                "No decision traces were recorded inside the configured silence window."
+                "No actionable decision traces were recorded inside the configured silence window."
                 if is_active
-                else "Decision trace activity has resumed."
+                else "Actionable decision trace activity has resumed."
+                if cadence_allowed
+                else "Signal silence evaluation is suppressed until runtime health is clear."
             ),
             detail=(
                 f"window_intervals={self.config.signals.silence_window_intervals} "
-                f"window_minutes={window_minutes} trace_count={len(traces_in_window)}"
+                f"window_minutes={window_minutes} "
+                f"actionable_trace_count={len(actionable_traces_in_window)} "
+                f"{gating_detail}"
             ),
             event_time=evaluated_at,
             is_active=is_active,
@@ -877,10 +930,13 @@ class OperationalAlertService:
                 None if latest_trace is None else latest_trace.decision_trace_id
             ),
             payload_json={
+                "cadence_evaluation_allowed": cadence_allowed,
+                "suppression_reason_code": suppression_reason_code,
                 "window_intervals": self.config.signals.silence_window_intervals,
                 "window_minutes": window_minutes,
-                "trace_count": len(traces_in_window),
-                "last_signal_as_of_time": (
+                "decision_trace_count": len(decision_traces),
+                "actionable_trace_count": len(actionable_traces_in_window),
+                "last_actionable_signal_as_of_time": (
                     None
                     if latest_trace is None
                     else to_rfc3339(latest_trace.signal_as_of_time)
@@ -895,10 +951,14 @@ class OperationalAlertService:
         execution_mode: str,
         evaluated_at: datetime,
         interval_minutes: int,
+        system_reliability: CanonicalSystemReliability | None,
         decision_traces: Sequence[DecisionTraceRecord],
     ) -> AlertObservation:
         window_minutes = self.config.signals.flood_window_intervals * interval_minutes
         window_start = evaluated_at - timedelta(minutes=window_minutes)
+        cadence_allowed, suppression_reason_code, gating_detail = self._signal_cadence_gate(
+            system_reliability=system_reliability,
+        )
         actionable_traces = [
             trace
             for trace in decision_traces
@@ -910,7 +970,12 @@ class OperationalAlertService:
             "BUY": len([trace for trace in actionable_traces if trace.signal == "BUY"]),
             "SELL": len([trace for trace in actionable_traces if trace.signal == "SELL"]),
         }
-        if actionable_count >= self.config.signals.flood_critical_count:
+        if not cadence_allowed:
+            severity = "WARNING"
+            reason_code = SIGNAL_FLOOD_CLEARED
+            is_active = False
+            summary = "Signal flood evaluation is suppressed until runtime health is clear."
+        elif actionable_count >= self.config.signals.flood_critical_count:
             severity = "CRITICAL"
             reason_code = SIGNAL_FLOOD_CRITICAL
             is_active = True
@@ -941,7 +1006,8 @@ class OperationalAlertService:
             summary_text=summary,
             detail=(
                 f"window_intervals={self.config.signals.flood_window_intervals} "
-                f"window_minutes={window_minutes} actionable_count={actionable_count}"
+                f"window_minutes={window_minutes} actionable_count={actionable_count} "
+                f"{gating_detail}"
             ),
             event_time=evaluated_at,
             is_active=is_active,
@@ -949,6 +1015,8 @@ class OperationalAlertService:
                 None if latest_trace is None else latest_trace.decision_trace_id
             ),
             payload_json={
+                "cadence_evaluation_allowed": cadence_allowed,
+                "suppression_reason_code": suppression_reason_code,
                 "window_intervals": self.config.signals.flood_window_intervals,
                 "window_minutes": window_minutes,
                 "warning_count": self.config.signals.flood_warning_count,

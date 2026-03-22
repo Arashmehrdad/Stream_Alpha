@@ -726,6 +726,57 @@ class FakeSignalClient:
         return self.system_reliability
 
 
+class FakeAlertRepository:
+    def __init__(self) -> None:
+        self.events = []
+        self.states = {}
+
+    async def connect(self) -> None:
+        return None
+
+    async def close(self) -> None:
+        return None
+
+    async def load_state(self, *, fingerprint: str):
+        return self.states.get(fingerprint)
+
+    async def save_state(self, state) -> None:
+        self.states[state.fingerprint] = state
+
+    async def insert_event(self, event):
+        stored = replace(
+            event,
+            event_id=len(self.events) + 1,
+            created_at=event.event_time,
+        )
+        self.events.append(stored)
+        return stored
+
+    async def load_active_states(self, *, service_name: str, execution_mode: str):
+        return [
+            state
+            for state in self.states.values()
+            if state.service_name == service_name
+            and state.execution_mode == execution_mode
+            and state.is_active
+        ]
+
+    async def load_events_for_day(
+        self,
+        *,
+        service_name: str,
+        execution_mode: str,
+        summary_date,
+    ):
+        return [
+            event
+            for event in self.events
+            if event.service_name == service_name
+            and event.execution_mode == execution_mode
+            and event.event_time.date() == summary_date
+        ]
+
+
 def _arm_live(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("STREAMALPHA_ENABLE_LIVE", "true")
     monkeypatch.setenv("STREAMALPHA_LIVE_CONFIRM", LIVE_CONFIRMATION_PHRASE)
@@ -1204,6 +1255,75 @@ def test_live_startup_fails_closed_when_system_health_is_unavailable(
         repository.live_safety_state.health_gate_reason_code
         == LIVE_SYSTEM_HEALTH_UNAVAILABLE
     )
+
+
+def test_live_activation_not_recorded_when_startup_health_gate_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _arm_live(monkeypatch)
+    startup_report_path = tmp_path / "startup_report.json"
+    startup_report_path.write_text(
+        '{"startup_validation_passed": true, "errors": []}',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("STREAMALPHA_RUNTIME_PROFILE", "live")
+    monkeypatch.setenv("STREAMALPHA_STARTUP_REPORT_PATH", str(startup_report_path))
+    repository = FakeRepository([_candle(0)])
+    alert_repository = FakeAlertRepository()
+    runner = PaperTradingRunner(
+        config=_live_config(tmp_path),
+        repository=repository,
+        signal_client=FakeSignalClient(
+            system_reliability=_system_reliability(
+                health_overall_status="DEGRADED",
+                reason_codes=("FEED_STALE",),
+            )
+        ),
+        broker_client=FakeBrokerClient(),
+        alert_repository=alert_repository,
+    )
+
+    with pytest.raises(LiveStartupValidationError, match="FEED_STALE"):
+        asyncio.run(runner.startup())
+
+    assert "LIVE_MODE_ACTIVATION" not in [event.category for event in alert_repository.events]
+    assert "STARTUP_SAFETY" in [event.category for event in alert_repository.events]
+
+
+def test_live_activation_recorded_when_startup_fully_passes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _arm_live(monkeypatch)
+    startup_report_path = tmp_path / "startup_report.json"
+    startup_report_path.write_text(
+        '{"startup_validation_passed": true, "errors": []}',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("STREAMALPHA_RUNTIME_PROFILE", "live")
+    monkeypatch.setenv("STREAMALPHA_STARTUP_REPORT_PATH", str(startup_report_path))
+    repository = FakeRepository([_candle(0)])
+    alert_repository = FakeAlertRepository()
+    runner = PaperTradingRunner(
+        config=_live_config(tmp_path),
+        repository=repository,
+        signal_client=FakeSignalClient(),
+        broker_client=FakeBrokerClient(),
+        alert_repository=alert_repository,
+    )
+
+    asyncio.run(runner.startup())
+    asyncio.run(runner.shutdown())
+
+    activation_events = [
+        event
+        for event in alert_repository.events
+        if event.category == "LIVE_MODE_ACTIVATION"
+    ]
+
+    assert len(activation_events) == 1
+    assert activation_events[0].event_state == "INFO"
 
 
 def test_live_not_armed_creates_no_submit(

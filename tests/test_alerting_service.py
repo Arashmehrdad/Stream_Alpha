@@ -426,6 +426,38 @@ def test_signal_silence_alert_opens(tmp_path: Path) -> None:
     assert events[0].reason_code == SIGNAL_SILENCE_DETECTED
 
 
+def test_hold_only_decision_traces_still_trigger_signal_silence(tmp_path: Path) -> None:
+    repository = FakeAlertRepository()
+    service = OperationalAlertService(
+        config=_alerting_config(tmp_path),
+        repository=repository,
+    )
+
+    events = asyncio.run(
+        service.evaluate_cycle(
+            service_name="paper-trader",
+            execution_mode="paper",
+            interval_minutes=5,
+            evaluated_at=_now(),
+            system_reliability=_system_reliability(),
+            service_risk_state=_service_risk_state(current_equity=100.0, high_watermark=100.0),
+            order_events=[],
+            decision_traces=[
+                _decision_trace(1, signal="HOLD"),
+                _decision_trace(2, signal="HOLD", minutes_ago=5),
+            ],
+            max_drawdown_pct=0.15,
+        )
+    )
+
+    assert len(events) == 1
+    assert events[0].category == "SIGNAL_SILENCE"
+    assert events[0].reason_code == SIGNAL_SILENCE_DETECTED
+    assert events[0].payload_json["decision_trace_count"] == 2
+    assert events[0].payload_json["actionable_trace_count"] == 0
+    assert events[0].payload_json["last_actionable_signal_as_of_time"] is None
+
+
 def test_signal_flood_alert_opens(tmp_path: Path) -> None:
     repository = FakeAlertRepository()
     service = OperationalAlertService(
@@ -454,6 +486,102 @@ def test_signal_flood_alert_opens(tmp_path: Path) -> None:
     assert len(events) == 1
     assert events[0].category == "SIGNAL_FLOOD"
     assert events[0].reason_code == SIGNAL_FLOOD_WARNING
+
+
+def test_feed_stale_suppresses_signal_cadence_open_and_clears_silence(
+    tmp_path: Path,
+) -> None:
+    repository = FakeAlertRepository()
+    service = OperationalAlertService(
+        config=_alerting_config(tmp_path),
+        repository=repository,
+    )
+
+    opened = asyncio.run(
+        service.evaluate_cycle(
+            service_name="paper-trader",
+            execution_mode="paper",
+            interval_minutes=5,
+            evaluated_at=_now(),
+            system_reliability=_system_reliability(),
+            service_risk_state=_service_risk_state(current_equity=100.0, high_watermark=100.0),
+            order_events=[],
+            decision_traces=[],
+            max_drawdown_pct=0.15,
+        )
+    )
+    suppressed = asyncio.run(
+        service.evaluate_cycle(
+            service_name="paper-trader",
+            execution_mode="paper",
+            interval_minutes=5,
+            evaluated_at=_now() + timedelta(minutes=5),
+            system_reliability=_system_reliability(feed_reason_code=FEED_STALE),
+            service_risk_state=_service_risk_state(current_equity=100.0, high_watermark=100.0),
+            order_events=[],
+            decision_traces=[],
+            max_drawdown_pct=0.15,
+        )
+    )
+
+    assert len(opened) == 1
+    assert opened[0].category == "SIGNAL_SILENCE"
+    assert opened[0].event_state == "OPEN"
+    assert [event.category for event in suppressed] == ["FEED_STALE", "SIGNAL_SILENCE"]
+    assert suppressed[0].event_state == "OPEN"
+    assert suppressed[1].event_state == "CLEARED"
+    assert suppressed[1].payload_json["cadence_evaluation_allowed"] is False
+    assert suppressed[1].payload_json["suppression_reason_code"] == FEED_STALE
+
+
+def test_lag_breach_suppresses_signal_cadence_open_and_clears_flood(
+    tmp_path: Path,
+) -> None:
+    repository = FakeAlertRepository()
+    service = OperationalAlertService(
+        config=_alerting_config(tmp_path),
+        repository=repository,
+    )
+    traces = [
+        _decision_trace(1, signal="BUY"),
+        _decision_trace(2, signal="SELL", minutes_ago=5),
+    ]
+
+    opened = asyncio.run(
+        service.evaluate_cycle(
+            service_name="paper-trader",
+            execution_mode="paper",
+            interval_minutes=5,
+            evaluated_at=_now(),
+            system_reliability=_system_reliability(),
+            service_risk_state=_service_risk_state(current_equity=100.0, high_watermark=100.0),
+            order_events=[],
+            decision_traces=traces,
+            max_drawdown_pct=0.15,
+        )
+    )
+    suppressed = asyncio.run(
+        service.evaluate_cycle(
+            service_name="paper-trader",
+            execution_mode="paper",
+            interval_minutes=5,
+            evaluated_at=_now() + timedelta(minutes=5),
+            system_reliability=_system_reliability(lag_breach=True),
+            service_risk_state=_service_risk_state(current_equity=100.0, high_watermark=100.0),
+            order_events=[],
+            decision_traces=traces,
+            max_drawdown_pct=0.15,
+        )
+    )
+
+    assert len(opened) == 1
+    assert opened[0].category == "SIGNAL_FLOOD"
+    assert opened[0].event_state == "OPEN"
+    assert [event.category for event in suppressed] == ["CONSUMER_LAG", "SIGNAL_FLOOD"]
+    assert suppressed[0].event_state == "OPEN"
+    assert suppressed[1].event_state == "CLEARED"
+    assert suppressed[1].payload_json["cadence_evaluation_allowed"] is False
+    assert suppressed[1].payload_json["suppression_reason_code"] == FEATURE_LAG_BREACH
 
 
 def test_live_mode_activation_records_info_event(tmp_path: Path) -> None:

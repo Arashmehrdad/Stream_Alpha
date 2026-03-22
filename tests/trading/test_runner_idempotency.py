@@ -23,6 +23,9 @@ from app.reliability.schemas import RecoveryEvent, ReliabilityState, ServiceHear
 from app.trading.config import PaperTradingConfig, RiskConfig
 from app.trading.runner import PaperTradingRunner
 from app.trading.schemas import (
+    CanonicalFeatureLag,
+    CanonicalServiceHealth,
+    CanonicalSystemReliability,
     DecisionTraceRecord,
     FeatureCandle,
     OrderLifecycleEvent,
@@ -73,6 +76,49 @@ def _candle(index: int) -> FeatureCandle:
         high_price=101.0 + index,
         low_price=99.0 + index,
         close_price=100.5 + index,
+    )
+
+
+def _system_reliability(evaluated_at: datetime) -> CanonicalSystemReliability:
+    return CanonicalSystemReliability(
+        service_name="stream-alpha",
+        checked_at=evaluated_at,
+        health_overall_status="HEALTHY",
+        reason_codes=("FEED_FRESH",),
+        lag_breach_active=False,
+        services=(
+            CanonicalServiceHealth(
+                service_name="stream-alpha",
+                component_name="producer",
+                checked_at=evaluated_at,
+                heartbeat_at=evaluated_at,
+                heartbeat_age_seconds=0.0,
+                heartbeat_freshness_status="FRESH",
+                health_overall_status="HEALTHY",
+                reason_code="FEED_FRESH",
+                feed_freshness_status="FRESH",
+                feed_reason_code="FEED_FRESH",
+                feed_age_seconds=0.0,
+            ),
+        ),
+        lag_by_symbol=(
+            CanonicalFeatureLag(
+                service_name="feature-builder",
+                component_name="features",
+                symbol="BTC/USD",
+                evaluated_at=evaluated_at,
+                latest_raw_event_received_at=evaluated_at,
+                latest_feature_interval_begin=_candle(0).interval_begin,
+                latest_feature_as_of_time=evaluated_at,
+                time_lag_seconds=0.0,
+                processing_lag_seconds=0.0,
+                time_lag_reason_code="FEATURE_TIME_LAG_OK",
+                processing_lag_reason_code="FEATURE_PROCESSING_LAG_OK",
+                lag_breach=False,
+                health_overall_status="HEALTHY",
+                reason_code="FEATURE_LAG_OK",
+            ),
+        ),
     )
 
 
@@ -690,6 +736,7 @@ def test_runner_alerting_smoke_writes_daily_summary_and_alert_events(
         config=alerting_config,
         repository=alert_repository,
     )
+    runner._last_system_reliability_snapshot = _system_reliability(evaluated_at)  # pylint: disable=protected-access
 
     asyncio.run(runner.startup())
     asyncio.run(runner.run_once())
