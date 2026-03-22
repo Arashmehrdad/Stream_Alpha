@@ -36,6 +36,25 @@ Milestone `M14` Packet 3 finishes the remaining explainability linkage without d
 
 Milestone `M15` upgrades the Streamlit UI into an operator console foundation. It keeps all accepted M4, M10, M11, M12, M13, and M14 authority boundaries intact, replaces the older three-tab layout with explicit market, signals, trades, risk, health, models, and incidents views, adds a persistent mode and safety banner, surfaces venue and environment truth, adds a filterable trade journal from canonical decision traces, and makes unsafe state visibly obvious without adding alerting, broker import, or a new backend service.
 
+Milestone `M16` adds the deployment and environment foundation. It keeps M4, M10, M11, M12, M13, M14, and M15 authority boundaries intact, adds one reusable app image, Compose profiles for `dev`, `paper`, `shadow`, and `live`, a one-shot startup validator, env-driven trading-config selection for the trader and dashboard, startup-report metadata on the existing inference APIs, PowerShell startup helpers, and explicit local retention rules without adding a new orchestration platform or alerting layer.
+
+## Deployment
+
+M16 introduces one-command local startup helpers plus a deployment guide:
+
+- [docs/deployment.md](docs/deployment.md) documents the exact `dev`, `paper`, `shadow`, and `live` startup flow.
+- `.\scripts\start-stack.ps1 -Profile dev` starts the blank-clone-friendly development stack.
+- `.\scripts\start-stack.ps1 -Profile paper` starts the full local stack only when model and regime artifacts already exist locally.
+- `.\scripts\stop-stack.ps1` stops the Compose stack without deleting local state.
+- `.\scripts\reset-state.ps1` removes Compose volumes plus runtime-only artifacts, but keeps long-lived training, regime, and registry evidence.
+- `.\scripts\prune-runtime-artifacts.ps1 -RetentionDays 14` deletes old runtime artifacts without touching promoted models or regime artifacts.
+
+Truthful M16 startup scope:
+
+- Blank-clone `dev` works after copying `.env.example` to `.env`.
+- Blank-clone `paper`, `shadow`, and `live` do not work honestly until local model and regime artifacts exist, or a local registry-backed champion exists under `artifacts/registry/`.
+- `live` additionally requires `.env.secrets` plus explicit guarded-live arming env values, and startup validation fails closed when they are missing.
+
 ## Repository Tree
 
 ```text

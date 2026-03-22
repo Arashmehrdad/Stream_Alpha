@@ -10,6 +10,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from app.common.config import Settings
+from app.runtime.config import resolve_trading_config_path
 from app.trading.config import PaperTradingConfig, load_paper_trading_config
 from dashboards.data_sources import DashboardDataSources, DecisionTraceSnapshot
 from dashboards.view_models import (
@@ -53,13 +54,10 @@ from dashboards.widgets import (
 # pylint: disable=too-many-locals,too-many-arguments,too-many-statements
 
 
-CONFIG_PATH = Path("configs/paper_trading.yaml")
-
-
 def main() -> None:
     """Run the read-only Stream Alpha M15 operator console."""
     settings = Settings.from_env()
-    trading_config = load_paper_trading_config(CONFIG_PATH)
+    trading_config = load_paper_trading_config(resolve_dashboard_trading_config_path())
 
     st.set_page_config(
         page_title="Stream Alpha Operator Console",
@@ -273,6 +271,11 @@ def main() -> None:
             latest_recovery_rows=latest_recovery_rows,
             latest_blocked_trade_rows=latest_blocked_trade_rows,
         )
+
+
+def resolve_dashboard_trading_config_path() -> Path:
+    """Resolve the dashboard trading config path from runtime env."""
+    return resolve_trading_config_path()
 
 
 def _render_sidebar(*, settings: Settings, trading_config: PaperTradingConfig) -> None:

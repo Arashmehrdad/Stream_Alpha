@@ -58,11 +58,9 @@ from app.reliability.service import (
 )
 from app.reliability.store import ReliabilityStore
 from app.regime.live import LiveRegimeRuntime, ResolvedRegime, load_live_regime_runtime
+from app.runtime.config import build_runtime_metadata, resolve_trading_config_path
 from app.trading.config import load_paper_trading_config
 from app.training.registry import resolve_inference_model_metadata
-
-
-_PAPER_TRADING_CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "paper_trading.yaml"
 
 
 class InvalidSymbolError(ValueError):
@@ -236,7 +234,7 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
             signal_policy_path=settings.inference.regime_signal_policy_path,
         )
         self.explainability_service = ExplainabilityService(self.explainability_config)
-        self.trading_config = load_paper_trading_config(_PAPER_TRADING_CONFIG_PATH)
+        self.trading_config = load_paper_trading_config(resolve_trading_config_path())
         self._symbols = set(settings.kraken.symbols)
         self._last_heartbeat_at: datetime | None = None
         self._validate_thresholds()
@@ -273,6 +271,7 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
 
     async def health(self) -> tuple[int, HealthResponse]:
         """Return the current dependency health payload and status code."""
+        runtime_metadata = self.runtime_metadata_fields()
         database_healthy = await self.database.is_healthy()
         model_loaded = self.model_artifact is not None
         if database_healthy and model_loaded:
@@ -320,6 +319,10 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
             HealthResponse(
                 status=status_text,
                 service=self.settings.inference.service_name,
+                runtime_profile=runtime_metadata["runtime_profile"],
+                execution_mode=runtime_metadata["execution_mode"],
+                startup_validation_passed=runtime_metadata["startup_validation_passed"],
+                startup_report_path=runtime_metadata["startup_report_path"],
                 model_loaded=model_loaded,
                 model_name=self.model_artifact.model_name if model_loaded else None,
                 model_artifact_path=(
@@ -569,6 +572,7 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
 
     async def metrics_snapshot(self) -> MetricsResponse:
         """Return the current in-memory metrics payload."""
+        runtime_metadata = self.runtime_metadata_fields()
         uptime_seconds = max(0.0, (utc_now() - self.started_at).total_seconds())
         try:
             freshness_rows = await self._freshness_summary_rows()
@@ -606,6 +610,10 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
             endpoint_counts=dict(self.metrics.endpoint_counts),
             latency_ms=self.metrics.latency.as_response(),
             service=self.settings.inference.service_name,
+            runtime_profile=runtime_metadata["runtime_profile"],
+            execution_mode=runtime_metadata["execution_mode"],
+            startup_validation_passed=runtime_metadata["startup_validation_passed"],
+            startup_report_path=runtime_metadata["startup_report_path"],
             started_at=self.started_at,
             uptime_seconds=uptime_seconds,
             model_name=self.model_artifact.model_name,
@@ -722,6 +730,18 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
             pass
         self._write_system_reliability_artifact(snapshot)
         return 200, snapshot
+
+    def runtime_metadata_fields(self) -> dict[str, str | bool | None]:
+        """Return additive runtime metadata exposed by M16 APIs."""
+        metadata = build_runtime_metadata(
+            execution_mode=self.trading_config.execution.mode,
+        )
+        return {
+            "runtime_profile": metadata.runtime_profile,
+            "execution_mode": metadata.execution_mode,
+            "startup_validation_passed": metadata.startup_validation_passed,
+            "startup_report_path": metadata.startup_report_path,
+        }
 
     async def _refresh_inference_health_snapshot(
         self,

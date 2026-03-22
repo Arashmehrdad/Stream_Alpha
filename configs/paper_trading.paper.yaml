@@ -1,0 +1,62 @@
+service_name: paper-trader
+source_exchange: kraken
+source_table: feature_ohlc
+interval_minutes: 5
+symbols:
+  - BTC/USD
+  - ETH/USD
+  - SOL/USD
+inference_base_url: http://inference:8000
+poll_interval_seconds: 5
+artifact_dir: artifacts/paper_trading/paper
+execution:
+  mode: paper
+  idempotency_key_version: 1
+  live:
+    enabled: false
+    expected_account_id: null
+    expected_environment: paper
+    symbol_whitelist:
+      - BTC/USD
+      - ETH/USD
+      - SOL/USD
+    max_order_notional: 25.0
+    failure_hard_stop_threshold: 3
+    manual_disable_path: artifacts/live/manual_disable.flag
+    startup_checklist_path: artifacts/live/startup_checklist.json
+    live_status_path: artifacts/live/live_status.json
+    paper_probe:
+      enabled: false
+      symbol_whitelist:
+        - DOGE/USD
+      integer_qty_only: true
+      min_order_value_usd: 10.0
+      fixed_qty: 500
+      max_probe_orders_per_run: 1
+risk:
+  initial_cash: 10000.0
+  position_fraction: 0.25
+  fee_bps: 20.0
+  slippage_bps: 5.0
+  stop_loss_pct: 0.02
+  take_profit_pct: 0.04
+  cooldown_candles: 1
+  max_open_positions: 3
+  max_exposure_per_asset: 0.25
+  max_total_exposure: 0.60
+  max_daily_loss_amount: 250.0
+  max_drawdown_pct: 0.15
+  loss_streak_limit: 3
+  loss_streak_cooldown_candles: 3
+  kill_switch_enabled: false
+  min_trade_notional: 50.0
+  volatility_target_realized_vol: 0.03
+  min_volatility_size_multiplier: 0.40
+  enable_confidence_weighted_sizing: false
+  min_confidence_size_multiplier: 0.50
+  regime_position_fraction_caps:
+    TREND_UP: 0.25
+    RANGE: 0.20
+    TREND_DOWN: 0.15
+    HIGH_VOL: 0.10
+

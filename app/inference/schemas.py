@@ -22,6 +22,10 @@ class HealthResponse(BaseModel):
 
     status: str
     service: str
+    runtime_profile: str
+    execution_mode: str | None = None
+    startup_validation_passed: bool | None = None
+    startup_report_path: str | None = None
     model_loaded: bool
     model_name: str | None
     model_artifact_path: str | None
@@ -194,6 +198,10 @@ class MetricsResponse(BaseModel):
     endpoint_counts: dict[str, int]
     latency_ms: LatencyStatsResponse
     service: str
+    runtime_profile: str
+    execution_mode: str | None = None
+    startup_validation_passed: bool | None = None
+    startup_report_path: str | None = None
     started_at: datetime
     uptime_seconds: float
     model_name: str | None
@@ -258,6 +266,10 @@ class SystemReliabilityResponse(BaseModel):
 
     service_name: str
     checked_at: datetime
+    runtime_profile: str
+    execution_mode: str | None = None
+    startup_validation_passed: bool | None = None
+    startup_report_path: str | None = None
     health_overall_status: str
     reason_codes: list[str]
     lag_breach_active: bool

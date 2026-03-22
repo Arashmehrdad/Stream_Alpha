@@ -15,6 +15,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from app.common.config import Settings
 from app.common.logging import configure_logging
+from app.runtime.config import resolve_trading_config_path
 from app.trading.config import load_paper_trading_config
 from app.trading.repository import TradingRepository
 from app.trading.runner import PaperTradingRunner
@@ -26,7 +27,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--config",
-        default="configs/paper_trading.yaml",
+        default="",
         help="Path to the checked-in M5 paper trading config",
     )
     parser.add_argument(
@@ -35,7 +36,19 @@ def main() -> None:
         help="Run a single catch-up cycle and exit",
     )
     args = parser.parse_args()
-    asyncio.run(_main_async(Path(args.config), run_once=args.once))
+    asyncio.run(
+        _main_async(
+            resolve_trader_config_path(args.config),
+            run_once=args.once,
+        )
+    )
+
+
+def resolve_trader_config_path(config_value: str | None) -> Path:
+    """Resolve the trader config path from CLI override or runtime env."""
+    if config_value is not None and config_value.strip():
+        return Path(config_value).expanduser().resolve()
+    return resolve_trading_config_path()
 
 
 async def _main_async(config_path: Path, *, run_once: bool) -> None:

@@ -484,6 +484,43 @@ def test_health_reports_success_and_dependency_failure(tmp_path: Path) -> None:
     assert unhealthy_response.json()["health_overall_status"] == "UNAVAILABLE"
 
 
+def test_additive_runtime_metadata_is_exposed_on_health_metrics_and_reliability(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    startup_report_path = tmp_path / "startup_report.json"
+    startup_report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "m16_startup_report_v1",
+                "checked_at": "2026-03-22T10:00:00Z",
+                "runtime_profile": "paper",
+                "startup_validation_passed": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("STREAMALPHA_RUNTIME_PROFILE", "paper")
+    monkeypatch.setenv("STREAMALPHA_STARTUP_REPORT_PATH", str(startup_report_path))
+
+    client = _build_client(tmp_path, prob_up=0.7, database=FakeDatabase(row=_feature_row()))
+
+    health_payload = client.get("/health").json()
+    metrics_payload = client.get("/metrics").json()
+    reliability_payload = client.get("/reliability/system").json()
+
+    assert health_payload["runtime_profile"] == "paper"
+    assert health_payload["execution_mode"] == "paper"
+    assert health_payload["startup_validation_passed"] is True
+    assert health_payload["startup_report_path"] == str(startup_report_path.resolve())
+    assert metrics_payload["runtime_profile"] == "paper"
+    assert metrics_payload["execution_mode"] == "paper"
+    assert metrics_payload["startup_validation_passed"] is True
+    assert reliability_payload["runtime_profile"] == "paper"
+    assert reliability_payload["execution_mode"] == "paper"
+    assert reliability_payload["startup_validation_passed"] is True
+
+
 def test_reliability_system_endpoint_returns_canonical_cross_service_summary(
     tmp_path: Path,
 ) -> None:

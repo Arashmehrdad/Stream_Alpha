@@ -195,7 +195,12 @@ def create_app(
     @app.get("/reliability/system", response_model=SystemReliabilityResponse)
     async def reliability_system() -> JSONResponse:
         status_code, snapshot = await service.system_reliability_snapshot()
-        payload = SystemReliabilityResponse.model_validate(asdict(snapshot))
+        payload = SystemReliabilityResponse.model_validate(
+            {
+                **asdict(snapshot),
+                **service.runtime_metadata_fields(),
+            }
+        )
         return JSONResponse(
             status_code=status_code,
             content=payload.model_dump(mode="json"),

@@ -5,6 +5,7 @@ services:
     image: docker.redpanda.com/redpandadata/redpanda:${REDPANDA_VERSION:-v25.3.10}
     container_name: streamalpha-redpanda
     restart: unless-stopped
+    profiles: ["dev", "paper", "shadow", "live"]
     command:
       - redpanda
       - start
@@ -48,6 +49,7 @@ services:
     image: docker.redpanda.com/redpandadata/console:${REDPANDA_CONSOLE_VERSION:-v3.5.1}
     container_name: streamalpha-redpanda-console
     restart: unless-stopped
+    profiles: ["dev", "paper", "shadow", "live"]
     depends_on:
       redpanda:
         condition: service_healthy
@@ -62,6 +64,7 @@ services:
     image: postgres:${POSTGRES_VERSION:-16-alpine}
     container_name: streamalpha-postgres
     restart: unless-stopped
+    profiles: ["dev", "paper", "shadow", "live"]
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-streamalpha}
       POSTGRES_USER: ${POSTGRES_USER:-streamalpha}
@@ -78,15 +81,50 @@ services:
       timeout: 5s
       retries: 12
 
+  config-check:
+    build:
+      context: .
+      dockerfile: docker/app.Dockerfile
+    container_name: streamalpha-config-check
+    profiles: ["dev", "paper", "shadow", "live"]
+    env_file:
+      - .env
+    environment:
+      STREAMALPHA_RUNTIME_PROFILE: ${STREAMALPHA_RUNTIME_PROFILE}
+      STREAMALPHA_TRADING_CONFIG_PATH: ${STREAMALPHA_TRADING_CONFIG_PATH:-}
+      STREAMALPHA_STARTUP_REPORT_PATH: ${STREAMALPHA_STARTUP_REPORT_PATH:-artifacts/runtime/startup_report.json}
+      APCA_API_KEY_ID: ${APCA_API_KEY_ID:-}
+      APCA_API_SECRET_KEY: ${APCA_API_SECRET_KEY:-}
+      ALPACA_BASE_URL: ${ALPACA_BASE_URL:-}
+      STREAMALPHA_ENABLE_LIVE: ${STREAMALPHA_ENABLE_LIVE:-}
+      STREAMALPHA_LIVE_CONFIRM: ${STREAMALPHA_LIVE_CONFIRM:-}
+    volumes:
+      - ./artifacts:/workspace/artifacts
+    command:
+      - python
+      - -m
+      - app.runtime.validate
+
   producer:
     build:
       context: .
-      dockerfile: docker/producer.Dockerfile
+      dockerfile: docker/app.Dockerfile
     container_name: streamalpha-producer
     restart: unless-stopped
+    profiles: ["dev", "paper", "shadow", "live"]
     env_file:
       - .env
+    environment:
+      STREAMALPHA_RUNTIME_PROFILE: ${STREAMALPHA_RUNTIME_PROFILE}
+      STREAMALPHA_STARTUP_REPORT_PATH: ${STREAMALPHA_STARTUP_REPORT_PATH:-artifacts/runtime/startup_report.json}
+      APCA_API_KEY_ID: ${APCA_API_KEY_ID:-}
+      APCA_API_SECRET_KEY: ${APCA_API_SECRET_KEY:-}
+      ALPACA_BASE_URL: ${ALPACA_BASE_URL:-}
+      STREAMALPHA_ENABLE_LIVE: ${STREAMALPHA_ENABLE_LIVE:-}
+      STREAMALPHA_LIVE_CONFIRM: ${STREAMALPHA_LIVE_CONFIRM:-}
     depends_on:
+      config-check:
+        condition: service_completed_successfully
       redpanda:
         condition: service_healthy
       postgres:
@@ -99,12 +137,23 @@ services:
   features:
     build:
       context: .
-      dockerfile: docker/producer.Dockerfile
+      dockerfile: docker/app.Dockerfile
     container_name: streamalpha-features
     restart: unless-stopped
+    profiles: ["dev", "paper", "shadow", "live"]
     env_file:
       - .env
+    environment:
+      STREAMALPHA_RUNTIME_PROFILE: ${STREAMALPHA_RUNTIME_PROFILE}
+      STREAMALPHA_STARTUP_REPORT_PATH: ${STREAMALPHA_STARTUP_REPORT_PATH:-artifacts/runtime/startup_report.json}
+      APCA_API_KEY_ID: ${APCA_API_KEY_ID:-}
+      APCA_API_SECRET_KEY: ${APCA_API_SECRET_KEY:-}
+      ALPACA_BASE_URL: ${ALPACA_BASE_URL:-}
+      STREAMALPHA_ENABLE_LIVE: ${STREAMALPHA_ENABLE_LIVE:-}
+      STREAMALPHA_LIVE_CONFIRM: ${STREAMALPHA_LIVE_CONFIRM:-}
     depends_on:
+      config-check:
+        condition: service_completed_successfully
       redpanda:
         condition: service_healthy
       postgres:
@@ -114,6 +163,114 @@ services:
       - -m
       - app.features.main
 
+  inference:
+    build:
+      context: .
+      dockerfile: docker/app.Dockerfile
+    container_name: streamalpha-inference
+    restart: unless-stopped
+    profiles: ["paper", "shadow", "live"]
+    env_file:
+      - .env
+    environment:
+      STREAMALPHA_RUNTIME_PROFILE: ${STREAMALPHA_RUNTIME_PROFILE}
+      STREAMALPHA_TRADING_CONFIG_PATH: ${STREAMALPHA_TRADING_CONFIG_PATH}
+      STREAMALPHA_STARTUP_REPORT_PATH: ${STREAMALPHA_STARTUP_REPORT_PATH:-artifacts/runtime/startup_report.json}
+      APCA_API_KEY_ID: ${APCA_API_KEY_ID:-}
+      APCA_API_SECRET_KEY: ${APCA_API_SECRET_KEY:-}
+      ALPACA_BASE_URL: ${ALPACA_BASE_URL:-}
+      STREAMALPHA_ENABLE_LIVE: ${STREAMALPHA_ENABLE_LIVE:-}
+      STREAMALPHA_LIVE_CONFIRM: ${STREAMALPHA_LIVE_CONFIRM:-}
+    volumes:
+      - ./artifacts:/workspace/artifacts
+    depends_on:
+      config-check:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    ports:
+      - 8000:8000
+    command:
+      - python
+      - -m
+      - app.inference
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health').getcode() == 200 else 1)"
+      interval: 15s
+      timeout: 5s
+      retries: 12
+
+  trader:
+    build:
+      context: .
+      dockerfile: docker/app.Dockerfile
+    container_name: streamalpha-trader
+    restart: unless-stopped
+    profiles: ["paper", "shadow", "live"]
+    env_file:
+      - .env
+    environment:
+      STREAMALPHA_RUNTIME_PROFILE: ${STREAMALPHA_RUNTIME_PROFILE}
+      STREAMALPHA_TRADING_CONFIG_PATH: ${STREAMALPHA_TRADING_CONFIG_PATH}
+      STREAMALPHA_STARTUP_REPORT_PATH: ${STREAMALPHA_STARTUP_REPORT_PATH:-artifacts/runtime/startup_report.json}
+      APCA_API_KEY_ID: ${APCA_API_KEY_ID:-}
+      APCA_API_SECRET_KEY: ${APCA_API_SECRET_KEY:-}
+      ALPACA_BASE_URL: ${ALPACA_BASE_URL:-}
+      STREAMALPHA_ENABLE_LIVE: ${STREAMALPHA_ENABLE_LIVE:-}
+      STREAMALPHA_LIVE_CONFIRM: ${STREAMALPHA_LIVE_CONFIRM:-}
+    volumes:
+      - ./artifacts:/workspace/artifacts
+    depends_on:
+      config-check:
+        condition: service_completed_successfully
+      inference:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    command:
+      - python
+      - scripts/run_paper_trader.py
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: docker/app.Dockerfile
+    container_name: streamalpha-dashboard
+    restart: unless-stopped
+    profiles: ["paper", "shadow", "live"]
+    env_file:
+      - .env
+    environment:
+      INFERENCE_API_BASE_URL: http://inference:8000
+      STREAMALPHA_RUNTIME_PROFILE: ${STREAMALPHA_RUNTIME_PROFILE}
+      STREAMALPHA_TRADING_CONFIG_PATH: ${STREAMALPHA_TRADING_CONFIG_PATH}
+      STREAMALPHA_STARTUP_REPORT_PATH: ${STREAMALPHA_STARTUP_REPORT_PATH:-artifacts/runtime/startup_report.json}
+      APCA_API_KEY_ID: ${APCA_API_KEY_ID:-}
+      APCA_API_SECRET_KEY: ${APCA_API_SECRET_KEY:-}
+      ALPACA_BASE_URL: ${ALPACA_BASE_URL:-}
+      STREAMALPHA_ENABLE_LIVE: ${STREAMALPHA_ENABLE_LIVE:-}
+      STREAMALPHA_LIVE_CONFIRM: ${STREAMALPHA_LIVE_CONFIRM:-}
+    volumes:
+      - ./artifacts:/workspace/artifacts
+    depends_on:
+      config-check:
+        condition: service_completed_successfully
+      inference:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    ports:
+      - 8501:8501
+    command:
+      - streamlit
+      - run
+      - dashboards/streamlit_app.py
+      - --server.address=0.0.0.0
+      - --server.port=8501
+
 volumes:
   postgres-data:
   redpanda-data:
+
