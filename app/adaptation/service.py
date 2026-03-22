@@ -112,6 +112,17 @@ class AdaptationService:
             symbol=symbol,
             regime_label=regime_label,
         )
+        self._write_drift_summary_artifact(
+            symbol=symbol,
+            regime_label=regime_label,
+            items=[] if drift_state is None else [drift_state],
+        )
+        self._write_performance_summary_artifact(
+            execution_mode=execution_mode,
+            symbol=symbol,
+            regime_label=regime_label,
+            items=[] if performance is None else [performance],
+        )
         frozen_by_health_gate = self._is_frozen_by_health_gate(
             health_overall_status=health_overall_status,
             freshness_status=freshness_status,
@@ -213,13 +224,17 @@ class AdaptationService:
         """Return the read-only drift collection."""
         if not await self._ensure_repository_ready():
             return AdaptationDriftResponse()
-        return AdaptationDriftResponse(
-            items=await self.repository.load_adaptive_drift_states(
-                symbol=symbol,
-                regime_label=regime_label,
-                limit=limit,
-            )
+        items = await self.repository.load_adaptive_drift_states(
+            symbol=symbol,
+            regime_label=regime_label,
+            limit=limit,
         )
+        self._write_drift_summary_artifact(
+            symbol=symbol,
+            regime_label=regime_label,
+            items=items,
+        )
+        return AdaptationDriftResponse(items=items)
 
     async def performance(
         self,
@@ -232,14 +247,19 @@ class AdaptationService:
         """Return the read-only rolling performance collection."""
         if not await self._ensure_repository_ready():
             return AdaptationPerformanceResponse()
-        return AdaptationPerformanceResponse(
-            items=await self.repository.load_adaptive_performance_windows(
-                execution_mode=execution_mode,
-                symbol=symbol,
-                regime_label=regime_label,
-                limit=limit,
-            )
+        items = await self.repository.load_adaptive_performance_windows(
+            execution_mode=execution_mode,
+            symbol=symbol,
+            regime_label=regime_label,
+            limit=limit,
         )
+        self._write_performance_summary_artifact(
+            execution_mode=execution_mode,
+            symbol=symbol,
+            regime_label=regime_label,
+            items=items,
+        )
+        return AdaptationPerformanceResponse(items=items)
 
     async def profiles(self, *, limit: int = 50) -> AdaptationProfilesResponse:
         """Return the read-only adaptive profile collection."""
@@ -256,6 +276,90 @@ class AdaptationService:
         return AdaptationPromotionsResponse(
             items=await self.repository.load_adaptive_promotion_decisions(limit=limit)
         )
+
+    async def rollback_active_profile(
+        self,
+        *,
+        execution_mode: str,
+        symbol: str,
+        regime_label: str,
+        decision_id: str,
+        summary_text: str,
+    ) -> AdaptivePromotionDecisionRecord:
+        """Persist and apply an explicit runtime rollback to the configured target profile."""
+        if not await self._ensure_repository_ready():
+            raise RuntimeError("Adaptation repository unavailable for rollback")
+        active_profile = await self.repository.load_active_adaptive_profile(
+            execution_mode=execution_mode,
+            symbol=symbol,
+            regime_label=regime_label,
+        )
+        if active_profile is None:
+            raise RuntimeError("No active adaptive profile is available for rollback")
+        if active_profile.rollback_target_profile_id is None:
+            raise RuntimeError("Active adaptive profile has no rollback target")
+        rollback_target = await self.repository.load_adaptive_profile(
+            profile_id=active_profile.rollback_target_profile_id,
+        )
+        if rollback_target is None:
+            raise RuntimeError("Rollback target adaptive profile was not found")
+        decided_at = utc_now()
+        decision = AdaptivePromotionDecisionRecord(
+            decision_id=decision_id,
+            target_type="PROFILE",
+            target_id=rollback_target.profile_id,
+            incumbent_id=active_profile.profile_id,
+            decision="ROLLBACK",
+            metrics_delta_json={
+                "rolled_back_profile_id": active_profile.profile_id,
+                "restored_profile_id": rollback_target.profile_id,
+            },
+            safety_checks_json={"runtime_rollback": True},
+            research_integrity_json={
+                "execution_mode": execution_mode,
+                "symbol": symbol,
+                "regime_label": regime_label,
+            },
+            reason_codes=["ROLLBACK_TARGET_ACTIVATED"],
+            summary_text=summary_text,
+            decided_at=decided_at,
+        )
+        await self.repository.rollback_adaptive_profile(
+            active_profile_id=active_profile.profile_id,
+            rollback_target_profile_id=rollback_target.profile_id,
+            changed_at=decided_at,
+        )
+        await self.repository.save_adaptive_promotion_decision(decision)
+        restored_profile = await self.repository.load_adaptive_profile(
+            profile_id=rollback_target.profile_id,
+        )
+        if restored_profile is None:
+            raise RuntimeError("Rollback target could not be reloaded after rollback")
+        self.write_profile_artifacts(
+            profile=restored_profile,
+            latest_promotion=decision,
+        )
+        drift_state = await self.repository.load_latest_adaptive_drift_state(
+            symbol=symbol,
+            regime_label=regime_label,
+        )
+        performance = await self.repository.load_latest_adaptive_performance_window(
+            execution_mode=execution_mode,
+            symbol=symbol,
+            regime_label=regime_label,
+        )
+        self._write_drift_summary_artifact(
+            symbol=symbol,
+            regime_label=regime_label,
+            items=[] if drift_state is None else [drift_state],
+        )
+        self._write_performance_summary_artifact(
+            execution_mode=execution_mode,
+            symbol=symbol,
+            regime_label=regime_label,
+            items=[] if performance is None else [performance],
+        )
+        return decision
 
     def write_profile_artifacts(
         self,
@@ -295,6 +399,46 @@ class AdaptationService:
                 self.config.artifacts.promotions_history_path,
                 latest_promotion.model_dump(mode="json"),
             )
+
+    def _write_drift_summary_artifact(
+        self,
+        *,
+        symbol: str,
+        regime_label: str,
+        items: list[AdaptiveDriftRecord],
+    ) -> None:
+        """Write the configured latest drift summary artifact."""
+        write_json_artifact(
+            self.config.artifacts.drift_summary_path,
+            {
+                "generated_at": to_rfc3339(utc_now()),
+                "symbol": symbol,
+                "regime_label": regime_label,
+                "item_count": len(items),
+                "items": [item.model_dump(mode="json") for item in items],
+            },
+        )
+
+    def _write_performance_summary_artifact(
+        self,
+        *,
+        execution_mode: str,
+        symbol: str,
+        regime_label: str,
+        items: list[AdaptivePerformanceWindow],
+    ) -> None:
+        """Write the configured latest performance summary artifact."""
+        write_json_artifact(
+            self.config.artifacts.performance_summary_path,
+            {
+                "generated_at": to_rfc3339(utc_now()),
+                "execution_mode": execution_mode,
+                "symbol": symbol,
+                "regime_label": regime_label,
+                "item_count": len(items),
+                "items": [item.model_dump(mode="json") for item in items],
+            },
+        )
 
     def to_trace_payload(
         self,

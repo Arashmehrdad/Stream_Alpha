@@ -1290,6 +1290,25 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
         )
         return [_adaptive_profile_from_row(row) for row in rows]
 
+    async def load_adaptive_profile(
+        self,
+        *,
+        profile_id: str,
+    ) -> AdaptiveProfileRecord | None:
+        """Load one adaptive profile by id."""
+        pool = self._require_pool()
+        row = await pool.fetchrow(
+            f"""
+            SELECT *
+            FROM {self._adaptive_profiles_table}
+            WHERE profile_id = $1
+            """,
+            profile_id,
+        )
+        if row is None:
+            return None
+        return _adaptive_profile_from_row(row)
+
     async def load_active_adaptive_profile(
         self,
         *,
@@ -1323,6 +1342,39 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
         if row is None:
             return None
         return _adaptive_profile_from_row(row)
+
+    async def rollback_adaptive_profile(
+        self,
+        *,
+        active_profile_id: str,
+        rollback_target_profile_id: str,
+        changed_at: datetime,
+    ) -> None:
+        """Switch the active profile back to its rollback target in one transaction."""
+        pool = self._require_pool()
+        async with pool.acquire() as connection:
+            async with connection.transaction():
+                await connection.execute(
+                    f"""
+                    UPDATE {self._adaptive_profiles_table}
+                    SET status = 'ROLLED_BACK',
+                        superseded_at = $2
+                    WHERE profile_id = $1
+                    """,
+                    active_profile_id,
+                    changed_at,
+                )
+                await connection.execute(
+                    f"""
+                    UPDATE {self._adaptive_profiles_table}
+                    SET status = 'ACTIVE',
+                        activated_at = $2,
+                        superseded_at = NULL
+                    WHERE profile_id = $1
+                    """,
+                    rollback_target_profile_id,
+                    changed_at,
+                )
 
     async def save_adaptive_challenger_run(
         self,

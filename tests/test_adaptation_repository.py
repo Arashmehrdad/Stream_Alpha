@@ -44,14 +44,12 @@ def test_adaptation_repository_round_trip_supports_profile_drift_and_promotion()
 async def _run_round_trip() -> None:
     suffix = uuid4().hex[:10]
     profile_id = f"profile-{suffix}"
+    rollback_profile_id = f"profile-rollback-{suffix}"
     challenger_run_id = f"challenger-{suffix}"
     decision_id = f"decision-{suffix}"
+    rollback_decision_id = f"rollback-{suffix}"
     repository = TradingRepository(_postgres_dsn(), "feature_ohlc")
-    try:
-        await repository.connect()
-    except (OSError, asyncpg.CannotConnectNowError) as error:
-        pytest.skip(f"PostgreSQL not reachable for adaptation repository test: {error}")
-        return
+    await repository.connect()
 
     drift = AdaptiveDriftRecord(
         symbol="BTC/USD",
@@ -99,12 +97,24 @@ async def _run_round_trip() -> None:
         sizing_policy_json=SizingPolicy(size_multiplier=1.1),
         calibration_profile_json=CalibrationProfile(method="identity"),
         source_evidence_json={"evidence": "unit-test"},
+        rollback_target_profile_id=rollback_profile_id,
+    )
+    rollback_profile = AdaptiveProfileRecord(
+        profile_id=rollback_profile_id,
+        status="SUPERSEDED",
+        execution_mode_scope="shadow",
+        symbol_scope="BTC/USD",
+        regime_scope="ALL",
+        threshold_policy_json=ThresholdPolicy(buy_threshold_delta=0.01),
+        sizing_policy_json=SizingPolicy(size_multiplier=1.0),
+        calibration_profile_json=CalibrationProfile(method="identity"),
+        source_evidence_json={"evidence": "rollback-target"},
     )
     challenger = AdaptiveChallengerRunRecord(
         challenger_run_id=challenger_run_id,
         status="EVALUATED",
         train_window_start=datetime(2026, 1, 1, tzinfo=timezone.utc),
-        train_window_end=datetime(2026, 2, 29, tzinfo=timezone.utc),
+        train_window_end=datetime(2026, 2, 28, tzinfo=timezone.utc),
         validation_window_start=datetime(2026, 3, 1, tzinfo=timezone.utc),
         validation_window_end=datetime(2026, 3, 10, tzinfo=timezone.utc),
         shadow_window_start=datetime(2026, 3, 11, tzinfo=timezone.utc),
@@ -134,6 +144,7 @@ async def _run_round_trip() -> None:
         await repository.save_adaptive_drift_state(drift)
         await repository.save_adaptive_performance_window(performance)
         await repository.save_adaptive_profile(profile)
+        await repository.save_adaptive_profile(rollback_profile)
         await repository.save_adaptive_challenger_run(challenger)
         await repository.save_adaptive_promotion_decision(promotion)
 
@@ -162,8 +173,52 @@ async def _run_round_trip() -> None:
         assert loaded_performance.trade_count == 20
         assert any(item.challenger_run_id == challenger_run_id for item in loaded_challengers)
         assert any(item.decision_id == decision_id for item in loaded_promotions)
+
+        changed_at = datetime(2026, 3, 22, 12, 5, tzinfo=timezone.utc)
+        await repository.rollback_adaptive_profile(
+            active_profile_id=profile_id,
+            rollback_target_profile_id=rollback_profile_id,
+            changed_at=changed_at,
+        )
+        rollback_decision = AdaptivePromotionDecisionRecord(
+            decision_id=rollback_decision_id,
+            target_type="PROFILE",
+            target_id=rollback_profile_id,
+            incumbent_id=profile_id,
+            decision="ROLLBACK",
+            metrics_delta_json={"rolled_back_profile_id": profile_id},
+            safety_checks_json={"runtime_rollback": True},
+            research_integrity_json={"trade_count": 20},
+            reason_codes=["ROLLBACK_TARGET_ACTIVATED"],
+            summary_text="unit-test rollback",
+            decided_at=changed_at,
+        )
+        await repository.save_adaptive_promotion_decision(rollback_decision)
+
+        reloaded_active = await repository.load_active_adaptive_profile(
+            execution_mode="shadow",
+            symbol="BTC/USD",
+            regime_label="ALL",
+        )
+        reloaded_previous = await repository.load_adaptive_profile(profile_id=profile_id)
+        reloaded_target = await repository.load_adaptive_profile(
+            profile_id=rollback_profile_id,
+        )
+        updated_promotions = await repository.load_adaptive_promotion_decisions(limit=5)
+
+        assert reloaded_active is not None
+        assert reloaded_active.profile_id == rollback_profile_id
+        assert reloaded_previous is not None
+        assert reloaded_previous.status == "ROLLED_BACK"
+        assert reloaded_target is not None
+        assert reloaded_target.status == "ACTIVE"
+        assert any(item.decision_id == rollback_decision_id for item in updated_promotions)
     finally:
         pool = repository._require_pool()  # pylint: disable=protected-access
+        await pool.execute(
+            "DELETE FROM adaptive_promotion_decisions WHERE decision_id = $1",
+            rollback_decision_id,
+        )
         await pool.execute(
             "DELETE FROM adaptive_promotion_decisions WHERE decision_id = $1",
             decision_id,
@@ -175,6 +230,10 @@ async def _run_round_trip() -> None:
         await pool.execute(
             "DELETE FROM adaptive_profiles WHERE profile_id = $1",
             profile_id,
+        )
+        await pool.execute(
+            "DELETE FROM adaptive_profiles WHERE profile_id = $1",
+            rollback_profile_id,
         )
         await pool.execute(
             (

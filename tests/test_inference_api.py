@@ -417,6 +417,41 @@ class FakeAdaptationService:
         )
 
 
+class NullAdaptationService:
+    """No-op adaptation stub for tests that are not exercising M19 behavior."""
+
+    async def startup(self) -> None:
+        return None
+
+    async def shutdown(self) -> None:
+        return None
+
+    async def resolve_applied_adaptation(self, **_kwargs) -> AppliedAdaptation:
+        return AppliedAdaptation(
+            adaptation_reason_codes=("ADAPTATION_REPOSITORY_UNAVAILABLE",)
+        )
+
+    async def summary(self, **_kwargs) -> AdaptationSummaryResponse:
+        return AdaptationSummaryResponse(
+            enabled=True,
+            active_profile_count=0,
+            adaptation_status="UNAVAILABLE",
+            reason_codes=["ADAPTATION_REPOSITORY_UNAVAILABLE"],
+        )
+
+    async def drift(self, **_kwargs) -> AdaptationDriftResponse:
+        return AdaptationDriftResponse()
+
+    async def performance(self, **_kwargs) -> AdaptationPerformanceResponse:
+        return AdaptationPerformanceResponse()
+
+    async def profiles(self, **_kwargs) -> AdaptationProfilesResponse:
+        return AdaptationProfilesResponse()
+
+    async def promotions(self, **_kwargs) -> AdaptationPromotionsResponse:
+        return AdaptationPromotionsResponse()
+
+
 def _build_settings(model_path: str) -> Settings:
     return Settings(
         app_name="streamalpha",
@@ -782,7 +817,7 @@ def _build_client(  # pylint: disable=too-many-arguments
     reliability_store: FakeReliabilityStore | None = None,
     alert_repository: FakeAlertRepository | None = None,
     artifact_path: Path | None = None,
-    adaptation_service: FakeAdaptationService | None = None,
+    adaptation_service: FakeAdaptationService | NullAdaptationService | None = None,
 ) -> TestClient:
     resolved_artifact_path = (
         _write_artifact(tmp_path, prob_up=prob_up)
@@ -798,7 +833,7 @@ def _build_client(  # pylint: disable=too-many-arguments
         reliability_store=reliability_store or FakeReliabilityStore(),
         alerting_config=_build_alerting_config(tmp_path),
         alert_repository=alert_repository or FakeAlertRepository(),
-        adaptation_service=adaptation_service,
+        adaptation_service=adaptation_service or NullAdaptationService(),
     )
     return TestClient(create_app(service))
 

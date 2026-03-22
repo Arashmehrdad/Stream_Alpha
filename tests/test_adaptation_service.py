@@ -5,7 +5,10 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import datetime, timezone
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from app.adaptation.calibration import apply_calibration, build_isotonic_calibration_profile
 from app.adaptation.config import default_adaptation_config_path, load_adaptation_config
@@ -178,6 +181,8 @@ class _FakeRepo:
         self._profile = profile
         self._drift = drift
         self._performance = performance
+        self._profiles = {profile.profile_id: profile}
+        self._promotion_decisions = []
 
     async def connect(self) -> None:
         return None
@@ -196,17 +201,40 @@ class _FakeRepo:
 
     async def load_adaptive_profiles(self, *, limit: int):
         del limit
-        return [self._profile]
+        return list(self._profiles.values())
 
     async def load_adaptive_promotion_decisions(self, *, limit: int):
         del limit
-        return []
+        return list(self._promotion_decisions)
 
     async def load_adaptive_drift_states(self, **_kwargs):
         return [self._drift]
 
     async def load_adaptive_performance_windows(self, **_kwargs):
         return [self._performance]
+
+    async def load_adaptive_profile(self, *, profile_id: str):
+        return self._profiles.get(profile_id)
+
+    async def rollback_adaptive_profile(
+        self,
+        *,
+        active_profile_id: str,
+        rollback_target_profile_id: str,
+        changed_at,
+    ) -> None:
+        active_profile = self._profiles[active_profile_id]
+        rollback_target = self._profiles[rollback_target_profile_id]
+        self._profiles[active_profile_id] = active_profile.model_copy(
+            update={"status": "ROLLED_BACK", "superseded_at": changed_at}
+        )
+        self._profiles[rollback_target_profile_id] = rollback_target.model_copy(
+            update={"status": "ACTIVE", "activated_at": changed_at, "superseded_at": None}
+        )
+        self._profile = self._profiles[rollback_target_profile_id]
+
+    async def save_adaptive_promotion_decision(self, decision):
+        self._promotion_decisions.insert(0, decision)
 
 
 def test_adaptation_service_freezes_when_reliability_is_degraded() -> None:
@@ -285,3 +313,188 @@ def _resolve_adaptation_with_degraded_health():
             freshness_status="FRESH",
         )
     )
+
+
+def test_adaptation_service_writes_configured_runtime_summary_artifacts() -> None:
+    profile = AdaptiveProfileRecord(
+        profile_id="profile-1",
+        status="ACTIVE",
+        execution_mode_scope="paper",
+        symbol_scope="BTC/USD",
+        regime_scope="TREND_UP",
+        threshold_policy_json=ThresholdPolicy(buy_threshold_delta=0.02),
+        sizing_policy_json=SizingPolicy(size_multiplier=1.20),
+        calibration_profile_json=CalibrationProfile(method="identity"),
+        source_evidence_json={"source": "unit-test"},
+    )
+    drift = AdaptiveDriftRecord(
+        symbol="BTC/USD",
+        regime_label="TREND_UP",
+        detector_name="psi",
+        window_id="win-1",
+        reference_window_start=datetime(2026, 3, 1, tzinfo=timezone.utc),
+        reference_window_end=datetime(2026, 3, 10, tzinfo=timezone.utc),
+        live_window_start=datetime(2026, 3, 11, tzinfo=timezone.utc),
+        live_window_end=datetime(2026, 3, 22, tzinfo=timezone.utc),
+        drift_score=0.05,
+        warning_threshold=0.10,
+        breach_threshold=0.20,
+        status="HEALTHY",
+        reason_code="DRIFT_HEALTHY",
+    )
+    performance = AdaptivePerformanceWindow(
+        execution_mode="paper",
+        symbol="BTC/USD",
+        regime_label="TREND_UP",
+        window_id="last_20_trades",
+        window_type="trade_count",
+        window_start=datetime(2026, 3, 10, tzinfo=timezone.utc),
+        window_end=datetime(2026, 3, 22, tzinfo=timezone.utc),
+        trade_count=20,
+        net_pnl_after_costs=0.02,
+        max_drawdown=0.01,
+        profit_factor=1.10,
+        expectancy=0.001,
+        win_rate=0.55,
+        precision=0.55,
+        avg_slippage_bps=3.0,
+        blocked_trade_rate=0.10,
+        shadow_divergence_rate=0.05,
+        health_context={},
+    )
+    with TemporaryDirectory() as temp_dir:
+        config = replace(
+            load_adaptation_config(default_adaptation_config_path()),
+            artifacts=replace(
+                load_adaptation_config(default_adaptation_config_path()).artifacts,
+                root_dir=temp_dir,
+                drift_summary_path=str(Path(temp_dir) / "drift" / "latest_summary.json"),
+                performance_summary_path=str(
+                    Path(temp_dir) / "performance" / "latest_summary.json"
+                ),
+                current_profile_path=str(Path(temp_dir) / "profiles" / "current.json"),
+                promotions_history_path=str(Path(temp_dir) / "promotions" / "history.jsonl"),
+                reports_dir=str(Path(temp_dir) / "reports"),
+                challengers_dir=str(Path(temp_dir) / "challengers"),
+            ),
+        )
+        service = AdaptationService(
+            repository=_FakeRepo(profile=profile, drift=drift, performance=performance),
+            config=config,
+        )
+
+        asyncio.run(
+            service.resolve_applied_adaptation(
+                execution_mode="paper",
+                symbol="BTC/USD",
+                regime_label="TREND_UP",
+                base_buy_prob_up=0.55,
+                base_sell_prob_up=0.45,
+                confidence=0.70,
+                health_overall_status="HEALTHY",
+                freshness_status="FRESH",
+            )
+        )
+
+        assert Path(config.artifacts.drift_summary_path).exists()
+        assert Path(config.artifacts.performance_summary_path).exists()
+
+
+def test_adaptation_service_rolls_back_to_target_profile_and_persists_decision() -> None:
+    active_profile = AdaptiveProfileRecord(
+        profile_id="profile-current",
+        status="ACTIVE",
+        execution_mode_scope="paper",
+        symbol_scope="BTC/USD",
+        regime_scope="TREND_UP",
+        threshold_policy_json=ThresholdPolicy(buy_threshold_delta=0.02),
+        sizing_policy_json=SizingPolicy(size_multiplier=1.20),
+        calibration_profile_json=CalibrationProfile(method="identity"),
+        source_evidence_json={"source": "unit-test"},
+        rollback_target_profile_id="profile-rollback",
+    )
+    rollback_target = AdaptiveProfileRecord(
+        profile_id="profile-rollback",
+        status="SUPERSEDED",
+        execution_mode_scope="paper",
+        symbol_scope="BTC/USD",
+        regime_scope="TREND_UP",
+        threshold_policy_json=ThresholdPolicy(buy_threshold_delta=0.01),
+        sizing_policy_json=SizingPolicy(size_multiplier=1.05),
+        calibration_profile_json=CalibrationProfile(method="identity"),
+        source_evidence_json={"source": "unit-test"},
+    )
+    drift = AdaptiveDriftRecord(
+        symbol="BTC/USD",
+        regime_label="TREND_UP",
+        detector_name="psi",
+        window_id="win-1",
+        reference_window_start=datetime(2026, 3, 1, tzinfo=timezone.utc),
+        reference_window_end=datetime(2026, 3, 10, tzinfo=timezone.utc),
+        live_window_start=datetime(2026, 3, 11, tzinfo=timezone.utc),
+        live_window_end=datetime(2026, 3, 22, tzinfo=timezone.utc),
+        drift_score=0.05,
+        warning_threshold=0.10,
+        breach_threshold=0.20,
+        status="HEALTHY",
+        reason_code="DRIFT_HEALTHY",
+    )
+    performance = AdaptivePerformanceWindow(
+        execution_mode="paper",
+        symbol="BTC/USD",
+        regime_label="TREND_UP",
+        window_id="last_20_trades",
+        window_type="trade_count",
+        window_start=datetime(2026, 3, 10, tzinfo=timezone.utc),
+        window_end=datetime(2026, 3, 22, tzinfo=timezone.utc),
+        trade_count=20,
+        net_pnl_after_costs=0.02,
+        max_drawdown=0.01,
+        profit_factor=1.10,
+        expectancy=0.001,
+        win_rate=0.55,
+        precision=0.55,
+        avg_slippage_bps=3.0,
+        blocked_trade_rate=0.10,
+        shadow_divergence_rate=0.05,
+        health_context={},
+    )
+    repository = _FakeRepo(
+        profile=active_profile,
+        drift=drift,
+        performance=performance,
+    )
+    repository._profiles[rollback_target.profile_id] = rollback_target
+    with TemporaryDirectory() as temp_dir:
+        config = replace(
+            load_adaptation_config(default_adaptation_config_path()),
+            artifacts=replace(
+                load_adaptation_config(default_adaptation_config_path()).artifacts,
+                root_dir=temp_dir,
+                drift_summary_path=str(Path(temp_dir) / "drift" / "latest_summary.json"),
+                performance_summary_path=str(
+                    Path(temp_dir) / "performance" / "latest_summary.json"
+                ),
+                current_profile_path=str(Path(temp_dir) / "profiles" / "current.json"),
+                promotions_history_path=str(Path(temp_dir) / "promotions" / "history.jsonl"),
+                reports_dir=str(Path(temp_dir) / "reports"),
+                challengers_dir=str(Path(temp_dir) / "challengers"),
+            ),
+        )
+        service = AdaptationService(repository=repository, config=config)
+
+        decision = asyncio.run(
+            service.rollback_active_profile(
+                execution_mode="paper",
+                symbol="BTC/USD",
+                regime_label="TREND_UP",
+                decision_id="rollback-1",
+                summary_text="Rollback to previous stable profile.",
+            )
+        )
+
+        assert decision.decision == "ROLLBACK"
+        assert repository._profiles["profile-current"].status == "ROLLED_BACK"
+        assert repository._profiles["profile-rollback"].status == "ACTIVE"
+        assert repository._promotion_decisions[0].decision == "ROLLBACK"
+        assert Path(config.artifacts.current_profile_path).exists()
