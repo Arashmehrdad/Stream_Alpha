@@ -11,6 +11,13 @@ from datetime import date, datetime
 
 import asyncpg
 
+from app.adaptation.schemas import (
+    AdaptiveChallengerRunRecord,
+    AdaptiveDriftRecord,
+    AdaptivePerformanceWindow,
+    AdaptiveProfileRecord,
+    AdaptivePromotionDecisionRecord,
+)
 from app.common.time import to_rfc3339
 from app.explainability.schemas import DecisionTracePayload
 from app.reliability.schemas import RecoveryEvent, ReliabilityState, ServiceHeartbeat
@@ -41,6 +48,11 @@ LIVE_SAFETY_TABLE = "execution_live_safety_state"
 HEARTBEATS_TABLE = "service_heartbeats"
 RELIABILITY_STATE_TABLE = "reliability_state"
 RELIABILITY_EVENTS_TABLE = "reliability_events"
+ADAPTIVE_DRIFT_STATE_TABLE = "adaptive_drift_state"
+ADAPTIVE_PERFORMANCE_WINDOWS_TABLE = "adaptive_performance_windows"
+ADAPTIVE_PROFILES_TABLE = "adaptive_profiles"
+ADAPTIVE_CHALLENGER_RUNS_TABLE = "adaptive_challenger_runs"
+ADAPTIVE_PROMOTION_DECISIONS_TABLE = "adaptive_promotion_decisions"
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -84,6 +96,17 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
         self._heartbeats_table = _quote_table_name(HEARTBEATS_TABLE)
         self._reliability_state_table = _quote_table_name(RELIABILITY_STATE_TABLE)
         self._reliability_events_table = _quote_table_name(RELIABILITY_EVENTS_TABLE)
+        self._adaptive_drift_state_table = _quote_table_name(ADAPTIVE_DRIFT_STATE_TABLE)
+        self._adaptive_performance_windows_table = _quote_table_name(
+            ADAPTIVE_PERFORMANCE_WINDOWS_TABLE
+        )
+        self._adaptive_profiles_table = _quote_table_name(ADAPTIVE_PROFILES_TABLE)
+        self._adaptive_challenger_runs_table = _quote_table_name(
+            ADAPTIVE_CHALLENGER_RUNS_TABLE
+        )
+        self._adaptive_promotion_decisions_table = _quote_table_name(
+            ADAPTIVE_PROMOTION_DECISIONS_TABLE
+        )
         self._pool: asyncpg.Pool | None = None
 
     @property
@@ -988,6 +1011,470 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
         )
         return [_decision_trace_from_row(row) for row in rows]
 
+    async def save_adaptive_drift_state(self, record: AdaptiveDriftRecord) -> None:
+        """Upsert one adaptive drift state row."""
+        pool = self._require_pool()
+        await pool.execute(
+            f"""
+            INSERT INTO {self._adaptive_drift_state_table} (
+                symbol,
+                regime_label,
+                detector_name,
+                window_id,
+                reference_window_start,
+                reference_window_end,
+                live_window_start,
+                live_window_end,
+                drift_score,
+                warning_threshold,
+                breach_threshold,
+                status,
+                reason_code,
+                detail,
+                created_at,
+                updated_at
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+                COALESCE($15, NOW()), COALESCE($16, NOW())
+            )
+            ON CONFLICT (symbol, regime_label, detector_name, window_id)
+            DO UPDATE SET
+                reference_window_start = EXCLUDED.reference_window_start,
+                reference_window_end = EXCLUDED.reference_window_end,
+                live_window_start = EXCLUDED.live_window_start,
+                live_window_end = EXCLUDED.live_window_end,
+                drift_score = EXCLUDED.drift_score,
+                warning_threshold = EXCLUDED.warning_threshold,
+                breach_threshold = EXCLUDED.breach_threshold,
+                status = EXCLUDED.status,
+                reason_code = EXCLUDED.reason_code,
+                detail = EXCLUDED.detail,
+                updated_at = NOW()
+            """,
+            record.symbol,
+            record.regime_label,
+            record.detector_name,
+            record.window_id,
+            record.reference_window_start,
+            record.reference_window_end,
+            record.live_window_start,
+            record.live_window_end,
+            record.drift_score,
+            record.warning_threshold,
+            record.breach_threshold,
+            record.status,
+            record.reason_code,
+            record.detail,
+            record.created_at,
+            record.updated_at,
+        )
+
+    async def load_adaptive_drift_states(
+        self,
+        *,
+        symbol: str,
+        regime_label: str,
+        limit: int,
+    ) -> list[AdaptiveDriftRecord]:
+        """Load recent adaptive drift state rows for one symbol and regime."""
+        pool = self._require_pool()
+        rows = await pool.fetch(
+            f"""
+            SELECT *
+            FROM {self._adaptive_drift_state_table}
+            WHERE symbol = $1
+              AND regime_label IN ($2, 'ALL')
+            ORDER BY updated_at DESC, created_at DESC
+            LIMIT $3
+            """,
+            symbol,
+            regime_label,
+            limit,
+        )
+        return [_adaptive_drift_state_from_row(row) for row in rows]
+
+    async def load_latest_adaptive_drift_state(
+        self,
+        *,
+        symbol: str,
+        regime_label: str,
+    ) -> AdaptiveDriftRecord | None:
+        """Load the latest adaptive drift state row for one symbol and regime."""
+        rows = await self.load_adaptive_drift_states(
+            symbol=symbol,
+            regime_label=regime_label,
+            limit=1,
+        )
+        return None if not rows else rows[0]
+
+    async def save_adaptive_performance_window(
+        self,
+        record: AdaptivePerformanceWindow,
+    ) -> None:
+        """Upsert one adaptive performance window row."""
+        pool = self._require_pool()
+        await pool.execute(
+            f"""
+            INSERT INTO {self._adaptive_performance_windows_table} (
+                execution_mode,
+                symbol,
+                regime_label,
+                window_id,
+                window_type,
+                window_start,
+                window_end,
+                trade_count,
+                net_pnl_after_costs,
+                max_drawdown,
+                profit_factor,
+                expectancy,
+                win_rate,
+                precision,
+                avg_slippage_bps,
+                blocked_trade_rate,
+                shadow_divergence_rate,
+                health_context,
+                created_at
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+                $15, $16, $17, $18::jsonb, COALESCE($19, NOW())
+            )
+            ON CONFLICT (execution_mode, symbol, regime_label, window_id)
+            DO UPDATE SET
+                window_type = EXCLUDED.window_type,
+                window_start = EXCLUDED.window_start,
+                window_end = EXCLUDED.window_end,
+                trade_count = EXCLUDED.trade_count,
+                net_pnl_after_costs = EXCLUDED.net_pnl_after_costs,
+                max_drawdown = EXCLUDED.max_drawdown,
+                profit_factor = EXCLUDED.profit_factor,
+                expectancy = EXCLUDED.expectancy,
+                win_rate = EXCLUDED.win_rate,
+                precision = EXCLUDED.precision,
+                avg_slippage_bps = EXCLUDED.avg_slippage_bps,
+                blocked_trade_rate = EXCLUDED.blocked_trade_rate,
+                shadow_divergence_rate = EXCLUDED.shadow_divergence_rate,
+                health_context = EXCLUDED.health_context,
+                created_at = COALESCE(EXCLUDED.created_at, NOW())
+            """,
+            record.execution_mode,
+            record.symbol,
+            record.regime_label,
+            record.window_id,
+            record.window_type,
+            record.window_start,
+            record.window_end,
+            record.trade_count,
+            record.net_pnl_after_costs,
+            record.max_drawdown,
+            record.profit_factor,
+            record.expectancy,
+            record.win_rate,
+            record.precision,
+            record.avg_slippage_bps,
+            record.blocked_trade_rate,
+            record.shadow_divergence_rate,
+            json.dumps(record.health_context),
+            record.created_at,
+        )
+
+    async def load_adaptive_performance_windows(
+        self,
+        *,
+        execution_mode: str,
+        symbol: str,
+        regime_label: str,
+        limit: int,
+    ) -> list[AdaptivePerformanceWindow]:
+        """Load recent adaptive performance windows for one mode, symbol, and regime."""
+        pool = self._require_pool()
+        rows = await pool.fetch(
+            f"""
+            SELECT *
+            FROM {self._adaptive_performance_windows_table}
+            WHERE execution_mode = $1
+              AND symbol = $2
+              AND regime_label IN ($3, 'ALL')
+            ORDER BY window_end DESC, created_at DESC
+            LIMIT $4
+            """,
+            execution_mode,
+            symbol,
+            regime_label,
+            limit,
+        )
+        return [_adaptive_performance_window_from_row(row) for row in rows]
+
+    async def load_latest_adaptive_performance_window(
+        self,
+        *,
+        execution_mode: str,
+        symbol: str,
+        regime_label: str,
+    ) -> AdaptivePerformanceWindow | None:
+        """Load the latest adaptive performance window for one mode, symbol, and regime."""
+        rows = await self.load_adaptive_performance_windows(
+            execution_mode=execution_mode,
+            symbol=symbol,
+            regime_label=regime_label,
+            limit=1,
+        )
+        return None if not rows else rows[0]
+
+    async def save_adaptive_profile(self, record: AdaptiveProfileRecord) -> None:
+        """Upsert one adaptive profile row."""
+        pool = self._require_pool()
+        await pool.execute(
+            f"""
+            INSERT INTO {self._adaptive_profiles_table} (
+                profile_id,
+                status,
+                execution_mode_scope,
+                symbol_scope,
+                regime_scope,
+                threshold_policy_json,
+                sizing_policy_json,
+                calibration_profile_json,
+                source_evidence_json,
+                rollback_target_profile_id,
+                created_at,
+                approved_at,
+                activated_at,
+                superseded_at
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9::jsonb,
+                $10, COALESCE($11, NOW()), $12, $13, $14
+            )
+            ON CONFLICT (profile_id)
+            DO UPDATE SET
+                status = EXCLUDED.status,
+                execution_mode_scope = EXCLUDED.execution_mode_scope,
+                symbol_scope = EXCLUDED.symbol_scope,
+                regime_scope = EXCLUDED.regime_scope,
+                threshold_policy_json = EXCLUDED.threshold_policy_json,
+                sizing_policy_json = EXCLUDED.sizing_policy_json,
+                calibration_profile_json = EXCLUDED.calibration_profile_json,
+                source_evidence_json = EXCLUDED.source_evidence_json,
+                rollback_target_profile_id = EXCLUDED.rollback_target_profile_id,
+                approved_at = EXCLUDED.approved_at,
+                activated_at = EXCLUDED.activated_at,
+                superseded_at = EXCLUDED.superseded_at
+            """,
+            record.profile_id,
+            record.status,
+            record.execution_mode_scope,
+            record.symbol_scope,
+            record.regime_scope,
+            json.dumps(record.threshold_policy_json.model_dump(mode="json")),
+            json.dumps(record.sizing_policy_json.model_dump(mode="json")),
+            json.dumps(record.calibration_profile_json.model_dump(mode="json")),
+            json.dumps(record.source_evidence_json),
+            record.rollback_target_profile_id,
+            record.created_at,
+            record.approved_at,
+            record.activated_at,
+            record.superseded_at,
+        )
+
+    async def load_adaptive_profiles(self, *, limit: int) -> list[AdaptiveProfileRecord]:
+        """Load recent adaptive profile rows."""
+        pool = self._require_pool()
+        rows = await pool.fetch(
+            f"""
+            SELECT *
+            FROM {self._adaptive_profiles_table}
+            ORDER BY created_at DESC, profile_id DESC
+            LIMIT $1
+            """,
+            limit,
+        )
+        return [_adaptive_profile_from_row(row) for row in rows]
+
+    async def load_active_adaptive_profile(
+        self,
+        *,
+        execution_mode: str,
+        symbol: str,
+        regime_label: str,
+    ) -> AdaptiveProfileRecord | None:
+        """Load the best matching active adaptive profile for one runtime scope."""
+        pool = self._require_pool()
+        row = await pool.fetchrow(
+            f"""
+            SELECT *
+            FROM {self._adaptive_profiles_table}
+            WHERE status = 'ACTIVE'
+              AND execution_mode_scope IN ($1, 'ALL')
+              AND symbol_scope IN ($2, 'ALL')
+              AND regime_scope IN ($3, 'ALL')
+            ORDER BY
+                CASE WHEN execution_mode_scope = $1 THEN 0 ELSE 1 END,
+                CASE WHEN symbol_scope = $2 THEN 0 ELSE 1 END,
+                CASE WHEN regime_scope = $3 THEN 0 ELSE 1 END,
+                activated_at DESC NULLS LAST,
+                created_at DESC,
+                profile_id DESC
+            LIMIT 1
+            """,
+            execution_mode,
+            symbol,
+            regime_label,
+        )
+        if row is None:
+            return None
+        return _adaptive_profile_from_row(row)
+
+    async def save_adaptive_challenger_run(
+        self,
+        record: AdaptiveChallengerRunRecord,
+    ) -> None:
+        """Upsert one adaptive challenger run row."""
+        pool = self._require_pool()
+        await pool.execute(
+            f"""
+            INSERT INTO {self._adaptive_challenger_runs_table} (
+                challenger_run_id,
+                status,
+                train_window_start,
+                train_window_end,
+                validation_window_start,
+                validation_window_end,
+                shadow_window_start,
+                shadow_window_end,
+                candidate_model_version,
+                config_json,
+                metrics_json,
+                shadow_summary_json,
+                artifact_paths_json,
+                reason_codes,
+                created_at,
+                updated_at
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb,
+                $12::jsonb, $13::jsonb, $14::text[], COALESCE($15, NOW()),
+                COALESCE($16, NOW())
+            )
+            ON CONFLICT (challenger_run_id)
+            DO UPDATE SET
+                status = EXCLUDED.status,
+                train_window_start = EXCLUDED.train_window_start,
+                train_window_end = EXCLUDED.train_window_end,
+                validation_window_start = EXCLUDED.validation_window_start,
+                validation_window_end = EXCLUDED.validation_window_end,
+                shadow_window_start = EXCLUDED.shadow_window_start,
+                shadow_window_end = EXCLUDED.shadow_window_end,
+                candidate_model_version = EXCLUDED.candidate_model_version,
+                config_json = EXCLUDED.config_json,
+                metrics_json = EXCLUDED.metrics_json,
+                shadow_summary_json = EXCLUDED.shadow_summary_json,
+                artifact_paths_json = EXCLUDED.artifact_paths_json,
+                reason_codes = EXCLUDED.reason_codes,
+                updated_at = NOW()
+            """,
+            record.challenger_run_id,
+            record.status,
+            record.train_window_start,
+            record.train_window_end,
+            record.validation_window_start,
+            record.validation_window_end,
+            record.shadow_window_start,
+            record.shadow_window_end,
+            record.candidate_model_version,
+            json.dumps(record.config_json),
+            json.dumps(record.metrics_json),
+            json.dumps(record.shadow_summary_json),
+            json.dumps(record.artifact_paths_json),
+            list(record.reason_codes),
+            record.created_at,
+            record.updated_at,
+        )
+
+    async def load_adaptive_challenger_runs(
+        self,
+        *,
+        limit: int,
+    ) -> list[AdaptiveChallengerRunRecord]:
+        """Load recent adaptive challenger runs."""
+        pool = self._require_pool()
+        rows = await pool.fetch(
+            f"""
+            SELECT *
+            FROM {self._adaptive_challenger_runs_table}
+            ORDER BY updated_at DESC, created_at DESC
+            LIMIT $1
+            """,
+            limit,
+        )
+        return [_adaptive_challenger_run_from_row(row) for row in rows]
+
+    async def save_adaptive_promotion_decision(
+        self,
+        record: AdaptivePromotionDecisionRecord,
+    ) -> None:
+        """Upsert one adaptive promotion decision row."""
+        pool = self._require_pool()
+        await pool.execute(
+            f"""
+            INSERT INTO {self._adaptive_promotion_decisions_table} (
+                decision_id,
+                target_type,
+                target_id,
+                incumbent_id,
+                decision,
+                metrics_delta_json,
+                safety_checks_json,
+                research_integrity_json,
+                reason_codes,
+                summary_text,
+                decided_at
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9::text[],
+                $10, $11
+            )
+            ON CONFLICT (decision_id)
+            DO UPDATE SET
+                target_type = EXCLUDED.target_type,
+                target_id = EXCLUDED.target_id,
+                incumbent_id = EXCLUDED.incumbent_id,
+                decision = EXCLUDED.decision,
+                metrics_delta_json = EXCLUDED.metrics_delta_json,
+                safety_checks_json = EXCLUDED.safety_checks_json,
+                research_integrity_json = EXCLUDED.research_integrity_json,
+                reason_codes = EXCLUDED.reason_codes,
+                summary_text = EXCLUDED.summary_text,
+                decided_at = EXCLUDED.decided_at
+            """,
+            record.decision_id,
+            record.target_type,
+            record.target_id,
+            record.incumbent_id,
+            record.decision,
+            json.dumps(record.metrics_delta_json),
+            json.dumps(record.safety_checks_json),
+            json.dumps(record.research_integrity_json),
+            list(record.reason_codes),
+            record.summary_text,
+            record.decided_at,
+        )
+
+    async def load_adaptive_promotion_decisions(
+        self,
+        *,
+        limit: int,
+    ) -> list[AdaptivePromotionDecisionRecord]:
+        """Load recent adaptive promotion decisions."""
+        pool = self._require_pool()
+        rows = await pool.fetch(
+            f"""
+            SELECT *
+            FROM {self._adaptive_promotion_decisions_table}
+            ORDER BY decided_at DESC, decision_id DESC
+            LIMIT $1
+            """,
+            limit,
+        )
+        return [_adaptive_promotion_decision_from_row(row) for row in rows]
+
     async def fetch_new_feature_rows(
         self,
         *,
@@ -1430,6 +1917,34 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
         reliability_events_index = _build_index_name(
             _table_basename(RELIABILITY_EVENTS_TABLE),
             "service_component_event_time_idx",
+        )
+        adaptive_drift_unique = _build_index_name(
+            _table_basename(ADAPTIVE_DRIFT_STATE_TABLE),
+            "symbol_regime_detector_window_uidx",
+        )
+        adaptive_drift_index = _build_index_name(
+            _table_basename(ADAPTIVE_DRIFT_STATE_TABLE),
+            "symbol_regime_updated_idx",
+        )
+        adaptive_performance_unique = _build_index_name(
+            _table_basename(ADAPTIVE_PERFORMANCE_WINDOWS_TABLE),
+            "scope_window_uidx",
+        )
+        adaptive_performance_index = _build_index_name(
+            _table_basename(ADAPTIVE_PERFORMANCE_WINDOWS_TABLE),
+            "scope_window_end_idx",
+        )
+        adaptive_profiles_status_index = _build_index_name(
+            _table_basename(ADAPTIVE_PROFILES_TABLE),
+            "status_scope_idx",
+        )
+        adaptive_challengers_index = _build_index_name(
+            _table_basename(ADAPTIVE_CHALLENGER_RUNS_TABLE),
+            "updated_idx",
+        )
+        adaptive_promotions_index = _build_index_name(
+            _table_basename(ADAPTIVE_PROMOTION_DECISIONS_TABLE),
+            "decided_idx",
         )
         live_safety_primary_key = _quote_identifier(
             f"{_table_basename(LIVE_SAFETY_TABLE)}_pkey"
@@ -2280,6 +2795,175 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                 )
                 """
             )
+            await connection.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {self._adaptive_drift_state_table} (
+                    symbol TEXT NOT NULL,
+                    regime_label TEXT NOT NULL,
+                    detector_name TEXT NOT NULL,
+                    window_id TEXT NOT NULL,
+                    reference_window_start TIMESTAMPTZ NOT NULL,
+                    reference_window_end TIMESTAMPTZ NOT NULL,
+                    live_window_start TIMESTAMPTZ NOT NULL,
+                    live_window_end TIMESTAMPTZ NOT NULL,
+                    drift_score DOUBLE PRECISION NOT NULL,
+                    warning_threshold DOUBLE PRECISION NOT NULL,
+                    breach_threshold DOUBLE PRECISION NOT NULL,
+                    status TEXT NOT NULL,
+                    reason_code TEXT NOT NULL,
+                    detail TEXT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            await connection.execute(
+                f"""
+                CREATE UNIQUE INDEX IF NOT EXISTS {adaptive_drift_unique}
+                ON {self._adaptive_drift_state_table} (
+                    symbol,
+                    regime_label,
+                    detector_name,
+                    window_id
+                )
+                """
+            )
+            await connection.execute(
+                f"""
+                CREATE INDEX IF NOT EXISTS {adaptive_drift_index}
+                ON {self._adaptive_drift_state_table} (symbol, regime_label, updated_at DESC)
+                """
+            )
+            await connection.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {self._adaptive_performance_windows_table} (
+                    execution_mode TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    regime_label TEXT NOT NULL,
+                    window_id TEXT NOT NULL,
+                    window_type TEXT NOT NULL,
+                    window_start TIMESTAMPTZ NOT NULL,
+                    window_end TIMESTAMPTZ NOT NULL,
+                    trade_count INTEGER NOT NULL,
+                    net_pnl_after_costs DOUBLE PRECISION NOT NULL,
+                    max_drawdown DOUBLE PRECISION NOT NULL,
+                    profit_factor DOUBLE PRECISION NOT NULL,
+                    expectancy DOUBLE PRECISION NOT NULL,
+                    win_rate DOUBLE PRECISION NOT NULL,
+                    precision DOUBLE PRECISION NOT NULL,
+                    avg_slippage_bps DOUBLE PRECISION NOT NULL,
+                    blocked_trade_rate DOUBLE PRECISION NOT NULL,
+                    shadow_divergence_rate DOUBLE PRECISION NOT NULL,
+                    health_context JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            await connection.execute(
+                f"""
+                CREATE UNIQUE INDEX IF NOT EXISTS {adaptive_performance_unique}
+                ON {self._adaptive_performance_windows_table} (
+                    execution_mode,
+                    symbol,
+                    regime_label,
+                    window_id
+                )
+                """
+            )
+            await connection.execute(
+                f"""
+                CREATE INDEX IF NOT EXISTS {adaptive_performance_index}
+                ON {self._adaptive_performance_windows_table} (
+                    execution_mode,
+                    symbol,
+                    regime_label,
+                    window_end DESC
+                )
+                """
+            )
+            await connection.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {self._adaptive_profiles_table} (
+                    profile_id TEXT PRIMARY KEY,
+                    status TEXT NOT NULL,
+                    execution_mode_scope TEXT NOT NULL,
+                    symbol_scope TEXT NOT NULL,
+                    regime_scope TEXT NOT NULL,
+                    threshold_policy_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    sizing_policy_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    calibration_profile_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    source_evidence_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    rollback_target_profile_id TEXT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    approved_at TIMESTAMPTZ NULL,
+                    activated_at TIMESTAMPTZ NULL,
+                    superseded_at TIMESTAMPTZ NULL
+                )
+                """
+            )
+            await connection.execute(
+                f"""
+                CREATE INDEX IF NOT EXISTS {adaptive_profiles_status_index}
+                ON {self._adaptive_profiles_table} (
+                    status,
+                    execution_mode_scope,
+                    symbol_scope,
+                    regime_scope,
+                    activated_at DESC
+                )
+                """
+            )
+            await connection.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {self._adaptive_challenger_runs_table} (
+                    challenger_run_id TEXT PRIMARY KEY,
+                    status TEXT NOT NULL,
+                    train_window_start TIMESTAMPTZ NOT NULL,
+                    train_window_end TIMESTAMPTZ NOT NULL,
+                    validation_window_start TIMESTAMPTZ NOT NULL,
+                    validation_window_end TIMESTAMPTZ NOT NULL,
+                    shadow_window_start TIMESTAMPTZ NOT NULL,
+                    shadow_window_end TIMESTAMPTZ NOT NULL,
+                    candidate_model_version TEXT NOT NULL,
+                    config_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    metrics_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    shadow_summary_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    artifact_paths_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    reason_codes TEXT[] NOT NULL DEFAULT '{{}}',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            await connection.execute(
+                f"""
+                CREATE INDEX IF NOT EXISTS {adaptive_challengers_index}
+                ON {self._adaptive_challenger_runs_table} (updated_at DESC, created_at DESC)
+                """
+            )
+            await connection.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {self._adaptive_promotion_decisions_table} (
+                    decision_id TEXT PRIMARY KEY,
+                    target_type TEXT NOT NULL,
+                    target_id TEXT NOT NULL,
+                    incumbent_id TEXT NULL,
+                    decision TEXT NOT NULL,
+                    metrics_delta_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    safety_checks_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    research_integrity_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    reason_codes TEXT[] NOT NULL DEFAULT '{{}}',
+                    summary_text TEXT NOT NULL,
+                    decided_at TIMESTAMPTZ NOT NULL
+                )
+                """
+            )
+            await connection.execute(
+                f"""
+                CREATE INDEX IF NOT EXISTS {adaptive_promotions_index}
+                ON {self._adaptive_promotion_decisions_table} (decided_at DESC, decision_id DESC)
+                """
+            )
 
     def _require_pool(self) -> asyncpg.Pool:
         if self._pool is None:
@@ -2639,6 +3323,119 @@ def _decision_trace_from_row(row: asyncpg.Record) -> DecisionTraceRecord:
         decision_trace_id=int(row["id"]),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+    )
+
+
+def _adaptive_drift_state_from_row(row: asyncpg.Record) -> AdaptiveDriftRecord:
+    return AdaptiveDriftRecord(
+        symbol=str(row["symbol"]),
+        regime_label=str(row["regime_label"]),
+        detector_name=str(row["detector_name"]),
+        window_id=str(row["window_id"]),
+        reference_window_start=row["reference_window_start"],
+        reference_window_end=row["reference_window_end"],
+        live_window_start=row["live_window_start"],
+        live_window_end=row["live_window_end"],
+        drift_score=float(row["drift_score"]),
+        warning_threshold=float(row["warning_threshold"]),
+        breach_threshold=float(row["breach_threshold"]),
+        status=str(row["status"]),
+        reason_code=str(row["reason_code"]),
+        detail=None if row["detail"] is None else str(row["detail"]),
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _adaptive_performance_window_from_row(
+    row: asyncpg.Record,
+) -> AdaptivePerformanceWindow:
+    return AdaptivePerformanceWindow(
+        execution_mode=str(row["execution_mode"]),
+        symbol=str(row["symbol"]),
+        regime_label=str(row["regime_label"]),
+        window_id=str(row["window_id"]),
+        window_type=str(row["window_type"]),
+        window_start=row["window_start"],
+        window_end=row["window_end"],
+        trade_count=int(row["trade_count"]),
+        net_pnl_after_costs=float(row["net_pnl_after_costs"]),
+        max_drawdown=float(row["max_drawdown"]),
+        profit_factor=float(row["profit_factor"]),
+        expectancy=float(row["expectancy"]),
+        win_rate=float(row["win_rate"]),
+        precision=float(row["precision"]),
+        avg_slippage_bps=float(row["avg_slippage_bps"]),
+        blocked_trade_rate=float(row["blocked_trade_rate"]),
+        shadow_divergence_rate=float(row["shadow_divergence_rate"]),
+        health_context=dict(_jsonb_to_object(row["health_context"])),
+        created_at=row["created_at"],
+    )
+
+
+def _adaptive_profile_from_row(row: asyncpg.Record) -> AdaptiveProfileRecord:
+    return AdaptiveProfileRecord.model_validate(
+        {
+            "profile_id": str(row["profile_id"]),
+            "status": str(row["status"]),
+            "execution_mode_scope": str(row["execution_mode_scope"]),
+            "symbol_scope": str(row["symbol_scope"]),
+            "regime_scope": str(row["regime_scope"]),
+            "threshold_policy_json": _jsonb_to_object(row["threshold_policy_json"]),
+            "sizing_policy_json": _jsonb_to_object(row["sizing_policy_json"]),
+            "calibration_profile_json": _jsonb_to_object(row["calibration_profile_json"]),
+            "source_evidence_json": _jsonb_to_object(row["source_evidence_json"]),
+            "rollback_target_profile_id": row["rollback_target_profile_id"],
+            "created_at": row["created_at"],
+            "approved_at": row["approved_at"],
+            "activated_at": row["activated_at"],
+            "superseded_at": row["superseded_at"],
+        }
+    )
+
+
+def _adaptive_challenger_run_from_row(
+    row: asyncpg.Record,
+) -> AdaptiveChallengerRunRecord:
+    return AdaptiveChallengerRunRecord.model_validate(
+        {
+            "challenger_run_id": str(row["challenger_run_id"]),
+            "status": str(row["status"]),
+            "train_window_start": row["train_window_start"],
+            "train_window_end": row["train_window_end"],
+            "validation_window_start": row["validation_window_start"],
+            "validation_window_end": row["validation_window_end"],
+            "shadow_window_start": row["shadow_window_start"],
+            "shadow_window_end": row["shadow_window_end"],
+            "candidate_model_version": str(row["candidate_model_version"]),
+            "config_json": _jsonb_to_object(row["config_json"]),
+            "metrics_json": _jsonb_to_object(row["metrics_json"]),
+            "shadow_summary_json": _jsonb_to_object(row["shadow_summary_json"]),
+            "artifact_paths_json": _jsonb_to_object(row["artifact_paths_json"]),
+            "reason_codes": list(_text_array_to_tuple(row["reason_codes"])),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+    )
+
+
+def _adaptive_promotion_decision_from_row(
+    row: asyncpg.Record,
+) -> AdaptivePromotionDecisionRecord:
+    return AdaptivePromotionDecisionRecord.model_validate(
+        {
+            "decision_id": str(row["decision_id"]),
+            "target_type": str(row["target_type"]),
+            "target_id": str(row["target_id"]),
+            "incumbent_id": row["incumbent_id"],
+            "decision": str(row["decision"]),
+            "metrics_delta_json": _jsonb_to_object(row["metrics_delta_json"]),
+            "safety_checks_json": _jsonb_to_object(row["safety_checks_json"]),
+            "research_integrity_json": _jsonb_to_object(row["research_integrity_json"]),
+            "reason_codes": list(_text_array_to_tuple(row["reason_codes"])),
+            "summary_text": str(row["summary_text"]),
+            "decided_at": row["decided_at"],
+        }
     )
 
 

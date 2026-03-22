@@ -12,6 +12,23 @@ import json
 import joblib
 from fastapi.testclient import TestClient
 
+from app.adaptation.schemas import (
+    AdaptationDriftResponse,
+    AdaptationPerformanceResponse,
+    AdaptationProfilesResponse,
+    AdaptationPromotionsResponse,
+    AdaptationSummaryResponse,
+    AdaptiveDriftRecord,
+    AdaptivePerformanceWindow,
+    AdaptiveProfileRecord,
+    AdaptivePromotionDecisionRecord,
+    AdaptiveRecentPerformanceSummary,
+    CalibrationProfile,
+    EffectiveThresholds,
+    SizingPolicy,
+    ThresholdPolicy,
+)
+from app.adaptation.service import AppliedAdaptation
 from app.alerting.config import (
     AlertingArtifactConfig,
     AlertingConfig,
@@ -272,6 +289,132 @@ class FakeAlertRepository:
                 reverse=True,
             )
         )[:limit]
+
+
+class FakeAdaptationService:
+    """Minimal adaptation-service stub for M19 API tests."""
+
+    async def startup(self) -> None:
+        return None
+
+    async def shutdown(self) -> None:
+        return None
+
+    async def resolve_applied_adaptation(self, **_kwargs) -> AppliedAdaptation:
+        return AppliedAdaptation(
+            profile_id="profile-test-1",
+            calibrated_confidence=0.74,
+            effective_thresholds=EffectiveThresholds(buy_prob_up=0.53, sell_prob_up=0.47),
+            adaptive_size_multiplier=1.10,
+            drift_status="WATCH",
+            recent_performance_summary=AdaptiveRecentPerformanceSummary(
+                window_id="last_20_trades",
+                window_type="trade_count",
+                trade_count=20,
+                net_pnl_after_costs=0.02,
+                max_drawdown=0.01,
+                profit_factor=1.10,
+                win_rate=0.55,
+                blocked_trade_rate=0.10,
+                shadow_divergence_rate=0.05,
+            ),
+            adaptation_reason_codes=("ADAPTATION_PROFILE_ACTIVE",),
+            frozen_by_health_gate=False,
+        )
+
+    async def summary(self, **_kwargs) -> AdaptationSummaryResponse:
+        return AdaptationSummaryResponse(
+            enabled=True,
+            active_profile_count=1,
+            active_profile_id="profile-test-1",
+            adaptation_status="ACTIVE",
+            latest_drift_status="WATCH",
+            latest_promotion_decision="HOLD",
+            reason_codes=["ACTIVE_PROFILE_PRESENT"],
+        )
+
+    async def drift(self, **_kwargs) -> AdaptationDriftResponse:
+        return AdaptationDriftResponse(
+            items=[
+                AdaptiveDriftRecord(
+                    symbol="BTC/USD",
+                    regime_label="ALL",
+                    detector_name="psi",
+                    window_id="drift-1",
+                    reference_window_start=datetime(2026, 3, 1, tzinfo=timezone.utc),
+                    reference_window_end=datetime(2026, 3, 10, tzinfo=timezone.utc),
+                    live_window_start=datetime(2026, 3, 11, tzinfo=timezone.utc),
+                    live_window_end=datetime(2026, 3, 22, tzinfo=timezone.utc),
+                    drift_score=0.12,
+                    warning_threshold=0.10,
+                    breach_threshold=0.20,
+                    status="WATCH",
+                    reason_code="DRIFT_WATCH",
+                )
+            ]
+        )
+
+    async def performance(self, **_kwargs) -> AdaptationPerformanceResponse:
+        return AdaptationPerformanceResponse(
+            items=[
+                AdaptivePerformanceWindow(
+                    execution_mode="paper",
+                    symbol="BTC/USD",
+                    regime_label="ALL",
+                    window_id="last_20_trades",
+                    window_type="trade_count",
+                    window_start=datetime(2026, 3, 10, tzinfo=timezone.utc),
+                    window_end=datetime(2026, 3, 22, tzinfo=timezone.utc),
+                    trade_count=20,
+                    net_pnl_after_costs=0.02,
+                    max_drawdown=0.01,
+                    profit_factor=1.1,
+                    expectancy=0.001,
+                    win_rate=0.55,
+                    precision=0.56,
+                    avg_slippage_bps=3.0,
+                    blocked_trade_rate=0.10,
+                    shadow_divergence_rate=0.05,
+                    health_context={"health_overall_status": "HEALTHY"},
+                )
+            ]
+        )
+
+    async def profiles(self, **_kwargs) -> AdaptationProfilesResponse:
+        return AdaptationProfilesResponse(
+            items=[
+                AdaptiveProfileRecord(
+                    profile_id="profile-test-1",
+                    status="ACTIVE",
+                    execution_mode_scope="paper",
+                    symbol_scope="ALL",
+                    regime_scope="ALL",
+                    threshold_policy_json=ThresholdPolicy(buy_threshold_delta=0.02),
+                    sizing_policy_json=SizingPolicy(size_multiplier=1.1),
+                    calibration_profile_json=CalibrationProfile(method="identity"),
+                    source_evidence_json={"source": "unit-test"},
+                )
+            ]
+        )
+
+    async def promotions(self, **_kwargs) -> AdaptationPromotionsResponse:
+        return AdaptationPromotionsResponse(
+            items=[
+                AdaptivePromotionDecisionRecord(
+                    decision_id="promotion-test-1",
+                    target_type="PROFILE",
+                    target_id="profile-test-1",
+                    incumbent_id=None,
+                    decision="HOLD",
+                    metrics_delta_json={"net_pnl_after_costs": 0.02},
+                    safety_checks_json={"reliability_healthy": True},
+                    research_integrity_json={"trade_count": 20},
+                    reason_codes=["ACTIVE_PROFILE_PRESENT"],
+                    summary_text="unit-test summary",
+                    decided_at=datetime(2026, 3, 22, 12, 0, tzinfo=timezone.utc),
+                )
+            ]
+        )
 
 
 def _build_settings(model_path: str) -> Settings:
@@ -639,6 +782,7 @@ def _build_client(  # pylint: disable=too-many-arguments
     reliability_store: FakeReliabilityStore | None = None,
     alert_repository: FakeAlertRepository | None = None,
     artifact_path: Path | None = None,
+    adaptation_service: FakeAdaptationService | None = None,
 ) -> TestClient:
     resolved_artifact_path = (
         _write_artifact(tmp_path, prob_up=prob_up)
@@ -654,6 +798,7 @@ def _build_client(  # pylint: disable=too-many-arguments
         reliability_store=reliability_store or FakeReliabilityStore(),
         alerting_config=_build_alerting_config(tmp_path),
         alert_repository=alert_repository or FakeAlertRepository(),
+        adaptation_service=adaptation_service,
     )
     return TestClient(create_app(service))
 
@@ -717,6 +862,34 @@ def test_additive_runtime_metadata_is_exposed_on_health_metrics_and_reliability(
     assert reliability_payload["runtime_profile"] == "paper"
     assert reliability_payload["execution_mode"] == "paper"
     assert reliability_payload["startup_validation_passed"] is True
+
+
+def test_m19_additive_adaptation_fields_and_read_only_endpoints_are_exposed(
+    tmp_path: Path,
+) -> None:
+    client = _build_client(
+        tmp_path,
+        prob_up=0.7,
+        database=FakeDatabase(row=_feature_row()),
+        adaptation_service=FakeAdaptationService(),
+    )
+
+    health_payload = client.get("/health").json()
+    predict_payload = client.get("/predict", params={"symbol": "BTC/USD"}).json()
+    signal_payload = client.get("/signal", params={"symbol": "BTC/USD"}).json()
+    summary_payload = client.get("/adaptation/summary").json()
+    drift_payload = client.get("/adaptation/drift").json()
+
+    assert health_payload["active_adaptation_count"] == 1
+    assert health_payload["adaptation_status"] == "ACTIVE"
+    assert predict_payload["adaptation_profile_id"] == "profile-test-1"
+    assert predict_payload["calibrated_confidence"] == 0.74
+    assert signal_payload["adaptation_profile_id"] == "profile-test-1"
+    assert signal_payload["effective_thresholds"]["buy_prob_up"] == 0.53
+    assert signal_payload["adaptive_size_multiplier"] == 1.1
+    assert signal_payload["drift_status"] == "WATCH"
+    assert summary_payload["active_profile_id"] == "profile-test-1"
+    assert drift_payload["items"][0]["status"] == "WATCH"
 
 
 def test_m17_alert_and_operations_endpoints_are_exposed_read_only(

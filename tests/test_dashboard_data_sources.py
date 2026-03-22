@@ -345,6 +345,94 @@ class _HealthyHttpClient:
                     "live_mode_activation_count": 0,
                 },
             )
+        if path == "/adaptation/summary":
+            return _Response(
+                200,
+                {
+                    "enabled": True,
+                    "active_profile_count": 1,
+                    "active_profile_id": "profile-test-1",
+                    "adaptation_status": "ACTIVE",
+                    "frozen_by_health_gate": False,
+                    "latest_drift_status": "WATCH",
+                    "latest_promotion_decision": "HOLD",
+                    "reason_codes": ["ACTIVE_PROFILE_PRESENT"],
+                },
+            )
+        if path == "/adaptation/drift":
+            return _Response(
+                200,
+                {
+                    "items": [
+                        {
+                            "symbol": "BTC/USD",
+                            "regime_label": "ALL",
+                            "detector_name": "psi",
+                            "window_id": "drift-1",
+                            "drift_score": 0.12,
+                            "status": "WATCH",
+                            "reason_code": "DRIFT_WATCH",
+                            "updated_at": "2026-03-20T12:00:00Z",
+                        }
+                    ]
+                },
+            )
+        if path == "/adaptation/performance":
+            return _Response(
+                200,
+                {
+                    "items": [
+                        {
+                            "execution_mode": "paper",
+                            "symbol": "BTC/USD",
+                            "regime_label": "ALL",
+                            "window_id": "last_20_trades",
+                            "window_type": "trade_count",
+                            "trade_count": 20,
+                            "net_pnl_after_costs": 0.02,
+                            "max_drawdown": 0.01,
+                            "profit_factor": 1.1,
+                            "win_rate": 0.55,
+                            "blocked_trade_rate": 0.1,
+                            "shadow_divergence_rate": 0.05,
+                        }
+                    ]
+                },
+            )
+        if path == "/adaptation/profiles":
+            return _Response(
+                200,
+                {
+                    "items": [
+                        {
+                            "profile_id": "profile-test-1",
+                            "status": "ACTIVE",
+                            "execution_mode_scope": "paper",
+                            "symbol_scope": "ALL",
+                            "regime_scope": "ALL",
+                            "rollback_target_profile_id": None,
+                            "activated_at": "2026-03-20T12:00:00Z",
+                        }
+                    ]
+                },
+            )
+        if path == "/adaptation/promotions":
+            return _Response(
+                200,
+                {
+                    "items": [
+                        {
+                            "decision_id": "promotion-test-1",
+                            "target_type": "PROFILE",
+                            "target_id": "profile-test-1",
+                            "decision": "HOLD",
+                            "summary_text": "unit-test summary",
+                            "decided_at": "2026-03-20T12:00:00Z",
+                            "reason_codes": ["ACTIVE_PROFILE_PRESENT"],
+                        }
+                    ]
+                },
+            )
         return _Response(
             200,
             {
@@ -407,6 +495,27 @@ def test_dashboard_snapshot_parses_regime_fields_from_api_payloads() -> None:
 
     assert snapshot.api_health.regime_loaded is True
     assert snapshot.api_health.runtime_profile == "paper"
+
+
+def test_dashboard_snapshot_loads_adaptation_surfaces() -> None:
+    async def _db_connect(_dsn: str):
+        return _RecordingConnection()
+
+    snapshot = asyncio.run(
+        DashboardDataSources(
+            settings=_settings(),
+            trading_config=_paper_config(),
+            http_client=_HealthyHttpClient(),
+            db_connect=_db_connect,
+        ).load_snapshot()
+    )
+
+    assert snapshot.adaptation.summary.available is True
+    assert snapshot.adaptation.summary.active_profile_id == "profile-test-1"
+    assert snapshot.adaptation.drift[0].status == "WATCH"
+    assert snapshot.adaptation.performance[0].window_id == "last_20_trades"
+    assert snapshot.adaptation.profiles[0].status == "ACTIVE"
+    assert snapshot.adaptation.promotions[0].decision == "HOLD"
     assert snapshot.api_health.regime_run_id == "20260320T120000Z"
     assert snapshot.api_health.health_overall_status == "HEALTHY"
     assert snapshot.api_health.active_alert_count == 1

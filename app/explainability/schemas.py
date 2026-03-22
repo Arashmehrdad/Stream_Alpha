@@ -6,6 +6,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.adaptation.schemas import AdaptationContextPayload
+
 
 ContributionDirection = Literal["UP", "DOWN", "NEUTRAL"]
 
@@ -201,5 +203,6 @@ class DecisionTracePayload(BaseModel):
     signal: DecisionTraceSignal
     threshold_snapshot: ThresholdSnapshot | None = None
     regime_reason: RegimeReason | None = None
+    adaptation: AdaptationContextPayload | None = None
     risk: DecisionTraceRisk | None = None
     blocked_trade: DecisionTraceBlockedTrade | None = None

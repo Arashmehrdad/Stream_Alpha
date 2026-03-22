@@ -40,6 +40,8 @@ Milestone `M16` adds the deployment and environment foundation. It keeps M4, M10
 
 Milestone `M17` adds a local-first operational alerting foundation on top of the accepted M12 through M16 runtime truth. Packet 1 normalizes alert events and active state into PostgreSQL plus canonical startup-safety and daily-summary artifacts. Packet 2 adds read-only API surfaces and additive operator-console views for active alerts, incident timeline, startup safety, and daily operations summaries without changing trading, risk, execution, reliability, or explainability authority.
 
+Milestone `M19` adds an adaptive intelligence foundation on top of the accepted M4, M10, M14, M15, M17, and M18 boundaries. It keeps M4 authoritative for prediction and signal generation, keeps M10 authoritative for final risk clamps and sizing safety, keeps all adaptation logic local-first and bounded, persists auditable adaptive state in PostgreSQL, and exposes read-only adaptation status through the existing inference API and operator dashboard.
+
 ## Deployment
 
 M16 introduces one-command local startup helpers plus a deployment guide:
@@ -56,6 +58,50 @@ Truthful M16 startup scope:
 - Blank-clone `dev` works after copying `.env.example` to `.env`.
 - Blank-clone `paper`, `shadow`, and `live` do not work honestly until local model and regime artifacts exist, or a local registry-backed champion exists under `artifacts/registry/`.
 - `live` additionally requires `.env.secrets` plus explicit guarded-live arming env values, and startup validation fails closed when they are missing.
+
+## M19 Scope
+
+M19 adds:
+- one bounded adaptation package under `app/adaptation/`
+- one checked-in local config at `configs/adaptation.yaml`
+- one local artifact root under `artifacts/adaptation/`
+- five canonical PostgreSQL adaptive tables: `adaptive_drift_state`, `adaptive_performance_windows`, `adaptive_profiles`, `adaptive_challenger_runs`, and `adaptive_promotion_decisions`
+- additive read-only inference endpoints: `GET /adaptation/summary`, `GET /adaptation/drift`, `GET /adaptation/performance`, `GET /adaptation/profiles`, and `GET /adaptation/promotions`
+- additive `/health`, `/predict`, and `/signal` fields for adaptation status, calibrated confidence, effective thresholds, bounded adaptive sizing, and health-gate freeze visibility
+- additive decision-trace context so adaptation rationale is auditable alongside M4 explanation and M10 risk rationale
+- additive operator-console visibility in the existing Models view
+
+M19 does not do:
+- move signal authority away from M4
+- move risk and final exposure authority away from M10
+- create a new service, control plane, queue, or scheduler
+- self-retrain or self-promote directly in `live`
+- bypass reliability, freshness, startup-safety, or execution guardrails
+- replace M7 promotion policy, M14 trace authority, M15 console structure, or M17 incident truth
+
+M19 local-only artifact paths:
+- `artifacts/adaptation/` for adaptation reports and evidence
+- existing database tables for adaptive drift, performance, profiles, challenger runs, and promotion decisions
+- existing decision-trace and dashboard paths for read-only adaptation visibility
+
+M19 validation commands:
+
+```powershell
+pytest tests/test_adaptation_service.py tests/test_adaptation_repository.py tests/test_inference_api.py tests/test_dashboard_data_sources.py
+pylint app/adaptation app/inference app/trading tests/test_adaptation_service.py tests/test_adaptation_repository.py tests/test_inference_api.py tests/test_dashboard_data_sources.py
+```
+
+M19 rollback commands:
+
+```powershell
+git diff -- app/adaptation configs/adaptation.yaml app/inference app/trading app/explainability dashboards tests README.md
+git restore --source=HEAD --worktree --staged app/adaptation configs/adaptation.yaml app/inference app/trading app/explainability dashboards tests README.md
+```
+
+M19 rollback limitations:
+- the `git restore` command above is only safe if you intend to discard the local M19 changes in those paths
+- adaptive PostgreSQL rows and tables are not removed by git rollback and must be cleaned separately if you want a full datastore rollback
+- `artifacts/adaptation/` is local evidence and can be deleted separately when a local-only cleanup is intended
 
 ## Repository Tree
 

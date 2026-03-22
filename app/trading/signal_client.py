@@ -6,6 +6,7 @@ from datetime import datetime
 
 import httpx
 
+from app.adaptation.schemas import AdaptiveRecentPerformanceSummary
 from app.common.time import parse_rfc3339, to_rfc3339
 from app.explainability.schemas import (
     PredictionExplanation,
@@ -137,6 +138,47 @@ class SignalClient:
                 if payload.get("signal_explanation") is None
                 else SignalExplanation.model_validate(payload["signal_explanation"])
             ),
+            adaptation_profile_id=(
+                None
+                if payload.get("adaptation_profile_id") is None
+                else str(payload["adaptation_profile_id"])
+            ),
+            calibrated_confidence=(
+                None
+                if payload.get("calibrated_confidence") is None
+                else float(payload["calibrated_confidence"])
+            ),
+            effective_buy_prob_up=(
+                None
+                if payload.get("effective_thresholds") is None
+                else float(payload["effective_thresholds"]["buy_prob_up"])
+            ),
+            effective_sell_prob_up=(
+                None
+                if payload.get("effective_thresholds") is None
+                else float(payload["effective_thresholds"]["sell_prob_up"])
+            ),
+            adaptation_reason_codes=tuple(
+                str(item) for item in payload.get("adaptation_reason_codes", [])
+            ),
+            adaptive_size_multiplier=(
+                None
+                if payload.get("adaptive_size_multiplier") is None
+                else float(payload["adaptive_size_multiplier"])
+            ),
+            drift_status=(
+                None
+                if payload.get("drift_status") is None
+                else str(payload["drift_status"])
+            ),
+            recent_performance_summary=(
+                None
+                if payload.get("recent_performance_summary") is None
+                else AdaptiveRecentPerformanceSummary.model_validate(
+                    payload["recent_performance_summary"]
+                )
+            ),
+            frozen_by_health_gate=bool(payload.get("frozen_by_health_gate", False)),
         )
 
     async def fetch_system_reliability(self) -> CanonicalSystemReliability:

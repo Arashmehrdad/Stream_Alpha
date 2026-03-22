@@ -35,6 +35,7 @@ INSUFFICIENT_CASH = "INSUFFICIENT_CASH"
 REGIME_POSITION_CAP_CLAMPED = "REGIME_POSITION_CAP_CLAMPED"
 VOLATILITY_SIZE_ADJUSTED = "VOLATILITY_SIZE_ADJUSTED"
 CONFIDENCE_SIZE_ADJUSTED = "CONFIDENCE_SIZE_ADJUSTED"
+ADAPTIVE_SIZE_ADJUSTED = "ADAPTIVE_SIZE_ADJUSTED"
 MAX_ASSET_EXPOSURE_CLAMPED = "MAX_ASSET_EXPOSURE_CLAMPED"
 MAX_TOTAL_EXPOSURE_CLAMPED = "MAX_TOTAL_EXPOSURE_CLAMPED"
 MIN_TRADE_NOTIONAL_BREACHED = "MIN_TRADE_NOTIONAL_BREACHED"
@@ -72,6 +73,9 @@ RISK_REASON_TEXTS: dict[str, str] = {
     ),
     CONFIDENCE_SIZE_ADJUSTED: (
         "Approved notional was reduced by the confidence-weighted sizing multiplier."
+    ),
+    ADAPTIVE_SIZE_ADJUSTED: (
+        "Approved notional was adjusted by the active bounded adaptive size multiplier."
     ),
     MAX_ASSET_EXPOSURE_CLAMPED: (
         "Approved notional was reduced to stay within the maximum per-asset exposure."
@@ -299,7 +303,11 @@ def evaluate_risk(  # pylint: disable=too-many-arguments,too-many-locals,too-man
 
     if config.risk.enable_confidence_weighted_sizing:
         confidence_multiplier = _confidence_size_multiplier(
-            confidence=signal.confidence,
+            confidence=(
+                signal.confidence
+                if signal.calibrated_confidence is None
+                else signal.calibrated_confidence
+            ),
             min_multiplier=config.risk.min_confidence_size_multiplier,
         )
         previous_notional = approved_notional
@@ -311,6 +319,22 @@ def evaluate_risk(  # pylint: disable=too-many-arguments,too-many-locals,too-man
                 _build_adjustment_step(
                     step_index=step_index,
                     reason_code=CONFIDENCE_SIZE_ADJUSTED,
+                    before_notional=previous_notional,
+                    after_notional=approved_notional,
+                )
+            )
+            step_index += 1
+
+    if signal.adaptive_size_multiplier is not None:
+        previous_notional = approved_notional
+        adaptive_adjusted_notional = approved_notional * signal.adaptive_size_multiplier
+        if adaptive_adjusted_notional != approved_notional:
+            approved_notional = adaptive_adjusted_notional
+            reason_codes.append(ADAPTIVE_SIZE_ADJUSTED)
+            ordered_adjustments.append(
+                _build_adjustment_step(
+                    step_index=step_index,
+                    reason_code=ADAPTIVE_SIZE_ADJUSTED,
                     before_notional=previous_notional,
                     after_notional=approved_notional,
                 )
@@ -412,6 +436,10 @@ def build_pending_signal_state(
             approved_notional=decision.approved_notional,
             risk_outcome=decision.outcome,
             risk_reason_codes=decision.reason_codes,
+            adaptation_profile_id=signal.adaptation_profile_id,
+            calibrated_confidence=signal.calibrated_confidence,
+            adaptation_reason_codes=signal.adaptation_reason_codes,
+            adaptive_size_multiplier=signal.adaptive_size_multiplier,
         )
     if signal.signal == "SELL" and decision.approved_notional > 0.0:
         return PendingSignalState(
@@ -430,6 +458,10 @@ def build_pending_signal_state(
             approved_notional=decision.approved_notional,
             risk_outcome=decision.outcome,
             risk_reason_codes=decision.reason_codes,
+            adaptation_profile_id=signal.adaptation_profile_id,
+            calibrated_confidence=signal.calibrated_confidence,
+            adaptation_reason_codes=signal.adaptation_reason_codes,
+            adaptive_size_multiplier=signal.adaptive_size_multiplier,
         )
     return None
 

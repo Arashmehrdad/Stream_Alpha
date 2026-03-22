@@ -8,6 +8,7 @@ from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.adaptation.schemas import AdaptiveRecentPerformanceSummary
 from app.explainability.schemas import (
     PredictionExplanation,
     RegimeReason,
@@ -41,6 +42,8 @@ class HealthResponse(BaseModel):
     max_alert_severity: str | None = None
     startup_safety_status: str | None = None
     startup_safety_reason_code: str | None = None
+    active_adaptation_count: int | None = None
+    adaptation_status: str | None = None
 
 
 class FeatureRowResponse(BaseModel):  # pylint: disable=too-many-instance-attributes
@@ -106,6 +109,9 @@ class PredictionResponse(BaseModel):
     health_overall_status: str | None = None
     top_features: list[TopFeatureContribution] = Field(default_factory=list)
     prediction_explanation: PredictionExplanation
+    adaptation_profile_id: str | None = None
+    calibrated_confidence: float | None = None
+    adaptation_reason_codes: list[str] = Field(default_factory=list)
 
 
 class ThresholdsResponse(BaseModel):
@@ -143,6 +149,14 @@ class SignalResponse(BaseModel):
     threshold_snapshot: ThresholdSnapshot
     regime_reason: RegimeReason | None = None
     signal_explanation: SignalExplanation
+    adaptation_profile_id: str | None = None
+    calibrated_confidence: float | None = None
+    effective_thresholds: ThresholdsResponse | None = None
+    adaptation_reason_codes: list[str] = Field(default_factory=list)
+    adaptive_size_multiplier: float | None = None
+    drift_status: str | None = None
+    recent_performance_summary: AdaptiveRecentPerformanceSummary | None = None
+    frozen_by_health_gate: bool = False
 
 
 class RegimeResponse(BaseModel):

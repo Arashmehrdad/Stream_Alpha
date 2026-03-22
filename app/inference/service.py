@@ -13,6 +13,8 @@ from typing import Any
 
 import joblib
 
+from app.adaptation.config import default_adaptation_config_path, load_adaptation_config
+from app.adaptation.service import AdaptationService
 from app.alerting.config import (
     AlertingConfig,
     default_alerting_config_path,
@@ -71,6 +73,7 @@ from app.reliability.store import ReliabilityStore
 from app.regime.live import LiveRegimeRuntime, ResolvedRegime, load_live_regime_runtime
 from app.runtime.config import build_runtime_metadata, resolve_trading_config_path
 from app.trading.config import load_paper_trading_config
+from app.trading.repository import TradingRepository
 from app.training.registry import resolve_inference_model_metadata
 
 
@@ -210,7 +213,7 @@ def load_model_artifact(
     )
 
 
-class InferenceService:  # pylint: disable=too-many-instance-attributes
+class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many-public-methods
     """Serve online predictions from the latest canonical feature row."""
 
     # pylint: disable=too-many-arguments
@@ -224,6 +227,7 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
         reliability_store: ReliabilityStore | None = None,
         alerting_config: AlertingConfig | None = None,
         alert_repository: OperationalAlertRepository | Any | None = None,
+        adaptation_service: AdaptationService | None = None,
     ) -> None:
         self.settings = settings
         self.started_at = utc_now()
@@ -254,6 +258,10 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
         )
         self.explainability_service = ExplainabilityService(self.explainability_config)
         self.trading_config = load_paper_trading_config(resolve_trading_config_path())
+        self.adaptation_service = adaptation_service or AdaptationService(
+            repository=TradingRepository(settings.postgres.dsn, settings.tables.feature_ohlc),
+            config=load_adaptation_config(default_adaptation_config_path()),
+        )
         self._symbols = set(settings.kraken.symbols)
         self._last_heartbeat_at: datetime | None = None
         self._validate_thresholds()
@@ -279,6 +287,10 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
             await self.alert_repository.connect()
         except Exception:  # pylint: disable=broad-exception-caught
             return
+        try:
+            await self.adaptation_service.startup()
+        except Exception:  # pylint: disable=broad-exception-caught
+            return
 
     async def shutdown(self) -> None:
         """Close the database pool."""
@@ -291,6 +303,10 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
             await self.alert_repository.close()
         except Exception:  # pylint: disable=broad-exception-caught
             return
+        try:
+            await self.adaptation_service.shutdown()
+        except Exception:  # pylint: disable=broad-exception-caught
+            return
 
     def record_request(self, *, path: str, status_code: int, latency_ms: float) -> None:
         """Record one completed HTTP request."""
@@ -300,6 +316,11 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
         """Return the current dependency health payload and status code."""
         runtime_metadata = self.runtime_metadata_fields()
         alert_health = await self._health_alert_fields()
+        adaptation_summary = await self.adaptation_service.summary(
+            execution_mode=self.trading_config.execution.mode,
+            symbol="ALL",
+            regime_label="ALL",
+        )
         database_healthy = await self.database.is_healthy()
         model_loaded = self.model_artifact is not None
         if database_healthy and model_loaded:
@@ -368,6 +389,8 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
                 max_alert_severity=alert_health["max_alert_severity"],
                 startup_safety_status=alert_health["startup_safety_status"],
                 startup_safety_reason_code=alert_health["startup_safety_reason_code"],
+                active_adaptation_count=adaptation_summary.active_profile_count,
+                adaptation_status=adaptation_summary.adaptation_status,
             ),
         )
 
@@ -424,6 +447,21 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
             feature_input=feature_input,
             prob_up=prob_up,
         )
+        base_buy_threshold, base_sell_threshold = self._default_thresholds(
+            resolved_regime.regime_label
+        )
+        applied_adaptation = await self.adaptation_service.resolve_applied_adaptation(
+            execution_mode=self.trading_config.execution.mode,
+            symbol=str(row["symbol"]),
+            regime_label=resolved_regime.regime_label,
+            base_buy_prob_up=base_buy_threshold,
+            base_sell_prob_up=base_sell_threshold,
+            confidence=max(prob_up, prob_down),
+            health_overall_status=(
+                None if freshness is None else freshness.health_overall_status
+            ),
+            freshness_status=(None if freshness is None else freshness.freshness_status),
+        )
         return PredictionContext(
             prediction=PredictionResponse(
                 symbol=str(row["symbol"]),
@@ -448,11 +486,14 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
                 ),
                 top_features=top_features,
                 prediction_explanation=prediction_explanation,
+                adaptation_profile_id=applied_adaptation.profile_id,
+                calibrated_confidence=applied_adaptation.calibrated_confidence,
+                adaptation_reason_codes=list(applied_adaptation.adaptation_reason_codes),
             ),
             resolved_regime=resolved_regime,
         )
 
-    def signal_from_prediction(  # pylint: disable=too-many-locals
+    async def signal_from_prediction(  # pylint: disable=too-many-locals
         self,
         prediction: PredictionResponse,
         *,
@@ -461,8 +502,32 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
     ) -> SignalResponse:
         """Convert one prediction into BUY, SELL, or HOLD."""
         policy = self.regime_runtime.policy_for(prediction.regime_label)
-        buy_threshold = policy.buy_prob_up
-        sell_threshold = policy.sell_prob_up
+        applied_adaptation = await self.adaptation_service.resolve_applied_adaptation(
+            execution_mode=self.trading_config.execution.mode,
+            symbol=prediction.symbol,
+            regime_label=prediction.regime_label,
+            base_buy_prob_up=policy.buy_prob_up,
+            base_sell_prob_up=policy.sell_prob_up,
+            confidence=(
+                prediction.confidence
+                if prediction.calibrated_confidence is None
+                else prediction.calibrated_confidence
+            ),
+            health_overall_status=(
+                None if freshness is None else freshness.health_overall_status
+            ),
+            freshness_status=(None if freshness is None else freshness.freshness_status),
+        )
+        buy_threshold = (
+            policy.buy_prob_up
+            if applied_adaptation.effective_thresholds is None
+            else applied_adaptation.effective_thresholds.buy_prob_up
+        )
+        sell_threshold = (
+            policy.sell_prob_up
+            if applied_adaptation.effective_thresholds is None
+            else applied_adaptation.effective_thresholds.sell_prob_up
+        )
         decision_source = "model"
         reason_code = None if freshness is None else freshness.reason_code
         if prediction.prob_up >= buy_threshold:
@@ -542,6 +607,17 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
             threshold_snapshot=threshold_snapshot,
             regime_reason=regime_reason,
             signal_explanation=signal_explanation,
+            adaptation_profile_id=applied_adaptation.profile_id,
+            calibrated_confidence=applied_adaptation.calibrated_confidence,
+            effective_thresholds=ThresholdsResponse(
+                buy_prob_up=buy_threshold,
+                sell_prob_up=sell_threshold,
+            ),
+            adaptation_reason_codes=list(applied_adaptation.adaptation_reason_codes),
+            adaptive_size_multiplier=applied_adaptation.adaptive_size_multiplier,
+            drift_status=applied_adaptation.drift_status,
+            recent_performance_summary=applied_adaptation.recent_performance_summary,
+            frozen_by_health_gate=applied_adaptation.frozen_by_health_gate,
         )
 
     async def _build_prediction_explainability(
@@ -653,6 +729,57 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
             reason_code=reason_code,
             freshness_summary=freshness_summary,
         )
+
+    async def adaptation_summary(
+        self,
+        *,
+        symbol: str,
+        regime_label: str,
+    ):
+        """Return the M19 read-only adaptation summary."""
+        return await self.adaptation_service.summary(
+            execution_mode=self.trading_config.execution.mode,
+            symbol=symbol,
+            regime_label=regime_label,
+        )
+
+    async def adaptation_drift(
+        self,
+        *,
+        symbol: str,
+        regime_label: str,
+        limit: int,
+    ):
+        """Return the M19 read-only drift collection."""
+        return await self.adaptation_service.drift(
+            symbol=symbol,
+            regime_label=regime_label,
+            limit=limit,
+        )
+
+    async def adaptation_performance(
+        self,
+        *,
+        execution_mode: str,
+        symbol: str,
+        regime_label: str,
+        limit: int,
+    ):
+        """Return the M19 read-only performance collection."""
+        return await self.adaptation_service.performance(
+            execution_mode=execution_mode,
+            symbol=symbol,
+            regime_label=regime_label,
+            limit=limit,
+        )
+
+    async def adaptation_profiles(self, *, limit: int):
+        """Return the M19 read-only adaptive profile collection."""
+        return await self.adaptation_service.profiles(limit=limit)
+
+    async def adaptation_promotions(self, *, limit: int):
+        """Return the M19 read-only adaptive promotion collection."""
+        return await self.adaptation_service.promotions(limit=limit)
 
     async def system_reliability_snapshot(
         self,
@@ -1042,7 +1169,7 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
                 row,
                 freshness=freshness,
             )
-            return self.signal_from_prediction(
+            return await self.signal_from_prediction(
                 prediction_context.prediction,
                 resolved_regime=prediction_context.resolved_regime,
                 freshness=freshness,

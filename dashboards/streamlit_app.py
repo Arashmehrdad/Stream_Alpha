@@ -693,6 +693,119 @@ def _render_models_view(
     render_table("Model and Regime References", model_reference_rows)
     render_table("Operator Config Summary", config_summary_rows)
     render_table("Recent Decision Traces", recent_decision_trace_rows)
+    _render_adaptation_section(snapshot=snapshot)
+
+
+def _render_adaptation_section(*, snapshot) -> None:
+    adaptation = snapshot.adaptation
+    summary = adaptation.summary
+    render_summary_cards(
+        title="Adaptation Summary",
+        items=[
+            {"label": "Execution mode", "value": snapshot.api_health.runtime_profile or "-"},
+            {"label": "Active profile", "value": summary.active_profile_id or "-"},
+            {"label": "Adaptation status", "value": summary.adaptation_status or "-"},
+            {
+                "label": "Freeze gate",
+                "value": str(summary.frozen_by_health_gate),
+                "detail": ", ".join(summary.reason_codes) if summary.reason_codes else None,
+            },
+        ],
+    )
+    if not summary.available:
+        render_table(
+            "Adaptation Status",
+            [
+                {
+                    "status": "UNAVAILABLE",
+                    "detail": summary.error or "adaptation endpoints unavailable",
+                }
+            ],
+        )
+        return
+    render_table(
+        "Adaptation Status",
+        [
+            {
+                "current_execution_mode": snapshot.api_health.runtime_profile,
+                "active_profile": summary.active_profile_id,
+                "drift_status": summary.latest_drift_status,
+                "latest_promotion": summary.latest_promotion_decision,
+                "freeze_gate": summary.frozen_by_health_gate,
+                "reason_codes": ", ".join(summary.reason_codes),
+            }
+        ],
+    )
+    render_table(
+        "Adaptation Drift",
+        [
+            {
+                "symbol": item.symbol,
+                "regime_label": item.regime_label,
+                "detector_name": item.detector_name,
+                "window_id": item.window_id,
+                "drift_score": item.drift_score,
+                "status": item.status,
+                "reason_code": item.reason_code,
+            }
+            for item in adaptation.drift
+        ]
+        or [{"status": "NONE"}],
+    )
+    render_table(
+        "Adaptation Performance",
+        [
+            {
+                "execution_mode": item.execution_mode,
+                "symbol": item.symbol,
+                "regime_label": item.regime_label,
+                "window_id": item.window_id,
+                "trade_count": item.trade_count,
+                "net_pnl_after_costs": item.net_pnl_after_costs,
+                "max_drawdown": item.max_drawdown,
+                "profit_factor": item.profit_factor,
+                "win_rate": item.win_rate,
+                "blocked_trade_rate": item.blocked_trade_rate,
+                "shadow_divergence_rate": item.shadow_divergence_rate,
+            }
+            for item in adaptation.performance
+        ]
+        or [{"status": "NONE"}],
+    )
+    render_table(
+        "Adaptation Profiles",
+        [
+            {
+                "profile_id": item.profile_id,
+                "status": item.status,
+                "execution_mode_scope": item.execution_mode_scope,
+                "symbol_scope": item.symbol_scope,
+                "regime_scope": item.regime_scope,
+                "rollback_target_profile_id": item.rollback_target_profile_id,
+                "activated_at": (
+                    None if item.activated_at is None else item.activated_at.isoformat()
+                ),
+            }
+            for item in adaptation.profiles
+        ]
+        or [{"status": "NONE"}],
+    )
+    render_table(
+        "Adaptation Promotions",
+        [
+            {
+                "decision_id": item.decision_id,
+                "target_type": item.target_type,
+                "target_id": item.target_id,
+                "decision": item.decision,
+                "summary_text": item.summary_text,
+                "decided_at": item.decided_at.isoformat(),
+                "reason_codes": ", ".join(item.reason_codes),
+            }
+            for item in adaptation.promotions
+        ]
+        or [{"status": "NONE"}],
+    )
 
 
 def _render_incidents_view(

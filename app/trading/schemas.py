@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Literal
 
+from app.adaptation.schemas import AdaptiveRecentPerformanceSummary
 from app.common.time import to_rfc3339
 from app.explainability.schemas import (
     DecisionTracePayload,
@@ -92,6 +93,15 @@ class SignalDecision:
     threshold_snapshot: ThresholdSnapshot | None = None
     regime_reason: RegimeReason | None = None
     signal_explanation: SignalExplanation | None = None
+    adaptation_profile_id: str | None = None
+    calibrated_confidence: float | None = None
+    effective_buy_prob_up: float | None = None
+    effective_sell_prob_up: float | None = None
+    adaptation_reason_codes: tuple[str, ...] = field(default_factory=tuple)
+    adaptive_size_multiplier: float | None = None
+    drift_status: str | None = None
+    recent_performance_summary: AdaptiveRecentPerformanceSummary | None = None
+    frozen_by_health_gate: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +125,10 @@ class PendingSignalState:
     order_request_id: int | None = None
     order_request_idempotency_key: str | None = None
     risk_reason_codes: tuple[str, ...] = field(default_factory=tuple)
+    adaptation_profile_id: str | None = None
+    calibrated_confidence: float | None = None
+    adaptation_reason_codes: tuple[str, ...] = field(default_factory=tuple)
+    adaptive_size_multiplier: float | None = None
 
 
 @dataclass(frozen=True, slots=True)

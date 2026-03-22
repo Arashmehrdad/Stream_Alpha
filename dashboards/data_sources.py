@@ -71,6 +71,8 @@ class ApiHealthSnapshot:
     max_alert_severity: str | None = None
     startup_safety_status: str | None = None
     startup_safety_reason_code: str | None = None
+    active_adaptation_count: int | None = None
+    adaptation_status: str | None = None
     error: str | None = None
 
 
@@ -100,6 +102,11 @@ class SignalSnapshot:
     reason_code: str | None = None
     freshness_status: str | None = None
     health_overall_status: str | None = None
+    adaptation_profile_id: str | None = None
+    calibrated_confidence: float | None = None
+    adaptive_size_multiplier: float | None = None
+    drift_status: str | None = None
+    frozen_by_health_gate: bool = False
     error: str | None = None
 
 
@@ -418,6 +425,92 @@ class DailyOperationsSummarySnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class AdaptationSummarySnapshot:
+    """Read-only M19 adaptation summary snapshot from the API."""
+
+    available: bool
+    checked_at: datetime
+    enabled: bool = False
+    active_profile_count: int = 0
+    active_profile_id: str | None = None
+    adaptation_status: str | None = None
+    frozen_by_health_gate: bool = False
+    latest_drift_status: str | None = None
+    latest_promotion_decision: str | None = None
+    reason_codes: tuple[str, ...] = field(default_factory=tuple)
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AdaptationDriftItemSnapshot:
+    """Read-only adaptive drift row for operator visibility."""
+
+    symbol: str
+    regime_label: str
+    detector_name: str
+    window_id: str
+    drift_score: float
+    status: str
+    reason_code: str
+    updated_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AdaptationPerformanceItemSnapshot:
+    """Read-only adaptive performance row for operator visibility."""
+
+    execution_mode: str
+    symbol: str
+    regime_label: str
+    window_id: str
+    window_type: str
+    trade_count: int
+    net_pnl_after_costs: float
+    max_drawdown: float
+    profit_factor: float
+    win_rate: float
+    blocked_trade_rate: float
+    shadow_divergence_rate: float
+
+
+@dataclass(frozen=True, slots=True)
+class AdaptationProfileItemSnapshot:
+    """Read-only adaptive profile row for operator visibility."""
+
+    profile_id: str
+    status: str
+    execution_mode_scope: str
+    symbol_scope: str
+    regime_scope: str
+    rollback_target_profile_id: str | None = None
+    activated_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AdaptationPromotionItemSnapshot:
+    """Read-only adaptive promotion decision row for operator visibility."""
+
+    decision_id: str
+    target_type: str
+    target_id: str
+    decision: str
+    summary_text: str
+    decided_at: datetime
+    reason_codes: tuple[str, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True, slots=True)
+class AdaptationSnapshot:
+    """Combined read-only M19 adaptation snapshot from the API."""
+
+    summary: AdaptationSummarySnapshot
+    drift: tuple[AdaptationDriftItemSnapshot, ...] = field(default_factory=tuple)
+    performance: tuple[AdaptationPerformanceItemSnapshot, ...] = field(default_factory=tuple)
+    profiles: tuple[AdaptationProfileItemSnapshot, ...] = field(default_factory=tuple)
+    promotions: tuple[AdaptationPromotionItemSnapshot, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True, slots=True)
 class EngineStateSnapshot:
     """Persisted per-symbol paper-trading engine state."""
 
@@ -521,6 +614,16 @@ def _default_daily_operations_summary_snapshot() -> DailyOperationsSummarySnapsh
     )
 
 
+def _default_adaptation_snapshot() -> AdaptationSnapshot:
+    return AdaptationSnapshot(
+        summary=AdaptationSummarySnapshot(
+            available=False,
+            checked_at=utc_now(),
+            error="M19 adaptation snapshot unavailable",
+        )
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class DashboardSnapshot:
     """Combined API and database state used by the Streamlit app."""
@@ -536,6 +639,7 @@ class DashboardSnapshot:
     daily_operations_summary: DailyOperationsSummarySnapshot = field(
         default_factory=_default_daily_operations_summary_snapshot
     )
+    adaptation: AdaptationSnapshot = field(default_factory=_default_adaptation_snapshot)
 
 
 class DashboardDataSources:
@@ -580,6 +684,7 @@ class DashboardDataSources:
         alert_timeline = await self._load_alert_timeline(http_client)
         startup_safety = await self._load_startup_safety(http_client)
         daily_operations_summary = await self._load_daily_operations_summary(http_client)
+        adaptation = await self._load_adaptation(http_client)
         signals = await self._load_signals(http_client)
         freshness = await self._load_freshness(http_client)
         database = await self._load_database_snapshot()
@@ -593,6 +698,7 @@ class DashboardDataSources:
             alert_timeline=alert_timeline,
             startup_safety=startup_safety,
             daily_operations_summary=daily_operations_summary,
+            adaptation=adaptation,
         )
 
     async def _load_api_health(self, http_client: Any) -> ApiHealthSnapshot:
@@ -676,7 +782,67 @@ class DashboardDataSources:
                 if payload.get("startup_safety_reason_code") is None
                 else str(payload["startup_safety_reason_code"])
             ),
+            active_adaptation_count=(
+                None
+                if payload.get("active_adaptation_count") is None
+                else int(payload["active_adaptation_count"])
+            ),
+            adaptation_status=(
+                None
+                if payload.get("adaptation_status") is None
+                else str(payload["adaptation_status"])
+            ),
             error=None if response.status_code == 200 else f"HTTP {response.status_code}",
+        )
+
+    async def _load_adaptation(self, http_client: Any) -> AdaptationSnapshot:
+        checked_at = utc_now()
+        try:
+            summary_response = await http_client.get("/adaptation/summary")
+            drift_response = await http_client.get("/adaptation/drift")
+            performance_response = await http_client.get("/adaptation/performance")
+            profiles_response = await http_client.get("/adaptation/profiles")
+            promotions_response = await http_client.get("/adaptation/promotions")
+            if any(
+                response.status_code != 200
+                for response in (
+                    summary_response,
+                    drift_response,
+                    performance_response,
+                    profiles_response,
+                    promotions_response,
+                )
+            ):
+                raise RuntimeError("M19 adaptation endpoints returned non-200 status")
+            summary_payload = summary_response.json()
+            drift_payload = drift_response.json()
+            performance_payload = performance_response.json()
+            profiles_payload = profiles_response.json()
+            promotions_payload = promotions_response.json()
+        except Exception as error:  # pylint: disable=broad-exception-caught
+            return _default_adaptation_snapshot_with_error(checked_at=checked_at, error=str(error))
+        return AdaptationSnapshot(
+            summary=_adaptation_summary_from_payload(summary_payload, checked_at=checked_at),
+            drift=tuple(
+                _adaptation_drift_item_from_payload(item)
+                for item in drift_payload.get("items", [])
+                if isinstance(item, Mapping)
+            ),
+            performance=tuple(
+                _adaptation_performance_item_from_payload(item)
+                for item in performance_payload.get("items", [])
+                if isinstance(item, Mapping)
+            ),
+            profiles=tuple(
+                _adaptation_profile_item_from_payload(item)
+                for item in profiles_payload.get("items", [])
+                if isinstance(item, Mapping)
+            ),
+            promotions=tuple(
+                _adaptation_promotion_item_from_payload(item)
+                for item in promotions_payload.get("items", [])
+                if isinstance(item, Mapping)
+            ),
         )
 
     async def _load_system_reliability(self, http_client: Any) -> SystemReliabilitySnapshot:
@@ -1156,6 +1322,148 @@ def _signal_from_payload(
             if payload.get("health_overall_status") is None
             else str(payload["health_overall_status"])
         ),
+        adaptation_profile_id=(
+            None
+            if payload.get("adaptation_profile_id") is None
+            else str(payload["adaptation_profile_id"])
+        ),
+        calibrated_confidence=(
+            None
+            if payload.get("calibrated_confidence") is None
+            else float(payload["calibrated_confidence"])
+        ),
+        adaptive_size_multiplier=(
+            None
+            if payload.get("adaptive_size_multiplier") is None
+            else float(payload["adaptive_size_multiplier"])
+        ),
+        drift_status=(
+            None
+            if payload.get("drift_status") is None
+            else str(payload["drift_status"])
+        ),
+        frozen_by_health_gate=bool(payload.get("frozen_by_health_gate", False)),
+    )
+
+
+def _default_adaptation_snapshot_with_error(
+    *,
+    checked_at: datetime,
+    error: str,
+) -> AdaptationSnapshot:
+    return AdaptationSnapshot(
+        summary=AdaptationSummarySnapshot(
+            available=False,
+            checked_at=checked_at,
+            error=error,
+        )
+    )
+
+
+def _adaptation_summary_from_payload(
+    payload: Mapping[str, Any],
+    *,
+    checked_at: datetime,
+) -> AdaptationSummarySnapshot:
+    return AdaptationSummarySnapshot(
+        available=True,
+        checked_at=checked_at,
+        enabled=bool(payload.get("enabled", False)),
+        active_profile_count=int(payload.get("active_profile_count", 0)),
+        active_profile_id=(
+            None
+            if payload.get("active_profile_id") is None
+            else str(payload["active_profile_id"])
+        ),
+        adaptation_status=(
+            None
+            if payload.get("adaptation_status") is None
+            else str(payload["adaptation_status"])
+        ),
+        frozen_by_health_gate=bool(payload.get("frozen_by_health_gate", False)),
+        latest_drift_status=(
+            None
+            if payload.get("latest_drift_status") is None
+            else str(payload["latest_drift_status"])
+        ),
+        latest_promotion_decision=(
+            None
+            if payload.get("latest_promotion_decision") is None
+            else str(payload["latest_promotion_decision"])
+        ),
+        reason_codes=tuple(str(item) for item in payload.get("reason_codes", [])),
+    )
+
+
+def _adaptation_drift_item_from_payload(
+    payload: Mapping[str, Any],
+) -> AdaptationDriftItemSnapshot:
+    updated_at = None
+    if isinstance(payload.get("updated_at"), str):
+        updated_at = parse_rfc3339(str(payload["updated_at"]))
+    return AdaptationDriftItemSnapshot(
+        symbol=str(payload["symbol"]),
+        regime_label=str(payload["regime_label"]),
+        detector_name=str(payload["detector_name"]),
+        window_id=str(payload["window_id"]),
+        drift_score=float(payload["drift_score"]),
+        status=str(payload["status"]),
+        reason_code=str(payload["reason_code"]),
+        updated_at=updated_at,
+    )
+
+
+def _adaptation_performance_item_from_payload(
+    payload: Mapping[str, Any],
+) -> AdaptationPerformanceItemSnapshot:
+    return AdaptationPerformanceItemSnapshot(
+        execution_mode=str(payload["execution_mode"]),
+        symbol=str(payload["symbol"]),
+        regime_label=str(payload["regime_label"]),
+        window_id=str(payload["window_id"]),
+        window_type=str(payload["window_type"]),
+        trade_count=int(payload["trade_count"]),
+        net_pnl_after_costs=float(payload["net_pnl_after_costs"]),
+        max_drawdown=float(payload["max_drawdown"]),
+        profit_factor=float(payload["profit_factor"]),
+        win_rate=float(payload["win_rate"]),
+        blocked_trade_rate=float(payload["blocked_trade_rate"]),
+        shadow_divergence_rate=float(payload["shadow_divergence_rate"]),
+    )
+
+
+def _adaptation_profile_item_from_payload(
+    payload: Mapping[str, Any],
+) -> AdaptationProfileItemSnapshot:
+    activated_at = None
+    if isinstance(payload.get("activated_at"), str):
+        activated_at = parse_rfc3339(str(payload["activated_at"]))
+    return AdaptationProfileItemSnapshot(
+        profile_id=str(payload["profile_id"]),
+        status=str(payload["status"]),
+        execution_mode_scope=str(payload["execution_mode_scope"]),
+        symbol_scope=str(payload["symbol_scope"]),
+        regime_scope=str(payload["regime_scope"]),
+        rollback_target_profile_id=(
+            None
+            if payload.get("rollback_target_profile_id") is None
+            else str(payload["rollback_target_profile_id"])
+        ),
+        activated_at=activated_at,
+    )
+
+
+def _adaptation_promotion_item_from_payload(
+    payload: Mapping[str, Any],
+) -> AdaptationPromotionItemSnapshot:
+    return AdaptationPromotionItemSnapshot(
+        decision_id=str(payload["decision_id"]),
+        target_type=str(payload["target_type"]),
+        target_id=str(payload["target_id"]),
+        decision=str(payload["decision"]),
+        summary_text=str(payload["summary_text"]),
+        decided_at=parse_rfc3339(str(payload["decided_at"])),
+        reason_codes=tuple(str(item) for item in payload.get("reason_codes", [])),
     )
 
 

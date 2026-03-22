@@ -1,0 +1,87 @@
+enabled: true
+
+rolling_windows:
+  trade_counts: [20, 50, 100]
+  day_windows: [7, 30]
+
+minimum_samples:
+  threshold_tuning: 20
+  sizing: 20
+  calibration: 50
+  promotion: 50
+  challenger_shadow: 50
+
+threshold_bounds:
+  max_absolute_delta: 0.03
+  min_buy_prob_up: 0.50
+  max_buy_prob_up: 0.70
+  min_sell_prob_up: 0.30
+  max_sell_prob_up: 0.50
+  improvement_sensitivity: 0.005
+
+sizing_bounds:
+  min_multiplier: 0.50
+  max_multiplier: 1.25
+  calibration_weight: 0.40
+  performance_weight: 2.00
+  drawdown_penalty_weight: 1.50
+
+drift:
+  detector_name: psi
+  minimum_reference_samples: 50
+  minimum_live_samples: 50
+  features:
+    - log_return_1
+    - log_return_3
+    - momentum_3
+    - realized_vol_12
+    - rsi_14
+    - macd_line_12_26
+    - close_zscore_12
+    - volume_zscore_12
+  prob_up:
+    warning: 0.10
+    breach: 0.20
+  calibration:
+    warning: 0.05
+    breach: 0.10
+  feature_default:
+    warning: 0.10
+    breach: 0.20
+  feature_thresholds:
+    realized_vol_12:
+      warning: 0.08
+      breach: 0.16
+    rsi_14:
+      warning: 0.08
+      breach: 0.16
+
+challenger_windows:
+  train_days: 60
+  validation_days: 14
+  shadow_days: 14
+  shadow_only: true
+
+promotion_thresholds:
+  min_net_pnl_delta_after_costs: 0.0
+  max_drawdown_degradation: 0.02
+  min_profit_factor: 1.00
+  min_win_rate: 0.45
+  max_shadow_divergence_rate: 0.20
+  max_blocked_trade_rate: 0.50
+  require_reliability_healthy: true
+
+freeze_rules:
+  freeze_on_drift_breach: true
+  freeze_on_degraded_reliability: true
+  degraded_health_statuses: [DEGRADED, UNAVAILABLE]
+  degraded_freshness_statuses: [STALE, UNKNOWN]
+
+artifacts:
+  root_dir: artifacts/adaptation
+  drift_summary_path: artifacts/adaptation/drift/latest_summary.json
+  performance_summary_path: artifacts/adaptation/performance/latest_summary.json
+  current_profile_path: artifacts/adaptation/profiles/current.json
+  promotions_history_path: artifacts/adaptation/promotions/history.jsonl
+  reports_dir: artifacts/adaptation/reports
+  challengers_dir: artifacts/adaptation/challengers

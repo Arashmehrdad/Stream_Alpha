@@ -12,6 +12,13 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 
+from app.adaptation.schemas import (
+    AdaptationDriftResponse,
+    AdaptationPerformanceResponse,
+    AdaptationProfilesResponse,
+    AdaptationPromotionsResponse,
+    AdaptationSummaryResponse,
+)
 from app.common.config import Settings
 from app.common.logging import configure_logging
 from app.common.time import parse_rfc3339
@@ -196,6 +203,51 @@ def create_app(
     @app.get("/metrics", response_model=MetricsResponse)
     async def metrics() -> MetricsResponse:
         return await service.metrics_snapshot()
+
+    @app.get("/adaptation/summary", response_model=AdaptationSummaryResponse)
+    async def adaptation_summary(
+        symbol: str = Query(default="ALL"),
+        regime_label: str = Query(default="ALL"),
+    ) -> AdaptationSummaryResponse:
+        return await service.adaptation_summary(symbol=symbol, regime_label=regime_label)
+
+    @app.get("/adaptation/drift", response_model=AdaptationDriftResponse)
+    async def adaptation_drift(
+        symbol: str = Query(default="ALL"),
+        regime_label: str = Query(default="ALL"),
+        limit: int = Query(default=50, ge=1, le=500),
+    ) -> AdaptationDriftResponse:
+        return await service.adaptation_drift(
+            symbol=symbol,
+            regime_label=regime_label,
+            limit=limit,
+        )
+
+    @app.get("/adaptation/performance", response_model=AdaptationPerformanceResponse)
+    async def adaptation_performance(
+        execution_mode: str = Query(default="ALL"),
+        symbol: str = Query(default="ALL"),
+        regime_label: str = Query(default="ALL"),
+        limit: int = Query(default=50, ge=1, le=500),
+    ) -> AdaptationPerformanceResponse:
+        return await service.adaptation_performance(
+            execution_mode=execution_mode,
+            symbol=symbol,
+            regime_label=regime_label,
+            limit=limit,
+        )
+
+    @app.get("/adaptation/profiles", response_model=AdaptationProfilesResponse)
+    async def adaptation_profiles(
+        limit: int = Query(default=50, ge=1, le=500),
+    ) -> AdaptationProfilesResponse:
+        return await service.adaptation_profiles(limit=limit)
+
+    @app.get("/adaptation/promotions", response_model=AdaptationPromotionsResponse)
+    async def adaptation_promotions(
+        limit: int = Query(default=50, ge=1, le=500),
+    ) -> AdaptationPromotionsResponse:
+        return await service.adaptation_promotions(limit=limit)
 
     @app.get("/reliability/system", response_model=SystemReliabilityResponse)
     async def reliability_system() -> JSONResponse:

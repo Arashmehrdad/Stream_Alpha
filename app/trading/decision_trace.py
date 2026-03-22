@@ -9,6 +9,7 @@ from typing import Any, Sequence
 
 from app.common.serialization import make_json_safe
 from app.common.time import parse_rfc3339, to_rfc3339
+from app.adaptation.schemas import AdaptationContextPayload, EffectiveThresholds
 from app.explainability.schemas import (
     DecisionTraceBlockedTrade,
     DecisionTracePayload,
@@ -86,6 +87,7 @@ def build_initial_decision_trace(
             if signal.threshold_snapshot is None
             else signal.threshold_snapshot.model_copy(deep=True)
         ),
+        adaptation=_build_adaptation_payload(signal),
         regime_reason=(
             None if signal.regime_reason is None else signal.regime_reason.model_copy(deep=True)
         ),
@@ -134,6 +136,35 @@ def enrich_decision_trace_with_risk(
             },
             deep=True,
         ),
+    )
+
+
+def _build_adaptation_payload(signal: SignalDecision) -> AdaptationContextPayload | None:
+    if (
+        signal.adaptation_profile_id is None
+        and not signal.adaptation_reason_codes
+        and signal.calibrated_confidence is None
+        and signal.adaptive_size_multiplier is None
+    ):
+        return None
+    effective_thresholds = None
+    if signal.effective_buy_prob_up is not None and signal.effective_sell_prob_up is not None:
+        effective_thresholds = EffectiveThresholds(
+            buy_prob_up=signal.effective_buy_prob_up,
+            sell_prob_up=signal.effective_sell_prob_up,
+        )
+    return AdaptationContextPayload(
+        adaptation_profile_id=signal.adaptation_profile_id,
+        threshold_policy_id=signal.adaptation_profile_id,
+        sizing_policy_id=signal.adaptation_profile_id,
+        calibration_profile_id=signal.adaptation_profile_id,
+        drift_status=signal.drift_status,
+        recent_performance_summary=signal.recent_performance_summary,
+        adaptation_reason_codes=list(signal.adaptation_reason_codes),
+        frozen_by_health_gate=signal.frozen_by_health_gate,
+        calibrated_confidence=signal.calibrated_confidence,
+        adaptive_size_multiplier=signal.adaptive_size_multiplier,
+        effective_thresholds=effective_thresholds,
     )
 
 
