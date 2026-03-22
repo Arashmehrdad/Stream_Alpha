@@ -30,6 +30,7 @@ def _opportunity(
     risk_outcome: str = "APPROVED",
     safety_blocked: bool = False,
     reliability_blocked: bool = False,
+    fill_truth_status: str = "SIMULATED",
     fill_price: float | None = 100.0,
     slippage_bps: float | None = 5.0,
     latency_ms: float | None = 0.0,
@@ -80,7 +81,7 @@ def _opportunity(
             lifecycle_states=() if signal_action == "HOLD" else ("CREATED", "FILLED"),
         ),
         fill=FillSummary(
-            truth_status="SIMULATED",
+            truth_status=fill_truth_status,
             action=signal_action if signal_action != "HOLD" else None,
             fill_time=signal_time if signal_action != "HOLD" else None,
             fill_price=fill_price if signal_action != "HOLD" else None,
@@ -308,3 +309,65 @@ def test_slippage_drift_only_fires_above_threshold() -> None:
 
     assert "SLIPPAGE_DRIFT" not in {event.reason_code for event in under_threshold}
     assert "SLIPPAGE_DRIFT" in {event.reason_code for event in over_threshold}
+
+
+def test_fill_price_drift_fires_when_one_side_has_truth_and_the_other_does_not() -> None:
+    _, events = build_comparison_windows(
+        opportunities=[
+            _opportunity(
+                mode="paper",
+                trace_id=51,
+                row_id="BTC/USD|fill-missing",
+                signal_action="BUY",
+                signal_time=_ts(12, 5),
+                fill_truth_status="SIMULATED",
+                fill_price=100.0,
+            ),
+            _opportunity(
+                mode="shadow",
+                trace_id=52,
+                row_id="BTC/USD|fill-missing",
+                signal_action="BUY",
+                signal_time=_ts(12, 5),
+                fill_truth_status="NOT_APPLICABLE",
+                fill_price=None,
+            ),
+        ],
+        comparison_families=("paper_vs_shadow",),
+        evaluation_config=_evaluation_config(fill_price_bps=10.0),
+    )
+
+    matching_events = [event for event in events if event.reason_code == "FILL_PRICE_DRIFT"]
+    assert matching_events
+    assert all(event.divergence_stage == "fill_quality" for event in matching_events)
+
+
+def test_slippage_drift_fires_when_one_side_has_truth_and_the_other_does_not() -> None:
+    _, events = build_comparison_windows(
+        opportunities=[
+            _opportunity(
+                mode="paper",
+                trace_id=61,
+                row_id="BTC/USD|slippage-missing",
+                signal_action="BUY",
+                signal_time=_ts(12, 5),
+                fill_truth_status="SIMULATED",
+                slippage_bps=5.0,
+            ),
+            _opportunity(
+                mode="shadow",
+                trace_id=62,
+                row_id="BTC/USD|slippage-missing",
+                signal_action="BUY",
+                signal_time=_ts(12, 5),
+                fill_truth_status="NOT_APPLICABLE",
+                slippage_bps=None,
+            ),
+        ],
+        comparison_families=("paper_vs_shadow",),
+        evaluation_config=_evaluation_config(slippage_bps=5.0),
+    )
+
+    matching_events = [event for event in events if event.reason_code == "SLIPPAGE_DRIFT"]
+    assert matching_events
+    assert all(event.divergence_stage == "fill_quality" for event in matching_events)

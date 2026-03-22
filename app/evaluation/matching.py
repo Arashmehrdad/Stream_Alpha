@@ -331,66 +331,68 @@ def _classify_pair(
                 ),
             )
         )
-    if (
-        left.fill.truth_status in {"OBSERVED", "SIMULATED"}
-        and right.fill.truth_status in {"OBSERVED", "SIMULATED"}
+    left_fill_price_truth = _has_fill_price_truth(left)
+    right_fill_price_truth = _has_fill_price_truth(right)
+    fill_price_drift_bps = _fill_price_drift_bps(
+        left.fill.fill_price if left_fill_price_truth else None,
+        right.fill.fill_price if right_fill_price_truth else None,
+    )
+    if _material_drift_breached(
+        left_value=left.fill.fill_price if left_fill_price_truth else None,
+        right_value=right.fill.fill_price if right_fill_price_truth else None,
+        absolute_difference=fill_price_drift_bps,
+        threshold=evaluation_config.fill_price_drift_bps_threshold,
     ):
-        fill_price_drift_bps = _fill_price_drift_bps(
-            left.fill.fill_price,
-            right.fill.fill_price,
-        )
-        if _material_drift_breached(
-            left_value=left.fill.fill_price,
-            right_value=right.fill.fill_price,
-            absolute_difference=fill_price_drift_bps,
-            threshold=evaluation_config.fill_price_drift_bps_threshold,
-        ):
-            events.append(
-                _paired_event(
-                    comparison_family=comparison_family,
-                    divergence_stage="fill_quality",
-                    reason_code="FILL_PRICE_DRIFT",
-                    left_mode=left_mode,
-                    right_mode=right_mode,
-                    left=left,
-                    right=right,
-                    summary_text="Matched fill prices diverged across modes.",
-                    detail=(
-                        "left="
-                        f"{left.fill.fill_price} right={right.fill.fill_price} "
-                        f"drift_bps={fill_price_drift_bps} "
-                        f"threshold={evaluation_config.fill_price_drift_bps_threshold}"
-                    ),
-                )
+        events.append(
+            _paired_event(
+                comparison_family=comparison_family,
+                divergence_stage="fill_quality",
+                reason_code="FILL_PRICE_DRIFT",
+                left_mode=left_mode,
+                right_mode=right_mode,
+                left=left,
+                right=right,
+                summary_text="Matched fill prices diverged across modes.",
+                detail=(
+                    "left="
+                    f"{left.fill.fill_price if left_fill_price_truth else None} "
+                    f"right={right.fill.fill_price if right_fill_price_truth else None} "
+                    f"drift_bps={fill_price_drift_bps} "
+                    f"threshold={evaluation_config.fill_price_drift_bps_threshold}"
+                ),
             )
-        slippage_drift_bps = _absolute_difference(
-            left.fill.slippage_bps,
-            right.fill.slippage_bps,
         )
-        if _material_drift_breached(
-            left_value=left.fill.slippage_bps,
-            right_value=right.fill.slippage_bps,
-            absolute_difference=slippage_drift_bps,
-            threshold=evaluation_config.slippage_drift_bps_threshold,
-        ):
-            events.append(
-                _paired_event(
-                    comparison_family=comparison_family,
-                    divergence_stage="fill_quality",
-                    reason_code="SLIPPAGE_DRIFT",
-                    left_mode=left_mode,
-                    right_mode=right_mode,
-                    left=left,
-                    right=right,
-                    summary_text="Matched slippage measurements diverged across modes.",
-                    detail=(
-                        "left="
-                        f"{left.fill.slippage_bps} right={right.fill.slippage_bps} "
-                        f"drift_bps={slippage_drift_bps} "
-                        f"threshold={evaluation_config.slippage_drift_bps_threshold}"
-                    ),
-                )
+    left_slippage_truth = _has_slippage_truth(left)
+    right_slippage_truth = _has_slippage_truth(right)
+    slippage_drift_bps = _absolute_difference(
+        left.fill.slippage_bps if left_slippage_truth else None,
+        right.fill.slippage_bps if right_slippage_truth else None,
+    )
+    if _material_drift_breached(
+        left_value=left.fill.slippage_bps if left_slippage_truth else None,
+        right_value=right.fill.slippage_bps if right_slippage_truth else None,
+        absolute_difference=slippage_drift_bps,
+        threshold=evaluation_config.slippage_drift_bps_threshold,
+    ):
+        events.append(
+            _paired_event(
+                comparison_family=comparison_family,
+                divergence_stage="fill_quality",
+                reason_code="SLIPPAGE_DRIFT",
+                left_mode=left_mode,
+                right_mode=right_mode,
+                left=left,
+                right=right,
+                summary_text="Matched slippage measurements diverged across modes.",
+                detail=(
+                    "left="
+                    f"{left.fill.slippage_bps if left_slippage_truth else None} "
+                    f"right={right.fill.slippage_bps if right_slippage_truth else None} "
+                    f"drift_bps={slippage_drift_bps} "
+                    f"threshold={evaluation_config.slippage_drift_bps_threshold}"
+                ),
             )
+        )
     left_latency = _latency_ms(left)
     right_latency = _latency_ms(right)
     latency_drift_ms = _absolute_difference(left_latency, right_latency)
@@ -578,6 +580,20 @@ def _fill_price_drift_bps(
     if midpoint <= _EPSILON:
         return abs(left_price - right_price) * 10000.0
     return abs(left_price - right_price) / midpoint * 10000.0
+
+
+def _has_fill_price_truth(opportunity: DecisionOpportunity) -> bool:
+    return bool(
+        opportunity.fill.truth_status in {"OBSERVED", "SIMULATED"}
+        and opportunity.fill.fill_price is not None
+    )
+
+
+def _has_slippage_truth(opportunity: DecisionOpportunity) -> bool:
+    return bool(
+        opportunity.fill.truth_status in {"OBSERVED", "SIMULATED"}
+        and opportunity.fill.slippage_bps is not None
+    )
 
 
 def _material_drift_breached(
