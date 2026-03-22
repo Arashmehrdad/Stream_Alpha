@@ -1529,8 +1529,8 @@ def test_predict_and_signal_include_m14_explainability_fields(tmp_path: Path) ->
     assert predict_payload["model_version"] == "m3-20260321T120000Z"
     assert predict_payload["top_features"][0]["feature_name"] == "volume_zscore_12"
     assert predict_payload["prediction_explanation"]["available"] is True
-    assert predict_payload["prediction_explanation"]["reference_vector_path"].endswith(
-        "artifacts\\explainability\\m3-20260321T120000Z\\reference.json"
+    assert Path(predict_payload["prediction_explanation"]["reference_vector_path"]).as_posix().endswith(
+        "artifacts/explainability/m3-20260321T120000Z/reference.json"
     )
     assert signal_payload["model_version"] == "m3-20260321T120000Z"
     assert signal_payload["top_features"][0]["feature_name"] == "volume_zscore_12"
