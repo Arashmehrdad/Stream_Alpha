@@ -8,6 +8,7 @@ import httpx
 
 from app.adaptation.schemas import AdaptiveRecentPerformanceSummary
 from app.common.time import parse_rfc3339, to_rfc3339
+from app.ensemble.schemas import EnsembleContextPayload
 from app.explainability.schemas import (
     PredictionExplanation,
     RegimeReason,
@@ -179,6 +180,11 @@ class SignalClient:
                 )
             ),
             frozen_by_health_gate=bool(payload.get("frozen_by_health_gate", False)),
+            ensemble=(
+                None
+                if payload.get("ensemble") is None
+                else EnsembleContextPayload.model_validate(payload["ensemble"])
+            ),
         )
 
     async def fetch_system_reliability(self) -> CanonicalSystemReliability:

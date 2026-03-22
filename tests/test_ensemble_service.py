@@ -18,8 +18,10 @@ from app.ensemble.config import (
 from app.ensemble.schemas import (
     EnsembleProfileRecord,
     EnsembleResult,
+    ParticipatingCandidate,
 )
 from app.ensemble.service import (
+    ENSEMBLE_FALLBACK_ALL_SCORE_FAILED,
     ENSEMBLE_FALLBACK_DISABLED,
     ENSEMBLE_FALLBACK_INVALID_PROFILE,
     ENSEMBLE_FALLBACK_NO_CANDIDATES,
@@ -102,7 +104,7 @@ def _make_profile(
     )
 
 
-def _candidate(
+def _candidate(  # pylint: disable=too-many-arguments
     *,
     candidate_id: str = "c1",
     role: str = "GENERALIST",
@@ -229,6 +231,34 @@ def test_fallback_when_no_candidate_scores() -> None:
         )
         assert result.active is False
         assert result.fallback_reason == ENSEMBLE_FALLBACK_NO_CANDIDATES
+    asyncio.run(_run())
+
+
+def test_fallback_when_all_candidates_score_failed() -> None:
+    """If every candidate fails loading or scoring, fallback must be explicit and honest."""
+
+    async def _run():
+        svc = EnsembleService(config=CONFIG)
+        result = await svc.resolve_ensemble(
+            regime_label="TREND_UP",
+            candidate_scores=[],
+            active_profile=_make_profile(),
+            failed_candidates=[
+                ParticipatingCandidate(
+                    candidate_id="failed-1",
+                    candidate_role="GENERALIST",
+                    model_name="candidate-failed",
+                    model_version="v1",
+                    participation_status="SCORE_FAILED",
+                    scope_regimes=["TREND_UP"],
+                )
+            ],
+        )
+        assert result.active is False
+        assert result.fallback_reason == ENSEMBLE_FALLBACK_ALL_SCORE_FAILED
+        assert len(result.participating_candidates) == 1
+        assert result.participating_candidates[0].participation_status == "SCORE_FAILED"
+
     asyncio.run(_run())
 
 
@@ -624,8 +654,18 @@ def test_ensemble_predicted_class_follows_weighted_majority() -> None:
         result = await svc.resolve_ensemble(
             regime_label="TREND_UP",
             candidate_scores=[
-                _candidate(candidate_id="gen", role="GENERALIST", prob_up=0.30, predicted_class="DOWN"),
-                _candidate(candidate_id="ts", role="TREND_SPECIALIST", prob_up=0.20, predicted_class="DOWN"),
+                _candidate(
+                    candidate_id="gen",
+                    role="GENERALIST",
+                    prob_up=0.30,
+                    predicted_class="DOWN",
+                ),
+                _candidate(
+                    candidate_id="ts",
+                    role="TREND_SPECIALIST",
+                    prob_up=0.20,
+                    predicted_class="DOWN",
+                ),
             ],
             active_profile=_make_profile(),
         )

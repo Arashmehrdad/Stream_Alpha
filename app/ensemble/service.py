@@ -13,11 +13,12 @@ from app.ensemble.config import (
     load_ensemble_config,
 )
 from app.ensemble.schemas import (
-    EnsembleContextPayload,
+    EnsembleCandidateRosterEntry,
     EnsembleProfileRecord,
     EnsembleResult,
     ParticipatingCandidate,
 )
+from app.trading.repository import TradingRepository
 
 
 # ---------------------------------------------------------------------------
@@ -34,11 +35,29 @@ ENSEMBLE_WEIGHT_RENORMALIZED = "ENSEMBLE_WEIGHT_RENORMALIZED"
 ENSEMBLE_WEIGHT_FROM_MATRIX = "ENSEMBLE_WEIGHT_FROM_MATRIX"
 
 
-def _fallback(reason: str) -> EnsembleResult:
+def build_ensemble_fallback_result(
+    reason: str,
+    *,
+    participating_candidates: tuple[ParticipatingCandidate, ...] = (),
+) -> EnsembleResult:
+    """Build a canonical fallback result for disabled or unusable ensemble runtime."""
     return EnsembleResult(
         active=False,
         fallback_reason=reason,
+        candidate_count=0,
+        participating_candidates=participating_candidates,
         weighting_reason_codes=(ENSEMBLE_FALLBACK_SINGLE_MODEL, reason),
+    )
+
+
+def _fallback(
+    reason: str,
+    *,
+    participating_candidates: tuple[ParticipatingCandidate, ...] = (),
+) -> EnsembleResult:
+    return build_ensemble_fallback_result(
+        reason,
+        participating_candidates=participating_candidates,
     )
 
 
@@ -49,23 +68,62 @@ class EnsembleService:
         self,
         *,
         config: EnsembleConfig | None = None,
+        repository: TradingRepository | None = None,
         profile_loader=None,
     ) -> None:
         self.config = config or load_ensemble_config(default_ensemble_config_path())
+        self.repository = repository
         self._profile_loader = profile_loader
 
     async def startup(self) -> None:
         """Open additive resources."""
+        if self.repository is not None:
+            await self.repository.connect()
 
     async def shutdown(self) -> None:
         """Close additive resources."""
+        if self.repository is not None:
+            await self.repository.close()
 
-    async def resolve_ensemble(
+    async def load_active_profile(
+        self,
+        *,
+        execution_mode: str,
+        symbol: str,
+        regime_label: str,
+    ) -> EnsembleProfileRecord | None:
+        """Load the best matching active profile for one runtime scope."""
+        if self._profile_loader is not None:
+            return await self._profile_loader(
+                execution_mode=execution_mode,
+                symbol=symbol,
+                regime_label=regime_label,
+            )
+        if self.repository is None:
+            return None
+        return await self.repository.load_active_ensemble_profile(
+            execution_mode=execution_mode,
+            symbol=symbol,
+            regime_label=regime_label,
+        )
+
+    @staticmethod
+    def parse_candidate_roster(
+        active_profile: EnsembleProfileRecord,
+    ) -> list[EnsembleCandidateRosterEntry]:
+        """Validate the stable candidate roster contract from profile JSON."""
+        return [
+            EnsembleCandidateRosterEntry.model_validate(item)
+            for item in active_profile.candidate_roster_json
+        ]
+
+    async def resolve_ensemble(  # pylint: disable=too-many-return-statements,too-many-branches
         self,
         *,
         regime_label: str,
         candidate_scores: list[dict[str, Any]],
         active_profile: EnsembleProfileRecord | None = None,
+        failed_candidates: list[ParticipatingCandidate] | None = None,
     ) -> EnsembleResult:
         """Run the full ensemble scoring pipeline for one prediction cycle.
 
@@ -91,11 +149,18 @@ class EnsembleService:
             return _fallback(ENSEMBLE_FALLBACK_INVALID_PROFILE)
 
         if not candidate_scores:
+            if failed_candidates:
+                return _fallback(
+                    ENSEMBLE_FALLBACK_ALL_SCORE_FAILED,
+                    participating_candidates=tuple(failed_candidates),
+                )
             return _fallback(ENSEMBLE_FALLBACK_NO_CANDIDATES)
 
         # --- Filter eligible candidates by scope ---
         eligible: list[dict[str, Any]] = []
-        all_candidates: list[ParticipatingCandidate] = []
+        all_candidates: list[ParticipatingCandidate] = [] if failed_candidates is None else list(
+            failed_candidates
+        )
         for cs in candidate_scores:
             scope = cs.get("scope_regimes", [])
             if scope and regime_label not in scope:
@@ -128,8 +193,6 @@ class EnsembleService:
 
         # --- Score and weight ---
         scored_candidates: list[ParticipatingCandidate] = []
-        weighted_prob_ups: list[float] = []
-        weighted_prob_downs: list[float] = []
         total_weight = 0.0
 
         for cs in eligible:

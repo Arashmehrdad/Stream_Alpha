@@ -10,6 +10,7 @@ from typing import Literal
 
 from app.adaptation.schemas import AdaptiveRecentPerformanceSummary
 from app.common.time import to_rfc3339
+from app.ensemble.schemas import EnsembleContextPayload
 from app.explainability.schemas import (
     DecisionTracePayload,
     PredictionExplanation,
@@ -102,6 +103,7 @@ class SignalDecision:
     drift_status: str | None = None
     recent_performance_summary: AdaptiveRecentPerformanceSummary | None = None
     frozen_by_health_gate: bool = False
+    ensemble: EnsembleContextPayload | None = None
 
 
 @dataclass(frozen=True, slots=True)

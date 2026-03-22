@@ -6,6 +6,8 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
+from app.ensemble.schemas import EnsembleResult
+from app.ensemble.service import ENSEMBLE_FALLBACK_NO_PROFILE, ENSEMBLE_FALLBACK_SINGLE_MODEL
 from app.trading.config import PaperTradingConfig, RiskConfig
 from app.trading.decision_trace import (
     build_initial_decision_trace,
@@ -103,6 +105,71 @@ def _signal(*, trade_allowed: bool | None = True) -> SignalDecision:
         regime_run_id="20260321T120000Z",
         trade_allowed=trade_allowed,
     )
+
+
+def test_initial_trace_includes_active_ensemble_context() -> None:
+    """The canonical M14 trace should preserve active ensemble context from M4."""
+    signal = replace(
+        _signal(),
+        ensemble=EnsembleResult(
+            active=True,
+            ensemble_profile_id="ens-profile-1",
+            approval_stage="ACTIVATED",
+            raw_ensemble_confidence=0.67,
+            effective_confidence=0.62,
+            agreement_band="MEDIUM",
+            vote_agreement_ratio=1.0,
+            probability_spread=0.14,
+            agreement_multiplier=0.93,
+            candidate_count=2,
+            weighting_reason_codes=("ENSEMBLE_PROFILE_ACTIVE", "ENSEMBLE_WEIGHT_FROM_MATRIX"),
+        ).to_context_payload(
+            regime_label="TREND_UP",
+            regime_run_id="20260321T120000Z",
+        ),
+    )
+
+    trace = build_initial_decision_trace(
+        service_name="paper-trader",
+        execution_mode="paper",
+        signal=signal,
+    )
+
+    assert trace.payload.ensemble is not None
+    assert trace.payload.ensemble.ensemble_profile_id == "ens-profile-1"
+    assert trace.payload.ensemble.effective_confidence == 0.62
+    assert trace.payload.ensemble.candidate_count == 2
+
+
+def test_initial_trace_includes_explicit_ensemble_fallback_context() -> None:
+    """Fallback ensemble context should remain explicit in the canonical trace payload."""
+    signal = replace(
+        _signal(),
+        ensemble=EnsembleResult(
+            active=False,
+            fallback_reason=ENSEMBLE_FALLBACK_NO_PROFILE,
+            weighting_reason_codes=(
+                ENSEMBLE_FALLBACK_SINGLE_MODEL,
+                ENSEMBLE_FALLBACK_NO_PROFILE,
+            ),
+        ).to_context_payload(
+            regime_label="TREND_UP",
+            regime_run_id="20260321T120000Z",
+        ),
+    )
+
+    trace = build_initial_decision_trace(
+        service_name="paper-trader",
+        execution_mode="paper",
+        signal=signal,
+    )
+
+    assert trace.payload.ensemble is not None
+    assert trace.payload.ensemble.ensemble_profile_id is None
+    assert trace.payload.ensemble.weighting_reason_codes == [
+        ENSEMBLE_FALLBACK_SINGLE_MODEL,
+        ENSEMBLE_FALLBACK_NO_PROFILE,
+    ]
 
 
 def _portfolio() -> PortfolioContext:

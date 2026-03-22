@@ -88,6 +88,9 @@ def build_initial_decision_trace(
             else signal.threshold_snapshot.model_copy(deep=True)
         ),
         adaptation=_build_adaptation_payload(signal),
+        ensemble=(
+            None if signal.ensemble is None else signal.ensemble.model_copy(deep=True)
+        ),
         regime_reason=(
             None if signal.regime_reason is None else signal.regime_reason.model_copy(deep=True)
         ),

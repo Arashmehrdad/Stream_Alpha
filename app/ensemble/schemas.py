@@ -23,12 +23,27 @@ EnsembleApprovalStage = Literal["PENDING", "APPROVED", "ACTIVATED", "SUPERSEDED"
 CandidateParticipationStatus = Literal["ELIGIBLE", "EXCLUDED_SCOPE", "SCORE_FAILED"]
 
 
+class EnsembleCandidateRosterEntry(BaseModel):
+    """Stable candidate roster contract persisted inside candidate_roster_json."""
+
+    candidate_id: str
+    candidate_role: str
+    model_version: str
+    scope_regimes: list[str] = Field(default_factory=list)
+    enabled: bool = True
+    expected_model_name: str | None = None
+    notes: str | None = None
+
+
 class EnsembleProfileRecord(BaseModel):
     """Persisted ensemble profile row."""
 
     profile_id: str
     status: EnsembleProfileStatus
     approval_stage: str
+    execution_mode_scope: str = "ALL"
+    symbol_scope: str = "ALL"
+    regime_scope: str = "ALL"
     candidate_roster_json: list[dict[str, Any]] = Field(default_factory=list)
     regime_weight_matrix_json: dict[str, dict[str, float]] = Field(default_factory=dict)
     agreement_policy_json: dict[str, Any] = Field(default_factory=dict)

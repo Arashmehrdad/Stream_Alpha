@@ -11,6 +11,7 @@ import json
 
 import joblib
 from fastapi.testclient import TestClient
+import pytest
 
 from app.adaptation.schemas import (
     AdaptationDriftResponse,
@@ -48,6 +49,9 @@ from app.common.config import (
     TableSettings,
     TopicSettings,
 )
+from app.ensemble.config import AgreementPolicyConfig, EnsembleConfig, load_ensemble_config
+from app.ensemble.schemas import EnsembleProfileRecord, EnsembleResult
+from app.ensemble.service import EnsembleService
 from app.inference.db import DatabaseUnavailableError
 from app.inference.main import create_app
 from app.inference.service import InferenceService, load_model_artifact
@@ -417,6 +421,17 @@ class FakeAdaptationService:
         )
 
 
+class RecordingAdaptationService(FakeAdaptationService):
+    """Adaptation stub that records the last confidence input it received."""
+
+    def __init__(self) -> None:
+        self.last_kwargs: dict | None = None
+
+    async def resolve_applied_adaptation(self, **kwargs) -> AppliedAdaptation:
+        self.last_kwargs = dict(kwargs)
+        return await super().resolve_applied_adaptation(**kwargs)
+
+
 class NullAdaptationService:
     """No-op adaptation stub for tests that are not exercising M19 behavior."""
 
@@ -462,7 +477,6 @@ class NullEnsembleService:
         return None
 
     async def resolve_ensemble(self, **_kwargs):
-        from app.ensemble.schemas import EnsembleResult
         return EnsembleResult(
             active=False,
             fallback_reason="ENSEMBLE_FALLBACK_SINGLE_MODEL",
@@ -471,7 +485,6 @@ class NullEnsembleService:
 
     @property
     def config(self):
-        from app.ensemble.config import AgreementPolicyConfig, EnsembleConfig
         return EnsembleConfig(
             enabled=False,
             candidate_roles=("GENERALIST",),
@@ -768,6 +781,88 @@ def _write_artifact(tmp_path: Path, *, prob_up: float) -> Path:
     return artifact_path
 
 
+def _write_registry_model_artifact(
+    tmp_path: Path,
+    *,
+    model_version: str,
+    prob_up: float,
+    model_name: str,
+) -> Path:
+    model_dir = tmp_path / "artifacts" / "registry" / "models" / model_version
+    model_dir.mkdir(parents=True, exist_ok=False)
+    artifact_path = model_dir / "model.joblib"
+    joblib.dump(
+        {
+            "model_name": model_name,
+            "trained_at": "2026-03-19T22:30:02Z",
+            "feature_columns": ["symbol", "close_price"],
+            "expanded_feature_names": ["symbol=BTC/USD", "close_price"],
+            "model": SerializableProbabilityModel(prob_up),
+        },
+        artifact_path,
+    )
+    (model_dir / "registry_entry.json").write_text(
+        json.dumps(
+            {
+                "model_version": model_version,
+                "model_name": model_name,
+                "model_artifact_path": str(artifact_path.resolve()),
+            }
+        ),
+        encoding="utf-8",
+    )
+    return artifact_path
+
+
+def _build_active_ensemble_service(tmp_path: Path) -> EnsembleService:
+    _write_registry_model_artifact(
+        tmp_path,
+        model_version="ensemble-generalist-v1",
+        prob_up=0.60,
+        model_name="ensemble_generalist",
+    )
+    _write_registry_model_artifact(
+        tmp_path,
+        model_version="ensemble-trend-v1",
+        prob_up=0.70,
+        model_name="ensemble_trend_specialist",
+    )
+    profile = EnsembleProfileRecord(
+        profile_id="ens-profile-active-1",
+        status="ACTIVE",
+        approval_stage="ACTIVATED",
+        execution_mode_scope="paper",
+        symbol_scope="BTC/USD",
+        regime_scope="TREND_UP",
+        candidate_roster_json=[
+            {
+                "candidate_id": "generalist-1",
+                "candidate_role": "GENERALIST",
+                "model_version": "ensemble-generalist-v1",
+                "scope_regimes": ["TREND_UP", "TREND_DOWN", "RANGE", "HIGH_VOL"],
+                "enabled": True,
+                "expected_model_name": "ensemble_generalist",
+            },
+            {
+                "candidate_id": "trend-1",
+                "candidate_role": "TREND_SPECIALIST",
+                "model_version": "ensemble-trend-v1",
+                "scope_regimes": ["TREND_UP", "TREND_DOWN"],
+                "enabled": True,
+                "expected_model_name": "ensemble_trend_specialist",
+            },
+        ],
+    )
+
+    async def _load_active_profile(**_kwargs) -> EnsembleProfileRecord | None:
+        return profile
+
+    return EnsembleService(
+        config=load_ensemble_config(Path("configs/ensemble.yaml")),
+        profile_loader=_load_active_profile,
+    )
+
+
 def _write_feature_aware_artifact(tmp_path: Path) -> Path:
     artifact_path = tmp_path / "artifacts" / "training" / "m3" / "20260321T120000Z" / "model.joblib"
     artifact_path.parent.mkdir(parents=True, exist_ok=False)
@@ -855,7 +950,7 @@ def _build_client(  # pylint: disable=too-many-arguments
     alert_repository: FakeAlertRepository | None = None,
     artifact_path: Path | None = None,
     adaptation_service: FakeAdaptationService | NullAdaptationService | None = None,
-    ensemble_service: NullEnsembleService | None = None,
+    ensemble_service: EnsembleService | NullEnsembleService | None = None,
 ) -> TestClient:
     resolved_artifact_path = (
         _write_artifact(tmp_path, prob_up=prob_up)
@@ -1453,6 +1548,7 @@ def test_health_includes_ensemble_fields(tmp_path: Path) -> None:
     payload = response.json()
     assert "ensemble_status" in payload
     assert "ensemble_candidate_count" in payload
+    assert payload["ensemble_status"] == "DISABLED"
     assert payload["ensemble_candidate_count"] == 0
 
 
@@ -1464,7 +1560,7 @@ def test_predict_includes_ensemble_fields(tmp_path: Path) -> None:
     payload = response.json()
     assert payload["ensemble_active"] is False
     assert payload["ensemble_candidate_count"] == 0
-    assert payload["ensemble_fallback_reason"] == "ENSEMBLE_FALLBACK_SINGLE_MODEL"
+    assert payload["ensemble_fallback_reason"] == "ENSEMBLE_FALLBACK_DISABLED"
     assert payload["ensemble_profile_id"] is None
 
 
@@ -1476,5 +1572,96 @@ def test_signal_includes_ensemble_fields(tmp_path: Path) -> None:
     payload = response.json()
     assert payload["ensemble_active"] is False
     assert payload["ensemble_candidate_count"] == 0
-    assert payload["ensemble_fallback_reason"] == "ENSEMBLE_FALLBACK_SINGLE_MODEL"
+    assert payload["ensemble_fallback_reason"] == "ENSEMBLE_FALLBACK_DISABLED"
     assert payload["ensemble_profile_id"] is None
+
+
+def test_health_reports_real_active_ensemble_runtime(tmp_path: Path, monkeypatch) -> None:
+    """/health should report ACTIVE and the real usable candidate count when ensemble runs."""
+    monkeypatch.setattr(
+        "app.training.registry.default_registry_root",
+        lambda: tmp_path / "artifacts" / "registry",
+    )
+    client = _build_client(
+        tmp_path,
+        prob_up=0.4,
+        database=FakeDatabase(row=_feature_row()),
+        ensemble_service=_build_active_ensemble_service(tmp_path),
+    )
+
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ensemble_status"] == "ACTIVE"
+    assert payload["ensemble_profile_id"] == "ens-profile-active-1"
+    assert payload["ensemble_candidate_count"] == 2
+
+
+def test_predict_returns_ensemble_backed_output_when_active(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """/predict should return ensemble probabilities, truthful explainability, and context."""
+    monkeypatch.setattr(
+        "app.training.registry.default_registry_root",
+        lambda: tmp_path / "artifacts" / "registry",
+    )
+    client = _build_client(
+        tmp_path,
+        prob_up=0.4,
+        database=FakeDatabase(row=_feature_row()),
+        ensemble_service=_build_active_ensemble_service(tmp_path),
+    )
+
+    response = client.get("/predict", params={"symbol": "BTC/USD"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ensemble_active"] is True
+    assert payload["ensemble_profile_id"] == "ens-profile-active-1"
+    assert payload["ensemble_candidate_count"] == 2
+    assert payload["prob_up"] == pytest.approx(0.675)
+    assert payload["prob_down"] == pytest.approx(0.325)
+    assert payload["confidence"] == pytest.approx(0.675)
+    assert payload["ensemble_effective_confidence"] == pytest.approx(0.675)
+    assert payload["prediction_explanation"]["available"] is False
+    assert payload["prediction_explanation"]["method"] == "ensemble_pending"
+    assert (
+        payload["prediction_explanation"]["reason_code"]
+        == "ENSEMBLE_EXPLAINABILITY_UNAVAILABLE"
+    )
+    assert payload["top_features"] == []
+    assert payload["ensemble"]["ensemble_profile_id"] == "ens-profile-active-1"
+    assert payload["ensemble"]["candidate_count"] == 2
+
+
+def test_signal_uses_ensemble_effective_confidence_when_active(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """/signal should feed ensemble effective_confidence into M19 adaptation."""
+    monkeypatch.setattr(
+        "app.training.registry.default_registry_root",
+        lambda: tmp_path / "artifacts" / "registry",
+    )
+    adaptation_service = RecordingAdaptationService()
+    client = _build_client(
+        tmp_path,
+        prob_up=0.4,
+        database=FakeDatabase(row=_feature_row()),
+        adaptation_service=adaptation_service,
+        ensemble_service=_build_active_ensemble_service(tmp_path),
+    )
+
+    response = client.get("/signal", params={"symbol": "BTC/USD"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ensemble_active"] is True
+    assert payload["ensemble_profile_id"] == "ens-profile-active-1"
+    assert payload["ensemble_candidate_count"] == 2
+    assert payload["ensemble_effective_confidence"] == pytest.approx(0.675)
+    assert adaptation_service.last_kwargs is not None
+    assert adaptation_service.last_kwargs["confidence"] == pytest.approx(0.675)
+    assert payload["ensemble"]["agreement_band"] == "HIGH"

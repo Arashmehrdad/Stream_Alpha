@@ -9,6 +9,7 @@ from datetime import date, datetime
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.adaptation.schemas import AdaptiveRecentPerformanceSummary
+from app.ensemble.schemas import EnsembleContextPayload
 from app.explainability.schemas import (
     PredictionExplanation,
     RegimeReason,
@@ -121,6 +122,7 @@ class PredictionResponse(BaseModel):
     ensemble_effective_confidence: float | None = None
     ensemble_candidate_count: int | None = None
     ensemble_fallback_reason: str | None = None
+    ensemble: EnsembleContextPayload | None = None
 
 
 class ThresholdsResponse(BaseModel):
@@ -172,6 +174,7 @@ class SignalResponse(BaseModel):
     ensemble_effective_confidence: float | None = None
     ensemble_candidate_count: int | None = None
     ensemble_fallback_reason: str | None = None
+    ensemble: EnsembleContextPayload | None = None
 
 
 class RegimeResponse(BaseModel):

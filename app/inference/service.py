@@ -24,10 +24,15 @@ from app.alerting.repository import OperationalAlertRepository
 from app.common.config import Settings
 from app.common.time import parse_rfc3339, to_rfc3339, utc_now
 from app.ensemble.config import default_ensemble_config_path, load_ensemble_config
-from app.ensemble.schemas import EnsembleResult
+from app.ensemble.schemas import EnsembleResult, ParticipatingCandidate
 from app.ensemble.service import (
-    ENSEMBLE_FALLBACK_SINGLE_MODEL,
+    ENSEMBLE_FALLBACK_ALL_SCORE_FAILED,
+    ENSEMBLE_FALLBACK_DISABLED,
+    ENSEMBLE_FALLBACK_INVALID_PROFILE,
+    ENSEMBLE_FALLBACK_NO_CANDIDATES,
+    ENSEMBLE_FALLBACK_NO_PROFILE,
     EnsembleService,
+    build_ensemble_fallback_result,
 )
 from app.explainability.config import (
     default_explainability_config_path,
@@ -80,7 +85,7 @@ from app.regime.live import LiveRegimeRuntime, ResolvedRegime, load_live_regime_
 from app.runtime.config import build_runtime_metadata, resolve_trading_config_path
 from app.trading.config import load_paper_trading_config
 from app.trading.repository import TradingRepository
-from app.training.registry import resolve_inference_model_metadata
+from app.training.registry import load_registry_entry, resolve_inference_model_metadata
 
 
 class InvalidSymbolError(ValueError):
@@ -112,6 +117,14 @@ class PredictionContext:
     prediction: PredictionResponse
     resolved_regime: ResolvedRegime
     ensemble_result: EnsembleResult = field(default_factory=EnsembleResult)
+
+
+@dataclass(frozen=True, slots=True)
+class EnsembleRuntimeState:
+    """Resolved ensemble runtime state for inference and health surfaces."""
+
+    result: EnsembleResult = field(default_factory=EnsembleResult)
+    status: str = "FALLBACK"
 
 
 @dataclass(frozen=True, slots=True)
@@ -272,6 +285,7 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
         )
         self.ensemble_service = ensemble_service or EnsembleService(
             config=load_ensemble_config(default_ensemble_config_path()),
+            repository=TradingRepository(settings.postgres.dsn, settings.tables.feature_ohlc),
         )
         self._symbols = set(settings.kraken.symbols)
         self._last_heartbeat_at: datetime | None = None
@@ -327,6 +341,228 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
         except Exception:  # pylint: disable=broad-exception-caught
             return
 
+    async def _resolve_runtime_ensemble_state(  # pylint: disable=too-many-return-statements
+        self,
+        *,
+        row: dict[str, Any],
+        resolved_regime: ResolvedRegime,
+    ) -> EnsembleRuntimeState:
+        """Load the active profile, score real candidates, and resolve ensemble runtime."""
+        if not self.ensemble_service.config.enabled:
+            return EnsembleRuntimeState(
+                result=build_ensemble_fallback_result(ENSEMBLE_FALLBACK_DISABLED),
+                status="DISABLED",
+            )
+
+        try:
+            active_profile = await self.ensemble_service.load_active_profile(
+                execution_mode=self.trading_config.execution.mode,
+                symbol=str(row["symbol"]),
+                regime_label=resolved_regime.regime_label,
+            )
+        except Exception:  # pylint: disable=broad-exception-caught
+            return EnsembleRuntimeState(
+                result=build_ensemble_fallback_result(ENSEMBLE_FALLBACK_NO_PROFILE),
+                status="UNAVAILABLE",
+            )
+
+        if active_profile is None:
+            return EnsembleRuntimeState(
+                result=build_ensemble_fallback_result(ENSEMBLE_FALLBACK_NO_PROFILE),
+                status="FALLBACK",
+            )
+
+        try:
+            roster = self.ensemble_service.parse_candidate_roster(active_profile)
+        except Exception:  # pylint: disable=broad-exception-caught
+            return EnsembleRuntimeState(
+                result=build_ensemble_fallback_result(ENSEMBLE_FALLBACK_INVALID_PROFILE),
+                status="FALLBACK",
+            )
+
+        candidate_scores: list[dict[str, Any]] = []
+        failed_candidates: list[ParticipatingCandidate] = []
+
+        for roster_entry in roster:
+            if not roster_entry.enabled:
+                continue
+            if (
+                roster_entry.scope_regimes
+                and resolved_regime.regime_label not in roster_entry.scope_regimes
+            ):
+                continue
+            try:
+                registry_entry = load_registry_entry(roster_entry.model_version)
+                loaded_artifact = load_model_artifact(
+                    str(registry_entry["model_artifact_path"]),
+                )
+                if (
+                    roster_entry.expected_model_name is not None
+                    and loaded_artifact.model_name != roster_entry.expected_model_name
+                ):
+                    raise ValueError(
+                        "Candidate model_name did not match expected_model_name"
+                    )
+                candidate_feature_input = self._build_feature_input(
+                    row,
+                    model_artifact=loaded_artifact,
+                )
+                candidate_prob_down, candidate_prob_up = self._score_loaded_model_artifact(
+                    model_artifact=loaded_artifact,
+                    feature_input=candidate_feature_input,
+                )
+                candidate_scores.append(
+                    {
+                        "candidate_id": roster_entry.candidate_id,
+                        "candidate_role": roster_entry.candidate_role,
+                        "model_name": loaded_artifact.model_name,
+                        "model_version": loaded_artifact.model_version,
+                        "scope_regimes": list(roster_entry.scope_regimes),
+                        "prob_up": candidate_prob_up,
+                        "prob_down": candidate_prob_down,
+                        "predicted_class": (
+                            "UP" if candidate_prob_up >= candidate_prob_down else "DOWN"
+                        ),
+                    }
+                )
+            except Exception:  # pylint: disable=broad-exception-caught
+                failed_candidates.append(
+                    ParticipatingCandidate(
+                        candidate_id=roster_entry.candidate_id,
+                        candidate_role=roster_entry.candidate_role,
+                        model_name=(
+                            roster_entry.expected_model_name
+                            if roster_entry.expected_model_name is not None
+                            else roster_entry.candidate_id
+                        ),
+                        model_version=roster_entry.model_version,
+                        participation_status="SCORE_FAILED",
+                        scope_regimes=list(roster_entry.scope_regimes),
+                    )
+                )
+
+        if not candidate_scores and failed_candidates:
+            return EnsembleRuntimeState(
+                result=build_ensemble_fallback_result(
+                    ENSEMBLE_FALLBACK_ALL_SCORE_FAILED,
+                    participating_candidates=tuple(failed_candidates),
+                ),
+                status="FALLBACK",
+            )
+        if not candidate_scores:
+            return EnsembleRuntimeState(
+                result=build_ensemble_fallback_result(ENSEMBLE_FALLBACK_NO_CANDIDATES),
+                status="FALLBACK",
+            )
+
+        result = await self.ensemble_service.resolve_ensemble(
+            regime_label=resolved_regime.regime_label,
+            candidate_scores=candidate_scores,
+            active_profile=active_profile,
+            failed_candidates=failed_candidates,
+        )
+        return EnsembleRuntimeState(
+            result=result,
+            status=(
+                "ACTIVE" if result.active and result.candidate_count > 0 else "FALLBACK"
+            ),
+        )
+
+    async def _resolve_health_ensemble_state(  # pylint: disable=too-many-return-statements
+        self,
+    ) -> EnsembleRuntimeState:
+        """Resolve truthful ensemble health from runtime rows and active profile state."""
+        if not self.ensemble_service.config.enabled:
+            return EnsembleRuntimeState(
+                result=build_ensemble_fallback_result(ENSEMBLE_FALLBACK_DISABLED),
+                status="DISABLED",
+            )
+
+        fallback_state: EnsembleRuntimeState | None = None
+        for symbol in self.settings.kraken.symbols:
+            row = await self.latest_feature_row(symbol)
+            if row is None:
+                continue
+            resolved_regime = self._try_resolve_regime(row)
+            if resolved_regime is None:
+                continue
+            runtime_state = await self._resolve_runtime_ensemble_state(
+                row=row,
+                resolved_regime=resolved_regime,
+            )
+            if runtime_state.status == "ACTIVE":
+                return runtime_state
+            if fallback_state is None:
+                fallback_state = runtime_state
+
+        if fallback_state is not None:
+            return fallback_state
+
+        try:
+            active_profile = await self.ensemble_service.load_active_profile(
+                execution_mode=self.trading_config.execution.mode,
+                symbol="ALL",
+                regime_label="ALL",
+            )
+        except Exception:  # pylint: disable=broad-exception-caught
+            return EnsembleRuntimeState(
+                result=build_ensemble_fallback_result(ENSEMBLE_FALLBACK_NO_PROFILE),
+                status="UNAVAILABLE",
+            )
+
+        if active_profile is None:
+            return EnsembleRuntimeState(
+                result=build_ensemble_fallback_result(ENSEMBLE_FALLBACK_NO_PROFILE),
+                status="FALLBACK",
+            )
+
+        try:
+            roster = self.ensemble_service.parse_candidate_roster(active_profile)
+        except Exception:  # pylint: disable=broad-exception-caught
+            return EnsembleRuntimeState(
+                result=build_ensemble_fallback_result(ENSEMBLE_FALLBACK_INVALID_PROFILE),
+                status="FALLBACK",
+            )
+
+        candidate_count = sum(1 for item in roster if item.enabled)
+        return EnsembleRuntimeState(
+            result=EnsembleResult(
+                active=candidate_count > 0,
+                ensemble_profile_id=active_profile.profile_id,
+                approval_stage=active_profile.approval_stage,
+                candidate_count=candidate_count,
+            ),
+            status="ACTIVE" if candidate_count > 0 else "FALLBACK",
+        )
+
+    def _score_loaded_model_artifact(
+        self,
+        *,
+        model_artifact: LoadedModelArtifact,
+        feature_input: dict[str, Any],
+    ) -> tuple[float, float]:
+        """Score one loaded binary classifier artifact against one feature row."""
+        probabilities = model_artifact.model.predict_proba([feature_input])
+        if len(probabilities) != 1 or len(probabilities[0]) != 2:
+            raise ArtifactSchemaMismatchError(
+                "Model predict_proba must return binary probabilities",
+            )
+        return float(probabilities[0][0]), float(probabilities[0][1])
+
+    def _build_ensemble_pending_explainability(self) -> PredictionExplanation:
+        """Return truthful Packet 1 explainability when ensemble is active."""
+        return PredictionExplanation(
+            method="ensemble_pending",
+            available=False,
+            reason_code="ENSEMBLE_EXPLAINABILITY_UNAVAILABLE",
+            summary_text=(
+                "Ensemble prediction is active. Aggregate candidate-level explainability "
+                "is not yet implemented in Packet 1."
+            ),
+            explainable_feature_count=0,
+            top_feature_count=0,
+        )
+
     def record_request(self, *, path: str, status_code: int, latency_ms: float) -> None:
         """Record one completed HTTP request."""
         self.metrics.record(path=path, status_code=status_code, latency_ms=latency_ms)
@@ -342,6 +578,11 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
         )
         database_healthy = await self.database.is_healthy()
         model_loaded = self.model_artifact is not None
+        ensemble_health = (
+            await self._resolve_health_ensemble_state()
+            if database_healthy and model_loaded
+            else EnsembleRuntimeState(status="UNAVAILABLE")
+        )
         if database_healthy and model_loaded:
             freshness_rows = await self._freshness_summary_rows()
             health_snapshot = self._build_health_snapshot(freshness_rows)
@@ -410,9 +651,9 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
                 startup_safety_reason_code=alert_health["startup_safety_reason_code"],
                 active_adaptation_count=adaptation_summary.active_profile_count,
                 adaptation_status=adaptation_summary.adaptation_status,
-                ensemble_profile_id=None,
-                ensemble_status="FALLBACK" if not self.ensemble_service.config.enabled else "ENABLED",
-                ensemble_candidate_count=0,
+                ensemble_profile_id=ensemble_health.result.ensemble_profile_id,
+                ensemble_status=ensemble_health.status,
+                ensemble_candidate_count=ensemble_health.result.candidate_count,
             ),
         )
 
@@ -447,7 +688,7 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
         )
         return prediction_context.prediction
 
-    async def _build_prediction_context(
+    async def _build_prediction_context(  # pylint: disable=too-many-locals
         self,
         row: dict[str, Any],
         *,
@@ -456,33 +697,40 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
         """Build the prediction payload plus resolved regime details for reuse."""
         feature_input = self._build_feature_input(row)
         resolved_regime = self._resolve_regime(row)
-        probabilities = self.model_artifact.model.predict_proba([feature_input])
-        if len(probabilities) != 1 or len(probabilities[0]) != 2:
-            raise ArtifactSchemaMismatchError(
-                "Model predict_proba must return binary probabilities",
-            )
-
-        prob_down = float(probabilities[0][0])
-        prob_up = float(probabilities[0][1])
-        predicted_class = "UP" if prob_up >= prob_down else "DOWN"
-        top_features, prediction_explanation = await self._build_prediction_explainability(
+        prob_down, prob_up = self._score_loaded_model_artifact(
+            model_artifact=self.model_artifact,
             feature_input=feature_input,
-            prob_up=prob_up,
         )
+        predicted_class = "UP" if prob_up >= prob_down else "DOWN"
         base_buy_threshold, base_sell_threshold = self._default_thresholds(
             resolved_regime.regime_label
         )
-        # --- M20 ensemble scoring (Packet 1: no real candidates, graceful fallback) ---
-        ensemble_result = await self.ensemble_service.resolve_ensemble(
-            regime_label=resolved_regime.regime_label,
-            candidate_scores=[],
-            active_profile=None,
+        ensemble_state = await self._resolve_runtime_ensemble_state(
+            row=row,
+            resolved_regime=resolved_regime,
         )
+        ensemble_result = ensemble_state.result
+        if ensemble_result.active:
+            response_prob_up = float(ensemble_result.ensemble_prob_up)
+            response_prob_down = float(ensemble_result.ensemble_prob_down)
+            response_predicted_class = str(ensemble_result.ensemble_predicted_class)
+            response_confidence = float(ensemble_result.raw_ensemble_confidence)
+            top_features: list[TopFeatureContribution] = []
+            prediction_explanation = self._build_ensemble_pending_explainability()
+        else:
+            response_prob_up = prob_up
+            response_prob_down = prob_down
+            response_predicted_class = predicted_class
+            response_confidence = max(prob_up, prob_down)
+            top_features, prediction_explanation = await self._build_prediction_explainability(
+                feature_input=feature_input,
+                prob_up=prob_up,
+            )
         # If ensemble is active, pass effective_confidence to adaptation
         confidence_for_adaptation = (
             ensemble_result.effective_confidence
             if ensemble_result.active and ensemble_result.effective_confidence is not None
-            else max(prob_up, prob_down)
+            else response_confidence
         )
         applied_adaptation = await self.adaptation_service.resolve_applied_adaptation(
             execution_mode=self.trading_config.execution.mode,
@@ -506,10 +754,10 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
                 row_id=f"{row['symbol']}|{to_rfc3339(row['interval_begin'])}",
                 interval_begin=to_rfc3339(row["interval_begin"]),
                 as_of_time=to_rfc3339(row["as_of_time"]),
-                prob_up=prob_up,
-                prob_down=prob_down,
-                predicted_class=predicted_class,
-                confidence=max(prob_up, prob_down),
+                prob_up=response_prob_up,
+                prob_down=response_prob_down,
+                predicted_class=response_predicted_class,
+                confidence=response_confidence,
                 regime_label=resolved_regime.regime_label,
                 regime_run_id=resolved_regime.regime_run_id,
                 decision_source="model",
@@ -529,6 +777,10 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
                 ensemble_effective_confidence=ensemble_result.effective_confidence,
                 ensemble_candidate_count=ensemble_result.candidate_count,
                 ensemble_fallback_reason=ensemble_result.fallback_reason,
+                ensemble=ensemble_result.to_context_payload(
+                    regime_label=resolved_regime.regime_label,
+                    regime_run_id=resolved_regime.regime_run_id,
+                ),
             ),
             resolved_regime=resolved_regime,
             ensemble_result=ensemble_result,
@@ -671,6 +923,10 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
             ensemble_effective_confidence=ensemble_result.effective_confidence,
             ensemble_candidate_count=ensemble_result.candidate_count,
             ensemble_fallback_reason=ensemble_result.fallback_reason,
+            ensemble=ensemble_result.to_context_payload(
+                regime_label=prediction.regime_label,
+                regime_run_id=prediction.regime_run_id,
+            ),
         )
 
     async def _build_prediction_explainability(
@@ -1243,10 +1499,16 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
                 reason=str(error),
             )
 
-    def _build_feature_input(self, row: dict[str, Any]) -> dict[str, Any]:
+    def _build_feature_input(
+        self,
+        row: dict[str, Any],
+        *,
+        model_artifact: LoadedModelArtifact | None = None,
+    ) -> dict[str, Any]:
+        resolved_artifact = self.model_artifact if model_artifact is None else model_artifact
         missing_columns = [
             column
-            for column in self.model_artifact.feature_columns
+            for column in resolved_artifact.feature_columns
             if column not in row or row[column] is None
         ]
         if missing_columns:
@@ -1255,7 +1517,7 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
             )
         return {
             column: row[column]
-            for column in self.model_artifact.feature_columns
+            for column in resolved_artifact.feature_columns
         }
 
     def _validate_thresholds(self) -> None:

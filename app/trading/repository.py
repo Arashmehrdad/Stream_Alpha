@@ -1553,18 +1553,22 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
             f"""
             INSERT INTO {self._ensemble_profiles_table} (
                 profile_id, status, approval_stage,
+                execution_mode_scope, symbol_scope, regime_scope,
                 candidate_roster_json, regime_weight_matrix_json,
                 agreement_policy_json, evidence_summary_json,
                 rollback_target_profile_id,
                 created_at, approved_at, activated_at, superseded_at
             ) VALUES (
-                $1, $2, $3, $4::jsonb, $5::jsonb, $6::jsonb, $7::jsonb,
-                $8, $9, $10, $11, $12
+                $1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10::jsonb,
+                $11, COALESCE($12, NOW()), $13, $14, $15
             )
             ON CONFLICT (profile_id)
             DO UPDATE SET
                 status = EXCLUDED.status,
                 approval_stage = EXCLUDED.approval_stage,
+                execution_mode_scope = EXCLUDED.execution_mode_scope,
+                symbol_scope = EXCLUDED.symbol_scope,
+                regime_scope = EXCLUDED.regime_scope,
                 candidate_roster_json = EXCLUDED.candidate_roster_json,
                 regime_weight_matrix_json = EXCLUDED.regime_weight_matrix_json,
                 agreement_policy_json = EXCLUDED.agreement_policy_json,
@@ -1577,6 +1581,9 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
             record.profile_id,
             record.status,
             record.approval_stage,
+            record.execution_mode_scope,
+            record.symbol_scope,
+            record.regime_scope,
             json.dumps(record.candidate_roster_json),
             json.dumps(record.regime_weight_matrix_json),
             json.dumps(record.agreement_policy_json),
@@ -1588,17 +1595,35 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
             record.superseded_at,
         )
 
-    async def load_active_ensemble_profile(self) -> EnsembleProfileRecord | None:
-        """Load the single active ensemble profile, if any."""
+    async def load_active_ensemble_profile(
+        self,
+        *,
+        execution_mode: str,
+        symbol: str,
+        regime_label: str,
+    ) -> EnsembleProfileRecord | None:
+        """Load the best matching active ensemble profile for one runtime scope."""
         pool = self._require_pool()
         row = await pool.fetchrow(
             f"""
             SELECT *
             FROM {self._ensemble_profiles_table}
             WHERE status = 'ACTIVE'
-            ORDER BY activated_at DESC
+              AND execution_mode_scope IN ($1, 'ALL')
+              AND symbol_scope IN ($2, 'ALL')
+              AND regime_scope IN ($3, 'ALL')
+            ORDER BY
+                CASE WHEN execution_mode_scope = $1 THEN 0 ELSE 1 END,
+                CASE WHEN symbol_scope = $2 THEN 0 ELSE 1 END,
+                CASE WHEN regime_scope = $3 THEN 0 ELSE 1 END,
+                activated_at DESC NULLS LAST,
+                created_at DESC,
+                profile_id DESC
             LIMIT 1
-            """
+            """,
+            execution_mode,
+            symbol,
+            regime_label,
         )
         if row is None:
             return None
@@ -1653,7 +1678,8 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                 challenger_run_id, status, config_json, metrics_json,
                 reason_codes, created_at, updated_at
             ) VALUES (
-                $1, $2, $3::jsonb, $4::jsonb, $5::text[], $6, $7
+                $1, $2, $3::jsonb, $4::jsonb, $5::text[], COALESCE($6, NOW()),
+                COALESCE($7, NOW())
             )
             ON CONFLICT (challenger_run_id)
             DO UPDATE SET
@@ -1671,6 +1697,24 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
             record.created_at,
             record.updated_at,
         )
+
+    async def load_ensemble_challenger_runs(
+        self,
+        *,
+        limit: int,
+    ) -> list[EnsembleChallengerRunRecord]:
+        """Load recent ensemble challenger runs."""
+        pool = self._require_pool()
+        rows = await pool.fetch(
+            f"""
+            SELECT *
+            FROM {self._ensemble_challenger_runs_table}
+            ORDER BY updated_at DESC, created_at DESC
+            LIMIT $1
+            """,
+            limit,
+        )
+        return [_ensemble_challenger_run_from_row(row) for row in rows]
 
     async def save_ensemble_promotion_decision(
         self,
@@ -1710,6 +1754,24 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
             record.summary_text,
             record.decided_at,
         )
+
+    async def load_ensemble_promotion_decisions(
+        self,
+        *,
+        limit: int,
+    ) -> list[EnsemblePromotionDecisionRecord]:
+        """Load recent ensemble promotion decisions."""
+        pool = self._require_pool()
+        rows = await pool.fetch(
+            f"""
+            SELECT *
+            FROM {self._ensemble_promotion_decisions_table}
+            ORDER BY decided_at DESC, decision_id DESC
+            LIMIT $1
+            """,
+            limit,
+        )
+        return [_ensemble_promotion_decision_from_row(row) for row in rows]
 
     async def fetch_new_feature_rows(
         self,
@@ -3218,6 +3280,9 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                     profile_id TEXT PRIMARY KEY,
                     status TEXT NOT NULL,
                     approval_stage TEXT NOT NULL,
+                    execution_mode_scope TEXT NOT NULL DEFAULT 'ALL',
+                    symbol_scope TEXT NOT NULL DEFAULT 'ALL',
+                    regime_scope TEXT NOT NULL DEFAULT 'ALL',
                     candidate_roster_json JSONB NOT NULL DEFAULT '[]'::jsonb,
                     regime_weight_matrix_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
                     agreement_policy_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
@@ -3235,8 +3300,29 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                 CREATE INDEX IF NOT EXISTS {ensemble_profiles_status_index}
                 ON {self._ensemble_profiles_table} (
                     status,
+                    execution_mode_scope,
+                    symbol_scope,
+                    regime_scope,
                     activated_at DESC
                 )
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._ensemble_profiles_table}
+                ADD COLUMN IF NOT EXISTS execution_mode_scope TEXT NOT NULL DEFAULT 'ALL'
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._ensemble_profiles_table}
+                ADD COLUMN IF NOT EXISTS symbol_scope TEXT NOT NULL DEFAULT 'ALL'
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._ensemble_profiles_table}
+                ADD COLUMN IF NOT EXISTS regime_scope TEXT NOT NULL DEFAULT 'ALL'
                 """
             )
             await connection.execute(
@@ -3755,6 +3841,41 @@ def _adaptive_promotion_decision_from_row(
     )
 
 
+def _ensemble_challenger_run_from_row(
+    row: asyncpg.Record,
+) -> EnsembleChallengerRunRecord:
+    return EnsembleChallengerRunRecord.model_validate(
+        {
+            "challenger_run_id": str(row["challenger_run_id"]),
+            "status": str(row["status"]),
+            "config_json": _jsonb_to_object(row["config_json"]),
+            "metrics_json": _jsonb_to_object(row["metrics_json"]),
+            "reason_codes": list(_text_array_to_tuple(row["reason_codes"])),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+    )
+
+
+def _ensemble_promotion_decision_from_row(
+    row: asyncpg.Record,
+) -> EnsemblePromotionDecisionRecord:
+    return EnsemblePromotionDecisionRecord.model_validate(
+        {
+            "decision_id": str(row["decision_id"]),
+            "target_type": str(row["target_type"]),
+            "target_id": str(row["target_id"]),
+            "incumbent_id": row["incumbent_id"],
+            "decision": str(row["decision"]),
+            "metrics_delta_json": _jsonb_to_object(row["metrics_delta_json"]),
+            "safety_checks_json": _jsonb_to_object(row["safety_checks_json"]),
+            "reason_codes": list(_text_array_to_tuple(row["reason_codes"])),
+            "summary_text": str(row["summary_text"]),
+            "decided_at": row["decided_at"],
+        }
+    )
+
+
 def _ensemble_profile_from_row(row: asyncpg.Record) -> EnsembleProfileRecord:
     roster_raw = row["candidate_roster_json"]
     if isinstance(roster_raw, str):
@@ -3764,6 +3885,9 @@ def _ensemble_profile_from_row(row: asyncpg.Record) -> EnsembleProfileRecord:
             "profile_id": str(row["profile_id"]),
             "status": str(row["status"]),
             "approval_stage": str(row["approval_stage"]),
+            "execution_mode_scope": str(row["execution_mode_scope"]),
+            "symbol_scope": str(row["symbol_scope"]),
+            "regime_scope": str(row["regime_scope"]),
             "candidate_roster_json": roster_raw if isinstance(roster_raw, list) else [],
             "regime_weight_matrix_json": _jsonb_to_object(row["regime_weight_matrix_json"]),
             "agreement_policy_json": _jsonb_to_object(row["agreement_policy_json"]),
