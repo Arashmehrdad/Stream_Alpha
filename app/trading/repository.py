@@ -19,6 +19,13 @@ from app.adaptation.schemas import (
     AdaptivePromotionDecisionRecord,
 )
 from app.common.time import to_rfc3339
+from app.continual_learning.schemas import (
+    ContinualLearningDriftCapRecord,
+    ContinualLearningEventRecord,
+    ContinualLearningExperimentRecord,
+    ContinualLearningProfileRecord,
+    ContinualLearningPromotionDecisionRecord,
+)
 from app.ensemble.schemas import (
     EnsembleChallengerRunRecord,
     EnsembleProfileRecord,
@@ -61,6 +68,11 @@ ADAPTIVE_PROMOTION_DECISIONS_TABLE = "adaptive_promotion_decisions"
 ENSEMBLE_PROFILES_TABLE = "ensemble_profiles"
 ENSEMBLE_CHALLENGER_RUNS_TABLE = "ensemble_challenger_runs"
 ENSEMBLE_PROMOTION_DECISIONS_TABLE = "ensemble_promotion_decisions"
+CONTINUAL_LEARNING_EXPERIMENTS_TABLE = "continual_learning_experiments"
+CONTINUAL_LEARNING_PROFILES_TABLE = "continual_learning_profiles"
+CONTINUAL_LEARNING_DRIFT_CAPS_TABLE = "continual_learning_drift_caps"
+CONTINUAL_LEARNING_PROMOTION_DECISIONS_TABLE = "continual_learning_promotion_decisions"
+CONTINUAL_LEARNING_EVENTS_TABLE = "continual_learning_events"
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -121,6 +133,21 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
         )
         self._ensemble_promotion_decisions_table = _quote_table_name(
             ENSEMBLE_PROMOTION_DECISIONS_TABLE
+        )
+        self._continual_learning_experiments_table = _quote_table_name(
+            CONTINUAL_LEARNING_EXPERIMENTS_TABLE
+        )
+        self._continual_learning_profiles_table = _quote_table_name(
+            CONTINUAL_LEARNING_PROFILES_TABLE
+        )
+        self._continual_learning_drift_caps_table = _quote_table_name(
+            CONTINUAL_LEARNING_DRIFT_CAPS_TABLE
+        )
+        self._continual_learning_promotion_decisions_table = _quote_table_name(
+            CONTINUAL_LEARNING_PROMOTION_DECISIONS_TABLE
+        )
+        self._continual_learning_events_table = _quote_table_name(
+            CONTINUAL_LEARNING_EVENTS_TABLE
         )
         self._pool: asyncpg.Pool | None = None
 
@@ -1773,6 +1800,476 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
         )
         return [_ensemble_promotion_decision_from_row(row) for row in rows]
 
+    async def save_continual_learning_experiment(
+        self,
+        record: ContinualLearningExperimentRecord,
+    ) -> None:
+        """Upsert one continual-learning experiment row."""
+        pool = self._require_pool()
+        await pool.execute(
+            f"""
+            INSERT INTO {self._continual_learning_experiments_table} (
+                experiment_id,
+                candidate_type,
+                status,
+                execution_mode_scope,
+                symbol_scope,
+                regime_scope,
+                base_model_version,
+                candidate_model_version,
+                config_json,
+                metrics_json,
+                artifact_paths_json,
+                reason_codes,
+                created_at,
+                updated_at
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb, $11::jsonb,
+                $12::text[], COALESCE($13, NOW()), COALESCE($14, NOW())
+            )
+            ON CONFLICT (experiment_id)
+            DO UPDATE SET
+                candidate_type = EXCLUDED.candidate_type,
+                status = EXCLUDED.status,
+                execution_mode_scope = EXCLUDED.execution_mode_scope,
+                symbol_scope = EXCLUDED.symbol_scope,
+                regime_scope = EXCLUDED.regime_scope,
+                base_model_version = EXCLUDED.base_model_version,
+                candidate_model_version = EXCLUDED.candidate_model_version,
+                config_json = EXCLUDED.config_json,
+                metrics_json = EXCLUDED.metrics_json,
+                artifact_paths_json = EXCLUDED.artifact_paths_json,
+                reason_codes = EXCLUDED.reason_codes,
+                updated_at = NOW()
+            """,
+            record.experiment_id,
+            record.candidate_type,
+            record.status,
+            record.execution_mode_scope,
+            record.symbol_scope,
+            record.regime_scope,
+            record.base_model_version,
+            record.candidate_model_version,
+            json.dumps(record.config_json),
+            json.dumps(record.metrics_json),
+            json.dumps(record.artifact_paths_json),
+            list(record.reason_codes),
+            record.created_at,
+            record.updated_at,
+        )
+
+    async def load_continual_learning_experiments(
+        self,
+        *,
+        limit: int,
+    ) -> list[ContinualLearningExperimentRecord]:
+        """Load recent continual-learning experiments."""
+        pool = self._require_pool()
+        rows = await pool.fetch(
+            f"""
+            SELECT *
+            FROM {self._continual_learning_experiments_table}
+            ORDER BY updated_at DESC, created_at DESC
+            LIMIT $1
+            """,
+            limit,
+        )
+        return [_continual_learning_experiment_from_row(row) for row in rows]
+
+    async def save_continual_learning_profile(
+        self,
+        record: ContinualLearningProfileRecord,
+    ) -> None:
+        """Upsert one continual-learning profile row."""
+        pool = self._require_pool()
+        await pool.execute(
+            f"""
+            INSERT INTO {self._continual_learning_profiles_table} (
+                profile_id,
+                candidate_type,
+                status,
+                execution_mode_scope,
+                symbol_scope,
+                regime_scope,
+                calibration_overlay_json,
+                source_evidence_json,
+                live_eligible,
+                rollback_target_profile_id,
+                created_at,
+                approved_at,
+                activated_at,
+                superseded_at
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10,
+                COALESCE($11, NOW()), $12, $13, $14
+            )
+            ON CONFLICT (profile_id)
+            DO UPDATE SET
+                candidate_type = EXCLUDED.candidate_type,
+                status = EXCLUDED.status,
+                execution_mode_scope = EXCLUDED.execution_mode_scope,
+                symbol_scope = EXCLUDED.symbol_scope,
+                regime_scope = EXCLUDED.regime_scope,
+                calibration_overlay_json = EXCLUDED.calibration_overlay_json,
+                source_evidence_json = EXCLUDED.source_evidence_json,
+                live_eligible = EXCLUDED.live_eligible,
+                rollback_target_profile_id = EXCLUDED.rollback_target_profile_id,
+                approved_at = EXCLUDED.approved_at,
+                activated_at = EXCLUDED.activated_at,
+                superseded_at = EXCLUDED.superseded_at
+            """,
+            record.profile_id,
+            record.candidate_type,
+            record.status,
+            record.execution_mode_scope,
+            record.symbol_scope,
+            record.regime_scope,
+            json.dumps(record.calibration_overlay_json.model_dump(mode="json")),
+            json.dumps(record.source_evidence_json),
+            record.live_eligible,
+            record.rollback_target_profile_id,
+            record.created_at,
+            record.approved_at,
+            record.activated_at,
+            record.superseded_at,
+        )
+
+    async def load_continual_learning_profiles(
+        self,
+        *,
+        limit: int,
+    ) -> list[ContinualLearningProfileRecord]:
+        """Load recent continual-learning profiles."""
+        pool = self._require_pool()
+        rows = await pool.fetch(
+            f"""
+            SELECT *
+            FROM {self._continual_learning_profiles_table}
+            ORDER BY created_at DESC, profile_id DESC
+            LIMIT $1
+            """,
+            limit,
+        )
+        return [_continual_learning_profile_from_row(row) for row in rows]
+
+    async def load_continual_learning_profile(
+        self,
+        *,
+        profile_id: str,
+    ) -> ContinualLearningProfileRecord | None:
+        """Load one continual-learning profile by id."""
+        pool = self._require_pool()
+        row = await pool.fetchrow(
+            f"""
+            SELECT *
+            FROM {self._continual_learning_profiles_table}
+            WHERE profile_id = $1
+            """,
+            profile_id,
+        )
+        if row is None:
+            return None
+        return _continual_learning_profile_from_row(row)
+
+    async def load_active_continual_learning_profile(
+        self,
+        *,
+        execution_mode: str,
+        symbol: str,
+        regime_label: str,
+    ) -> ContinualLearningProfileRecord | None:
+        """Load the best matching active continual-learning profile for one scope."""
+        pool = self._require_pool()
+        row = await pool.fetchrow(
+            f"""
+            SELECT *
+            FROM {self._continual_learning_profiles_table}
+            WHERE status = 'ACTIVE'
+              AND execution_mode_scope IN ($1, 'ALL')
+              AND symbol_scope IN ($2, 'ALL')
+              AND regime_scope IN ($3, 'ALL')
+            ORDER BY
+                CASE WHEN execution_mode_scope = $1 THEN 0 ELSE 1 END,
+                CASE WHEN symbol_scope = $2 THEN 0 ELSE 1 END,
+                CASE WHEN regime_scope = $3 THEN 0 ELSE 1 END,
+                activated_at DESC NULLS LAST,
+                created_at DESC,
+                profile_id DESC
+            LIMIT 1
+            """,
+            execution_mode,
+            symbol,
+            regime_label,
+        )
+        if row is None:
+            return None
+        return _continual_learning_profile_from_row(row)
+
+    async def rollback_continual_learning_profile(
+        self,
+        *,
+        active_profile_id: str,
+        rollback_target_profile_id: str,
+        changed_at: datetime,
+    ) -> None:
+        """Switch the active continual-learning profile back to its explicit target."""
+        pool = self._require_pool()
+        async with pool.acquire() as connection:
+            async with connection.transaction():
+                await connection.execute(
+                    f"""
+                    UPDATE {self._continual_learning_profiles_table}
+                    SET status = 'ROLLED_BACK',
+                        superseded_at = $2
+                    WHERE profile_id = $1
+                    """,
+                    active_profile_id,
+                    changed_at,
+                )
+                await connection.execute(
+                    f"""
+                    UPDATE {self._continual_learning_profiles_table}
+                    SET status = 'ACTIVE',
+                        activated_at = $2,
+                        superseded_at = NULL
+                    WHERE profile_id = $1
+                    """,
+                    rollback_target_profile_id,
+                    changed_at,
+                )
+
+    async def save_continual_learning_drift_cap(
+        self,
+        record: ContinualLearningDriftCapRecord,
+    ) -> None:
+        """Upsert one continual-learning drift-cap row."""
+        pool = self._require_pool()
+        await pool.execute(
+            f"""
+            INSERT INTO {self._continual_learning_drift_caps_table} (
+                cap_id,
+                execution_mode_scope,
+                symbol_scope,
+                regime_scope,
+                candidate_type,
+                status,
+                observed_drift_score,
+                warning_threshold,
+                breach_threshold,
+                reason_code,
+                detail,
+                created_at,
+                updated_at
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+                COALESCE($12, NOW()), COALESCE($13, NOW())
+            )
+            ON CONFLICT (cap_id)
+            DO UPDATE SET
+                execution_mode_scope = EXCLUDED.execution_mode_scope,
+                symbol_scope = EXCLUDED.symbol_scope,
+                regime_scope = EXCLUDED.regime_scope,
+                candidate_type = EXCLUDED.candidate_type,
+                status = EXCLUDED.status,
+                observed_drift_score = EXCLUDED.observed_drift_score,
+                warning_threshold = EXCLUDED.warning_threshold,
+                breach_threshold = EXCLUDED.breach_threshold,
+                reason_code = EXCLUDED.reason_code,
+                detail = EXCLUDED.detail,
+                updated_at = NOW()
+            """,
+            record.cap_id,
+            record.execution_mode_scope,
+            record.symbol_scope,
+            record.regime_scope,
+            record.candidate_type,
+            record.status,
+            record.observed_drift_score,
+            record.warning_threshold,
+            record.breach_threshold,
+            record.reason_code,
+            record.detail,
+            record.created_at,
+            record.updated_at,
+        )
+
+    async def load_continual_learning_drift_caps(
+        self,
+        *,
+        execution_mode: str,
+        symbol: str,
+        regime_label: str,
+        limit: int,
+    ) -> list[ContinualLearningDriftCapRecord]:
+        """Load recent continual-learning drift-cap rows for one runtime scope."""
+        pool = self._require_pool()
+        rows = await pool.fetch(
+            f"""
+            SELECT *
+            FROM {self._continual_learning_drift_caps_table}
+            WHERE execution_mode_scope IN ($1, 'ALL')
+              AND symbol_scope IN ($2, 'ALL')
+              AND regime_scope IN ($3, 'ALL')
+            ORDER BY
+                CASE WHEN execution_mode_scope = $1 THEN 0 ELSE 1 END,
+                CASE WHEN symbol_scope = $2 THEN 0 ELSE 1 END,
+                CASE WHEN regime_scope = $3 THEN 0 ELSE 1 END,
+                updated_at DESC,
+                created_at DESC,
+                cap_id DESC
+            LIMIT $4
+            """,
+            execution_mode,
+            symbol,
+            regime_label,
+            limit,
+        )
+        return [_continual_learning_drift_cap_from_row(row) for row in rows]
+
+    async def load_latest_continual_learning_drift_cap(
+        self,
+        *,
+        execution_mode: str,
+        symbol: str,
+        regime_label: str,
+    ) -> ContinualLearningDriftCapRecord | None:
+        """Load the latest continual-learning drift-cap row for one scope."""
+        rows = await self.load_continual_learning_drift_caps(
+            execution_mode=execution_mode,
+            symbol=symbol,
+            regime_label=regime_label,
+            limit=1,
+        )
+        return None if not rows else rows[0]
+
+    async def save_continual_learning_promotion_decision(
+        self,
+        record: ContinualLearningPromotionDecisionRecord,
+    ) -> None:
+        """Upsert one continual-learning promotion decision row."""
+        pool = self._require_pool()
+        await pool.execute(
+            f"""
+            INSERT INTO {self._continual_learning_promotion_decisions_table} (
+                decision_id,
+                target_type,
+                target_id,
+                incumbent_id,
+                candidate_type,
+                decision,
+                live_eligible_after_decision,
+                metrics_delta_json,
+                safety_checks_json,
+                reason_codes,
+                summary_text,
+                decided_at
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10::text[], $11, $12
+            )
+            ON CONFLICT (decision_id)
+            DO UPDATE SET
+                target_type = EXCLUDED.target_type,
+                target_id = EXCLUDED.target_id,
+                incumbent_id = EXCLUDED.incumbent_id,
+                candidate_type = EXCLUDED.candidate_type,
+                decision = EXCLUDED.decision,
+                live_eligible_after_decision = EXCLUDED.live_eligible_after_decision,
+                metrics_delta_json = EXCLUDED.metrics_delta_json,
+                safety_checks_json = EXCLUDED.safety_checks_json,
+                reason_codes = EXCLUDED.reason_codes,
+                summary_text = EXCLUDED.summary_text,
+                decided_at = EXCLUDED.decided_at
+            """,
+            record.decision_id,
+            record.target_type,
+            record.target_id,
+            record.incumbent_id,
+            record.candidate_type,
+            record.decision,
+            record.live_eligible_after_decision,
+            json.dumps(record.metrics_delta_json),
+            json.dumps(record.safety_checks_json),
+            list(record.reason_codes),
+            record.summary_text,
+            record.decided_at,
+        )
+
+    async def load_continual_learning_promotion_decisions(
+        self,
+        *,
+        limit: int,
+    ) -> list[ContinualLearningPromotionDecisionRecord]:
+        """Load recent continual-learning promotion decisions."""
+        pool = self._require_pool()
+        rows = await pool.fetch(
+            f"""
+            SELECT *
+            FROM {self._continual_learning_promotion_decisions_table}
+            ORDER BY decided_at DESC, decision_id DESC
+            LIMIT $1
+            """,
+            limit,
+        )
+        return [_continual_learning_promotion_decision_from_row(row) for row in rows]
+
+    async def save_continual_learning_event(
+        self,
+        record: ContinualLearningEventRecord,
+    ) -> None:
+        """Upsert one continual-learning audit event row."""
+        pool = self._require_pool()
+        await pool.execute(
+            f"""
+            INSERT INTO {self._continual_learning_events_table} (
+                event_id,
+                event_type,
+                profile_id,
+                experiment_id,
+                decision_id,
+                reason_code,
+                payload_json,
+                created_at
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7::jsonb, COALESCE($8, NOW())
+            )
+            ON CONFLICT (event_id)
+            DO UPDATE SET
+                event_type = EXCLUDED.event_type,
+                profile_id = EXCLUDED.profile_id,
+                experiment_id = EXCLUDED.experiment_id,
+                decision_id = EXCLUDED.decision_id,
+                reason_code = EXCLUDED.reason_code,
+                payload_json = EXCLUDED.payload_json,
+                created_at = EXCLUDED.created_at
+            """,
+            record.event_id,
+            record.event_type,
+            record.profile_id,
+            record.experiment_id,
+            record.decision_id,
+            record.reason_code,
+            json.dumps(record.payload_json),
+            record.created_at,
+        )
+
+    async def load_continual_learning_events(
+        self,
+        *,
+        limit: int,
+    ) -> list[ContinualLearningEventRecord]:
+        """Load recent continual-learning audit events."""
+        pool = self._require_pool()
+        rows = await pool.fetch(
+            f"""
+            SELECT *
+            FROM {self._continual_learning_events_table}
+            ORDER BY created_at DESC, event_id DESC
+            LIMIT $1
+            """,
+            limit,
+        )
+        return [_continual_learning_event_from_row(row) for row in rows]
+
     async def fetch_new_feature_rows(
         self,
         *,
@@ -2255,6 +2752,26 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
         ensemble_promotions_index = _build_index_name(
             _table_basename(ENSEMBLE_PROMOTION_DECISIONS_TABLE),
             "decided_idx",
+        )
+        continual_learning_experiments_index = _build_index_name(
+            _table_basename(CONTINUAL_LEARNING_EXPERIMENTS_TABLE),
+            "updated_idx",
+        )
+        continual_learning_profiles_status_index = _build_index_name(
+            _table_basename(CONTINUAL_LEARNING_PROFILES_TABLE),
+            "status_scope_idx",
+        )
+        continual_learning_drift_caps_index = _build_index_name(
+            _table_basename(CONTINUAL_LEARNING_DRIFT_CAPS_TABLE),
+            "scope_updated_idx",
+        )
+        continual_learning_promotions_index = _build_index_name(
+            _table_basename(CONTINUAL_LEARNING_PROMOTION_DECISIONS_TABLE),
+            "decided_idx",
+        )
+        continual_learning_events_index = _build_index_name(
+            _table_basename(CONTINUAL_LEARNING_EVENTS_TABLE),
+            "created_idx",
         )
         live_safety_primary_key = _quote_identifier(
             f"{_table_basename(LIVE_SAFETY_TABLE)}_pkey"
@@ -3366,6 +3883,141 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                 ON {self._ensemble_promotion_decisions_table} (decided_at DESC, decision_id DESC)
                 """
             )
+            await connection.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {self._continual_learning_experiments_table} (
+                    experiment_id TEXT PRIMARY KEY,
+                    candidate_type TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    execution_mode_scope TEXT NOT NULL DEFAULT 'ALL',
+                    symbol_scope TEXT NOT NULL DEFAULT 'ALL',
+                    regime_scope TEXT NOT NULL DEFAULT 'ALL',
+                    base_model_version TEXT NULL,
+                    candidate_model_version TEXT NULL,
+                    config_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    metrics_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    artifact_paths_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    reason_codes TEXT[] NOT NULL DEFAULT '{{}}',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            await connection.execute(
+                f"""
+                CREATE INDEX IF NOT EXISTS {continual_learning_experiments_index}
+                ON {self._continual_learning_experiments_table} (updated_at DESC, created_at DESC)
+                """
+            )
+            await connection.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {self._continual_learning_profiles_table} (
+                    profile_id TEXT PRIMARY KEY,
+                    candidate_type TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    execution_mode_scope TEXT NOT NULL DEFAULT 'ALL',
+                    symbol_scope TEXT NOT NULL DEFAULT 'ALL',
+                    regime_scope TEXT NOT NULL DEFAULT 'ALL',
+                    calibration_overlay_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    source_evidence_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    live_eligible BOOLEAN NOT NULL DEFAULT FALSE,
+                    rollback_target_profile_id TEXT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    approved_at TIMESTAMPTZ NULL,
+                    activated_at TIMESTAMPTZ NULL,
+                    superseded_at TIMESTAMPTZ NULL
+                )
+                """
+            )
+            await connection.execute(
+                f"""
+                CREATE INDEX IF NOT EXISTS {continual_learning_profiles_status_index}
+                ON {self._continual_learning_profiles_table} (
+                    status,
+                    execution_mode_scope,
+                    symbol_scope,
+                    regime_scope,
+                    activated_at DESC
+                )
+                """
+            )
+            await connection.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {self._continual_learning_drift_caps_table} (
+                    cap_id TEXT PRIMARY KEY,
+                    execution_mode_scope TEXT NOT NULL DEFAULT 'ALL',
+                    symbol_scope TEXT NOT NULL DEFAULT 'ALL',
+                    regime_scope TEXT NOT NULL DEFAULT 'ALL',
+                    candidate_type TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    observed_drift_score DOUBLE PRECISION NOT NULL,
+                    warning_threshold DOUBLE PRECISION NOT NULL,
+                    breach_threshold DOUBLE PRECISION NOT NULL,
+                    reason_code TEXT NOT NULL,
+                    detail TEXT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            await connection.execute(
+                f"""
+                CREATE INDEX IF NOT EXISTS {continual_learning_drift_caps_index}
+                ON {self._continual_learning_drift_caps_table} (
+                    execution_mode_scope,
+                    symbol_scope,
+                    regime_scope,
+                    updated_at DESC
+                )
+                """
+            )
+            await connection.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {self._continual_learning_promotion_decisions_table} (
+                    decision_id TEXT PRIMARY KEY,
+                    target_type TEXT NOT NULL,
+                    target_id TEXT NOT NULL,
+                    incumbent_id TEXT NULL,
+                    candidate_type TEXT NOT NULL,
+                    decision TEXT NOT NULL,
+                    live_eligible_after_decision BOOLEAN NOT NULL DEFAULT FALSE,
+                    metrics_delta_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    safety_checks_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    reason_codes TEXT[] NOT NULL DEFAULT '{{}}',
+                    summary_text TEXT NOT NULL,
+                    decided_at TIMESTAMPTZ NOT NULL
+                )
+                """
+            )
+            await connection.execute(
+                f"""
+                CREATE INDEX IF NOT EXISTS {continual_learning_promotions_index}
+                ON {self._continual_learning_promotion_decisions_table} (
+                    decided_at DESC,
+                    decision_id DESC
+                )
+                """
+            )
+            await connection.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {self._continual_learning_events_table} (
+                    event_id TEXT PRIMARY KEY,
+                    event_type TEXT NOT NULL,
+                    profile_id TEXT NULL,
+                    experiment_id TEXT NULL,
+                    decision_id TEXT NULL,
+                    reason_code TEXT NOT NULL,
+                    payload_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            await connection.execute(
+                f"""
+                CREATE INDEX IF NOT EXISTS {continual_learning_events_index}
+                ON {self._continual_learning_events_table} (created_at DESC, event_id DESC)
+                """
+            )
 
     def _require_pool(self) -> asyncpg.Pool:
         if self._pool is None:
@@ -3897,6 +4549,112 @@ def _ensemble_profile_from_row(row: asyncpg.Record) -> EnsembleProfileRecord:
             "approved_at": row["approved_at"],
             "activated_at": row["activated_at"],
             "superseded_at": row["superseded_at"],
+        }
+    )
+
+
+def _continual_learning_experiment_from_row(
+    row: asyncpg.Record,
+) -> ContinualLearningExperimentRecord:
+    return ContinualLearningExperimentRecord.model_validate(
+        {
+            "experiment_id": str(row["experiment_id"]),
+            "candidate_type": str(row["candidate_type"]),
+            "status": str(row["status"]),
+            "execution_mode_scope": str(row["execution_mode_scope"]),
+            "symbol_scope": str(row["symbol_scope"]),
+            "regime_scope": str(row["regime_scope"]),
+            "base_model_version": row["base_model_version"],
+            "candidate_model_version": row["candidate_model_version"],
+            "config_json": _jsonb_to_object(row["config_json"]),
+            "metrics_json": _jsonb_to_object(row["metrics_json"]),
+            "artifact_paths_json": _jsonb_to_object(row["artifact_paths_json"]),
+            "reason_codes": list(_text_array_to_tuple(row["reason_codes"])),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+    )
+
+
+def _continual_learning_profile_from_row(
+    row: asyncpg.Record,
+) -> ContinualLearningProfileRecord:
+    return ContinualLearningProfileRecord.model_validate(
+        {
+            "profile_id": str(row["profile_id"]),
+            "candidate_type": str(row["candidate_type"]),
+            "status": str(row["status"]),
+            "execution_mode_scope": str(row["execution_mode_scope"]),
+            "symbol_scope": str(row["symbol_scope"]),
+            "regime_scope": str(row["regime_scope"]),
+            "calibration_overlay_json": _jsonb_to_object(row["calibration_overlay_json"]),
+            "source_evidence_json": _jsonb_to_object(row["source_evidence_json"]),
+            "live_eligible": bool(row["live_eligible"]),
+            "rollback_target_profile_id": row["rollback_target_profile_id"],
+            "created_at": row["created_at"],
+            "approved_at": row["approved_at"],
+            "activated_at": row["activated_at"],
+            "superseded_at": row["superseded_at"],
+        }
+    )
+
+
+def _continual_learning_drift_cap_from_row(
+    row: asyncpg.Record,
+) -> ContinualLearningDriftCapRecord:
+    return ContinualLearningDriftCapRecord.model_validate(
+        {
+            "cap_id": str(row["cap_id"]),
+            "execution_mode_scope": str(row["execution_mode_scope"]),
+            "symbol_scope": str(row["symbol_scope"]),
+            "regime_scope": str(row["regime_scope"]),
+            "candidate_type": str(row["candidate_type"]),
+            "status": str(row["status"]),
+            "observed_drift_score": float(row["observed_drift_score"]),
+            "warning_threshold": float(row["warning_threshold"]),
+            "breach_threshold": float(row["breach_threshold"]),
+            "reason_code": str(row["reason_code"]),
+            "detail": None if row["detail"] is None else str(row["detail"]),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+    )
+
+
+def _continual_learning_promotion_decision_from_row(
+    row: asyncpg.Record,
+) -> ContinualLearningPromotionDecisionRecord:
+    return ContinualLearningPromotionDecisionRecord.model_validate(
+        {
+            "decision_id": str(row["decision_id"]),
+            "target_type": str(row["target_type"]),
+            "target_id": str(row["target_id"]),
+            "incumbent_id": row["incumbent_id"],
+            "candidate_type": str(row["candidate_type"]),
+            "decision": str(row["decision"]),
+            "live_eligible_after_decision": bool(row["live_eligible_after_decision"]),
+            "metrics_delta_json": _jsonb_to_object(row["metrics_delta_json"]),
+            "safety_checks_json": _jsonb_to_object(row["safety_checks_json"]),
+            "reason_codes": list(_text_array_to_tuple(row["reason_codes"])),
+            "summary_text": str(row["summary_text"]),
+            "decided_at": row["decided_at"],
+        }
+    )
+
+
+def _continual_learning_event_from_row(
+    row: asyncpg.Record,
+) -> ContinualLearningEventRecord:
+    return ContinualLearningEventRecord.model_validate(
+        {
+            "event_id": str(row["event_id"]),
+            "event_type": str(row["event_type"]),
+            "profile_id": row["profile_id"],
+            "experiment_id": row["experiment_id"],
+            "decision_id": row["decision_id"],
+            "reason_code": str(row["reason_code"]),
+            "payload_json": _jsonb_to_object(row["payload_json"]),
+            "created_at": row["created_at"],
         }
     )
 

@@ -1,0 +1,21 @@
+enabled: true
+
+candidate_types:
+  - CALIBRATION_OVERLAY
+  - INCREMENTAL_SHADOW_CHALLENGER
+
+live_eligible_candidate_types:
+  - CALIBRATION_OVERLAY
+
+shadow_only_candidate_types:
+  - INCREMENTAL_SHADOW_CHALLENGER
+
+artifacts:
+  root_dir: artifacts/continual_learning
+  summary_path: artifacts/continual_learning/summary/latest_summary.json
+  drift_caps_summary_path: artifacts/continual_learning/drift_caps/latest_summary.json
+  current_profile_path: artifacts/continual_learning/profiles/current.json
+  promotions_history_path: artifacts/continual_learning/promotions/history.jsonl
+  events_history_path: artifacts/continual_learning/events/history.jsonl
+  reports_dir: artifacts/continual_learning/reports
+  experiments_dir: artifacts/continual_learning/experiments
