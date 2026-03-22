@@ -19,6 +19,14 @@ from app.adaptation.schemas import (
     AdaptationPromotionsResponse,
     AdaptationSummaryResponse,
 )
+from app.continual_learning.schemas import (
+    ContinualLearningDriftCapsResponse,
+    ContinualLearningEventsResponse,
+    ContinualLearningExperimentsResponse,
+    ContinualLearningProfilesResponse,
+    ContinualLearningPromotionsResponse,
+    ContinualLearningSummaryResponse,
+)
 from app.common.config import Settings
 from app.common.logging import configure_logging
 from app.common.time import parse_rfc3339
@@ -248,6 +256,74 @@ def create_app(
         limit: int = Query(default=50, ge=1, le=500),
     ) -> AdaptationPromotionsResponse:
         return await service.adaptation_promotions(limit=limit)
+
+    @app.get(
+        "/continual-learning/summary",
+        response_model=ContinualLearningSummaryResponse,
+    )
+    async def continual_learning_summary(
+        execution_mode: str = Query(default="ALL"),
+        symbol: str = Query(default="ALL"),
+        regime_label: str = Query(default="ALL"),
+    ) -> ContinualLearningSummaryResponse:
+        return await service.continual_learning_summary(
+            execution_mode=execution_mode,
+            symbol=symbol,
+            regime_label=regime_label,
+        )
+
+    @app.get(
+        "/continual-learning/experiments",
+        response_model=ContinualLearningExperimentsResponse,
+    )
+    async def continual_learning_experiments(
+        limit: int = Query(default=50, ge=1, le=500),
+    ) -> ContinualLearningExperimentsResponse:
+        return await service.continual_learning_experiments(limit=limit)
+
+    @app.get(
+        "/continual-learning/profiles",
+        response_model=ContinualLearningProfilesResponse,
+    )
+    async def continual_learning_profiles(
+        limit: int = Query(default=50, ge=1, le=500),
+    ) -> ContinualLearningProfilesResponse:
+        return await service.continual_learning_profiles(limit=limit)
+
+    @app.get(
+        "/continual-learning/drift-caps",
+        response_model=ContinualLearningDriftCapsResponse,
+    )
+    async def continual_learning_drift_caps(
+        execution_mode: str = Query(default="ALL"),
+        symbol: str = Query(default="ALL"),
+        regime_label: str = Query(default="ALL"),
+        limit: int = Query(default=50, ge=1, le=500),
+    ) -> ContinualLearningDriftCapsResponse:
+        return await service.continual_learning_drift_caps(
+            execution_mode=execution_mode,
+            symbol=symbol,
+            regime_label=regime_label,
+            limit=limit,
+        )
+
+    @app.get(
+        "/continual-learning/promotions",
+        response_model=ContinualLearningPromotionsResponse,
+    )
+    async def continual_learning_promotions(
+        limit: int = Query(default=50, ge=1, le=500),
+    ) -> ContinualLearningPromotionsResponse:
+        return await service.continual_learning_promotions(limit=limit)
+
+    @app.get(
+        "/continual-learning/events",
+        response_model=ContinualLearningEventsResponse,
+    )
+    async def continual_learning_events(
+        limit: int = Query(default=50, ge=1, le=500),
+    ) -> ContinualLearningEventsResponse:
+        return await service.continual_learning_events(limit=limit)
 
     @app.get("/reliability/system", response_model=SystemReliabilityResponse)
     async def reliability_system() -> JSONResponse:

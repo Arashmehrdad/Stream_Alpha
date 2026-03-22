@@ -9,6 +9,7 @@ from datetime import date, datetime
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.adaptation.schemas import AdaptiveRecentPerformanceSummary
+from app.continual_learning.schemas import ContinualLearningContextPayload
 from app.ensemble.schemas import EnsembleContextPayload
 from app.explainability.schemas import (
     PredictionExplanation,
@@ -48,6 +49,9 @@ class HealthResponse(BaseModel):
     ensemble_profile_id: str | None = None
     ensemble_status: str | None = None
     ensemble_candidate_count: int | None = None
+    active_continual_learning_profile_id: str | None = None
+    continual_learning_status: str | None = None
+    continual_learning_drift_cap_status: str | None = None
 
 
 class FeatureRowResponse(BaseModel):  # pylint: disable=too-many-instance-attributes
@@ -123,6 +127,10 @@ class PredictionResponse(BaseModel):
     ensemble_candidate_count: int | None = None
     ensemble_fallback_reason: str | None = None
     ensemble: EnsembleContextPayload | None = None
+    continual_learning_profile_id: str | None = None
+    continual_learning_status: str | None = None
+    continual_learning_frozen: bool = False
+    continual_learning: ContinualLearningContextPayload | None = None
 
 
 class ThresholdsResponse(BaseModel):
@@ -175,6 +183,10 @@ class SignalResponse(BaseModel):
     ensemble_candidate_count: int | None = None
     ensemble_fallback_reason: str | None = None
     ensemble: EnsembleContextPayload | None = None
+    continual_learning_profile_id: str | None = None
+    continual_learning_status: str | None = None
+    continual_learning_frozen: bool = False
+    continual_learning: ContinualLearningContextPayload | None = None
 
 
 class RegimeResponse(BaseModel):

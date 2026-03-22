@@ -6,6 +6,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
+from app.continual_learning.schemas import ContinualLearningContextPayload
 from app.ensemble.schemas import EnsembleResult
 from app.ensemble.service import ENSEMBLE_FALLBACK_NO_PROFILE, ENSEMBLE_FALLBACK_SINGLE_MODEL
 from app.trading.config import PaperTradingConfig, RiskConfig
@@ -176,6 +177,38 @@ def test_initial_trace_includes_explicit_ensemble_fallback_context() -> None:
         ENSEMBLE_FALLBACK_SINGLE_MODEL,
         ENSEMBLE_FALLBACK_NO_PROFILE,
     ]
+
+
+def test_initial_trace_includes_continual_learning_context() -> None:
+    """M14 trace payload should carry one compact continual-learning runtime context."""
+    signal = replace(
+        _signal(),
+        continual_learning=ContinualLearningContextPayload(
+            enabled=True,
+            active_profile_id="cl-profile-1",
+            candidate_type="CALIBRATION_OVERLAY",
+            promotion_stage="LIVE_ELIGIBLE",
+            live_eligible=True,
+            baseline_target_type="MODEL_VERSION",
+            baseline_target_id="m20-live",
+            source_experiment_id="cl-exp-1",
+            drift_cap_status="WATCH",
+            latest_promotion_decision="HOLD",
+            frozen_by_health_gate=False,
+            reason_codes=["ACTIVE_PROFILE_PRESENT"],
+        ),
+    )
+
+    trace = build_initial_decision_trace(
+        service_name="paper-trader",
+        execution_mode="paper",
+        signal=signal,
+    )
+
+    assert trace.payload.continual_learning is not None
+    assert trace.payload.continual_learning.active_profile_id == "cl-profile-1"
+    assert trace.payload.continual_learning.baseline_target_id == "m20-live"
+    assert trace.payload.continual_learning.promotion_stage == "LIVE_ELIGIBLE"
 
 
 def _portfolio() -> PortfolioContext:

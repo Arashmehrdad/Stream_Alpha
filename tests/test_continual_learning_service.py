@@ -13,21 +13,47 @@ from tempfile import TemporaryDirectory
 from app.continual_learning.config import ArtifactConfig, ContinualLearningConfig
 from app.continual_learning.schemas import (
     CalibrationOverlayProfile,
+    ContinualLearningDecisionType,
     ContinualLearningDriftCapRecord,
     ContinualLearningProfileRecord,
+    ContinualLearningPromotionDecisionRecord,
 )
 from app.continual_learning.service import ContinualLearningService
 
 
 class _FakeRepo:
-    def __init__(self, *, active_profile, fallback_profile, drift_cap) -> None:
+    def __init__(
+        self,
+        *,
+        active_profile,
+        fallback_profile,
+        drift_cap,
+        latest_decision: ContinualLearningDecisionType | None = None,
+    ) -> None:
         self._active_profile = active_profile
         self._drift_cap = drift_cap
-        self._profiles = {
-            active_profile.profile_id: active_profile,
-            fallback_profile.profile_id: fallback_profile,
-        }
+        self._profiles = {}
+        if active_profile is not None:
+            self._profiles[active_profile.profile_id] = active_profile
+        if fallback_profile is not None:
+            self._profiles[fallback_profile.profile_id] = fallback_profile
         self._promotion_decisions = []
+        if latest_decision is not None:
+            self._promotion_decisions.append(
+                ContinualLearningPromotionDecisionRecord(
+                    decision_id="promotion-latest",
+                    target_type="PROFILE",
+                    target_id=(
+                        "profile-fallback"
+                        if fallback_profile is None
+                        else fallback_profile.profile_id
+                    ),
+                    candidate_type="CALIBRATION_OVERLAY",
+                    decision=latest_decision,
+                    summary_text="latest promotion",
+                    decided_at=datetime(2026, 4, 2, 4, tzinfo=timezone.utc),
+                )
+            )
         self._events = []
 
     async def connect(self) -> None:
@@ -319,3 +345,107 @@ def test_shadow_challenger_live_eligible_stage_is_rejected() -> None:
         assert "INCREMENTAL_SHADOW_CHALLENGER" in str(error)
     else:
         raise AssertionError("Expected live-eligible shadow challenger profile to be rejected")
+
+
+def test_resolve_runtime_context_includes_active_profile_and_health_freeze() -> None:
+    active, fallback = _build_profiles()
+    drift_cap = ContinualLearningDriftCapRecord(
+        cap_id="cap-runtime-1",
+        execution_mode_scope="paper",
+        symbol_scope="BTC/USD",
+        regime_scope="TREND_UP",
+        candidate_type="CALIBRATION_OVERLAY",
+        status="WATCH",
+        observed_drift_score=0.11,
+        warning_threshold=0.10,
+        breach_threshold=0.20,
+        reason_code="DRIFT_WATCH",
+    )
+    service = ContinualLearningService(
+        repository=_FakeRepo(
+            active_profile=active,
+            fallback_profile=fallback,
+            drift_cap=drift_cap,
+            latest_decision="HOLD",
+        ),
+        config=_build_config("artifacts/tmp/m21-runtime-context"),
+    )
+
+    context = asyncio.run(
+        service.resolve_runtime_context(
+            execution_mode="paper",
+            symbol="BTC/USD",
+            regime_label="TREND_UP",
+            health_overall_status="DEGRADED",
+            freshness_status="FRESH",
+        )
+    )
+
+    assert context.enabled is True
+    assert context.active_profile_id == "profile-active"
+    assert context.promotion_stage == "LIVE_ELIGIBLE"
+    assert context.baseline_target_id == "m20-live"
+    assert context.drift_cap_status == "WATCH"
+    assert context.latest_promotion_decision == "HOLD"
+    assert context.frozen_by_health_gate is True
+    assert "CONTINUAL_LEARNING_FROZEN_BY_HEALTH_GATE" in context.reason_codes
+
+
+def test_resolve_runtime_context_returns_idle_when_no_active_profile() -> None:
+    _, fallback = _build_profiles()
+    drift_cap = ContinualLearningDriftCapRecord(
+        cap_id="cap-runtime-2",
+        execution_mode_scope="paper",
+        symbol_scope="BTC/USD",
+        regime_scope="TREND_UP",
+        candidate_type="CALIBRATION_OVERLAY",
+        status="HEALTHY",
+        observed_drift_score=0.02,
+        warning_threshold=0.10,
+        breach_threshold=0.20,
+        reason_code="DRIFT_HEALTHY",
+    )
+    service = ContinualLearningService(
+        repository=_FakeRepo(
+            active_profile=None,
+            fallback_profile=fallback,
+            drift_cap=drift_cap,
+            latest_decision="REJECT",
+        ),
+        config=_build_config("artifacts/tmp/m21-runtime-context-no-active"),
+    )
+
+    context = asyncio.run(
+        service.resolve_runtime_context(
+            execution_mode="paper",
+            symbol="BTC/USD",
+            regime_label="TREND_UP",
+        )
+    )
+
+    assert context.enabled is True
+    assert context.active_profile_id is None
+    assert context.live_eligible is False
+    assert context.drift_cap_status == "HEALTHY"
+    assert context.latest_promotion_decision == "REJECT"
+    assert context.reason_codes == ["NO_ACTIVE_CONTINUAL_LEARNING_PROFILE"]
+
+
+def test_resolve_runtime_context_marks_repository_unavailable() -> None:
+    service = ContinualLearningService(
+        repository=None,
+        config=_build_config("artifacts/tmp/m21-runtime-context-unavailable"),
+    )
+
+    context = asyncio.run(
+        service.resolve_runtime_context(
+            execution_mode="paper",
+            symbol="BTC/USD",
+            regime_label="TREND_UP",
+        )
+    )
+
+    assert context.enabled is True
+    assert context.active_profile_id is None
+    assert context.frozen_by_health_gate is False
+    assert context.reason_codes == ["CONTINUAL_LEARNING_REPOSITORY_UNAVAILABLE"]

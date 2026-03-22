@@ -255,6 +255,23 @@ class ContinualLearningEventRecord(BaseModel):
     created_at: datetime | None = None
 
 
+class ContinualLearningContextPayload(BaseModel):
+    """Compact runtime-facing continual-learning context for M4 and M14 surfaces."""
+
+    enabled: bool
+    active_profile_id: str | None = None
+    candidate_type: ContinualLearningCandidateType | None = None
+    promotion_stage: ContinualLearningPromotionStage | None = None
+    live_eligible: bool = False
+    baseline_target_type: ContinualLearningBaselineTargetType | None = None
+    baseline_target_id: str | None = None
+    source_experiment_id: str | None = None
+    drift_cap_status: ContinualLearningDriftCapStatus | None = None
+    latest_promotion_decision: ContinualLearningDecisionType | None = None
+    frozen_by_health_gate: bool = False
+    reason_codes: list[str] = Field(default_factory=list)
+
+
 class ContinualLearningSummaryResponse(BaseModel):
     """Read-only continual-learning summary payload."""
 

@@ -88,6 +88,11 @@ def build_initial_decision_trace(
             else signal.threshold_snapshot.model_copy(deep=True)
         ),
         adaptation=_build_adaptation_payload(signal),
+        continual_learning=(
+            None
+            if signal.continual_learning is None
+            else signal.continual_learning.model_copy(deep=True)
+        ),
         ensemble=(
             None if signal.ensemble is None else signal.ensemble.model_copy(deep=True)
         ),

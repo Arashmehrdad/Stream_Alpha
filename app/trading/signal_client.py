@@ -8,6 +8,7 @@ import httpx
 
 from app.adaptation.schemas import AdaptiveRecentPerformanceSummary
 from app.common.time import parse_rfc3339, to_rfc3339
+from app.continual_learning.schemas import ContinualLearningContextPayload
 from app.ensemble.schemas import EnsembleContextPayload
 from app.explainability.schemas import (
     PredictionExplanation,
@@ -184,6 +185,13 @@ class SignalClient:
                 None
                 if payload.get("ensemble") is None
                 else EnsembleContextPayload.model_validate(payload["ensemble"])
+            ),
+            continual_learning=(
+                None
+                if payload.get("continual_learning") is None
+                else ContinualLearningContextPayload.model_validate(
+                    payload["continual_learning"]
+                )
             ),
         )
 

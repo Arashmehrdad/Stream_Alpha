@@ -19,6 +19,7 @@ from app.continual_learning.config import (
     load_continual_learning_config,
 )
 from app.continual_learning.schemas import (
+    ContinualLearningContextPayload,
     ContinualLearningDriftCapsResponse,
     ContinualLearningEventRecord,
     ContinualLearningEventsResponse,
@@ -72,6 +73,69 @@ class ContinualLearningService:
             execution_mode=execution_mode,
             symbol=symbol,
             regime_label=regime_label,
+        )
+
+    async def resolve_runtime_context(
+        self,
+        *,
+        execution_mode: str,
+        symbol: str,
+        regime_label: str,
+        health_overall_status: str | None = None,
+        freshness_status: str | None = None,
+    ) -> ContinualLearningContextPayload:
+        """Resolve compact read-only continual-learning runtime context for M4/M14."""
+        if not self.config.enabled:
+            return ContinualLearningContextPayload(
+                enabled=False,
+                reason_codes=["CONTINUAL_LEARNING_DISABLED"],
+            )
+
+        if not await self._ensure_repository_ready():
+            return ContinualLearningContextPayload(
+                enabled=True,
+                active_profile_id=None,
+                live_eligible=False,
+                frozen_by_health_gate=False,
+                reason_codes=["CONTINUAL_LEARNING_REPOSITORY_UNAVAILABLE"],
+            )
+
+        active_profile = await self.repository.load_active_continual_learning_profile(
+            execution_mode=execution_mode,
+            symbol=symbol,
+            regime_label=regime_label,
+        )
+        drift_cap = await self.repository.load_latest_continual_learning_drift_cap(
+            execution_mode=execution_mode,
+            symbol=symbol,
+            regime_label=regime_label,
+        )
+        promotions = await self.repository.load_continual_learning_promotion_decisions(
+            limit=1
+        )
+
+        frozen_by_health_gate = (
+            (health_overall_status is not None and health_overall_status != "HEALTHY")
+            or (freshness_status is not None and freshness_status != "FRESH")
+        )
+        latest_decision = None if not promotions else promotions[0].decision
+
+        if active_profile is None:
+            return ContinualLearningContextPayload(
+                enabled=True,
+                active_profile_id=None,
+                live_eligible=False,
+                drift_cap_status=None if drift_cap is None else drift_cap.status,
+                latest_promotion_decision=latest_decision,
+                frozen_by_health_gate=frozen_by_health_gate,
+                reason_codes=["NO_ACTIVE_CONTINUAL_LEARNING_PROFILE"],
+            )
+
+        return _runtime_context_from_profile(
+            profile=active_profile,
+            drift_cap_status=None if drift_cap is None else drift_cap.status,
+            latest_promotion_decision=latest_decision,
+            frozen_by_health_gate=frozen_by_health_gate,
         )
 
     async def summary(
@@ -355,3 +419,29 @@ class ContinualLearningService:
             self.config.artifacts.events_history_path,
             event.model_dump(mode="json"),
         )
+
+
+def _runtime_context_from_profile(
+    *,
+    profile: ContinualLearningProfileRecord,
+    drift_cap_status,
+    latest_promotion_decision,
+    frozen_by_health_gate: bool,
+) -> ContinualLearningContextPayload:
+    reason_codes = ["ACTIVE_PROFILE_PRESENT"]
+    if frozen_by_health_gate:
+        reason_codes.append("CONTINUAL_LEARNING_FROZEN_BY_HEALTH_GATE")
+    return ContinualLearningContextPayload(
+        enabled=True,
+        active_profile_id=profile.profile_id,
+        candidate_type=profile.candidate_type,
+        promotion_stage=profile.promotion_stage,
+        live_eligible=profile.live_eligible,
+        baseline_target_type=profile.baseline_target_type,
+        baseline_target_id=profile.baseline_target_id,
+        source_experiment_id=profile.source_experiment_id,
+        drift_cap_status=drift_cap_status,
+        latest_promotion_decision=latest_promotion_decision,
+        frozen_by_health_gate=frozen_by_health_gate,
+        reason_codes=reason_codes,
+    )

@@ -49,6 +49,19 @@ from app.common.config import (
     TableSettings,
     TopicSettings,
 )
+from app.continual_learning.schemas import (
+    ContinualLearningContextPayload,
+    ContinualLearningDriftCapRecord,
+    ContinualLearningDriftCapsResponse,
+    ContinualLearningEventRecord,
+    ContinualLearningEventsResponse,
+    ContinualLearningExperimentsResponse,
+    ContinualLearningProfileRecord,
+    ContinualLearningProfilesResponse,
+    ContinualLearningPromotionDecisionRecord,
+    ContinualLearningPromotionsResponse,
+    ContinualLearningSummaryResponse,
+)
 from app.ensemble.config import AgreementPolicyConfig, EnsembleConfig, load_ensemble_config
 from app.ensemble.schemas import EnsembleProfileRecord, EnsembleResult
 from app.ensemble.service import EnsembleService
@@ -502,6 +515,105 @@ class NullEnsembleService:
         )
 
 
+class NullContinualLearningService:
+    """No-op continual-learning stub for tests not exercising M21 read surfaces."""
+
+    def __init__(self) -> None:
+        self.config = type("Cfg", (), {"enabled": True})()
+
+    async def startup(self) -> None:
+        return None
+
+    async def shutdown(self) -> None:
+        return None
+
+    async def resolve_runtime_context(self, **_kwargs) -> ContinualLearningContextPayload:
+        return ContinualLearningContextPayload(
+            enabled=True,
+            active_profile_id=None,
+            live_eligible=False,
+            reason_codes=["NO_ACTIVE_CONTINUAL_LEARNING_PROFILE"],
+        )
+
+    async def summary(self, **_kwargs) -> ContinualLearningSummaryResponse:
+        return ContinualLearningSummaryResponse(
+            enabled=True,
+            active_profile_count=0,
+            active_profile_id=None,
+            continual_learning_status="IDLE",
+            latest_drift_cap_status=None,
+            latest_promotion_decision=None,
+            reason_codes=["NO_ACTIVE_CONTINUAL_LEARNING_PROFILE"],
+        )
+
+    async def experiments(self, **_kwargs) -> ContinualLearningExperimentsResponse:
+        return ContinualLearningExperimentsResponse(items=[])
+
+    async def profiles(self, **_kwargs) -> ContinualLearningProfilesResponse:
+        return ContinualLearningProfilesResponse(
+            items=[
+                ContinualLearningProfileRecord(
+                    profile_id="cl-profile-1",
+                    candidate_type="CALIBRATION_OVERLAY",
+                    status="ACTIVE",
+                    execution_mode_scope="paper",
+                    symbol_scope="BTC/USD",
+                    regime_scope="TREND_UP",
+                    baseline_target_type="MODEL_VERSION",
+                    baseline_target_id="m20-live",
+                    source_experiment_id="cl-exp-1",
+                    promotion_stage="LIVE_ELIGIBLE",
+                    live_eligible=True,
+                )
+            ]
+        )
+
+    async def drift_caps(self, **_kwargs) -> ContinualLearningDriftCapsResponse:
+        return ContinualLearningDriftCapsResponse(
+            items=[
+                ContinualLearningDriftCapRecord(
+                    cap_id="cl-cap-1",
+                    execution_mode_scope="paper",
+                    symbol_scope="BTC/USD",
+                    regime_scope="TREND_UP",
+                    candidate_type="CALIBRATION_OVERLAY",
+                    status="WATCH",
+                    observed_drift_score=0.12,
+                    warning_threshold=0.10,
+                    breach_threshold=0.20,
+                    reason_code="DRIFT_WATCH",
+                )
+            ]
+        )
+
+    async def promotions(self, **_kwargs) -> ContinualLearningPromotionsResponse:
+        return ContinualLearningPromotionsResponse(
+            items=[
+                ContinualLearningPromotionDecisionRecord(
+                    decision_id="cl-decision-1",
+                    target_type="PROFILE",
+                    target_id="cl-profile-1",
+                    candidate_type="CALIBRATION_OVERLAY",
+                    decision="HOLD",
+                    summary_text="hold",
+                    decided_at=datetime(2026, 3, 22, 12, 0, tzinfo=timezone.utc),
+                )
+            ]
+        )
+
+    async def events(self, **_kwargs) -> ContinualLearningEventsResponse:
+        return ContinualLearningEventsResponse(
+            items=[
+                ContinualLearningEventRecord(
+                    event_id="cl-event-1",
+                    event_type="PROFILE_ACTIVE",
+                    profile_id="cl-profile-1",
+                    reason_code="ACTIVE_PROFILE_PRESENT",
+                )
+            ]
+        )
+
+
 def _build_settings(model_path: str) -> Settings:
     return Settings(
         app_name="streamalpha",
@@ -951,6 +1063,7 @@ def _build_client(  # pylint: disable=too-many-arguments
     artifact_path: Path | None = None,
     adaptation_service: FakeAdaptationService | NullAdaptationService | None = None,
     ensemble_service: EnsembleService | NullEnsembleService | None = None,
+    continual_learning_service: NullContinualLearningService | None = None,
 ) -> TestClient:
     resolved_artifact_path = (
         _write_artifact(tmp_path, prob_up=prob_up)
@@ -968,6 +1081,7 @@ def _build_client(  # pylint: disable=too-many-arguments
         alert_repository=alert_repository or FakeAlertRepository(),
         adaptation_service=adaptation_service or NullAdaptationService(),
         ensemble_service=ensemble_service or NullEnsembleService(),
+        continual_learning_service=continual_learning_service or NullContinualLearningService(),
     )
     return TestClient(create_app(service))
 
@@ -1669,3 +1783,129 @@ def test_signal_uses_ensemble_effective_confidence_when_active(
     assert adaptation_service.last_kwargs is not None
     assert adaptation_service.last_kwargs["confidence"] == pytest.approx(0.675)
     assert payload["ensemble"]["agreement_band"] == "HIGH"
+
+
+# ---------------------------------------------------------------------------
+# M21 continual-learning read surfaces on API endpoints
+# ---------------------------------------------------------------------------
+
+
+class ActiveFrozenContinualLearningService(NullContinualLearningService):
+    """Continual-learning stub with an active profile and health-gate freeze behavior."""
+
+    async def resolve_runtime_context(self, **kwargs) -> ContinualLearningContextPayload:
+        frozen = (
+            kwargs.get("health_overall_status") not in {None, "HEALTHY"}
+            or kwargs.get("freshness_status") not in {None, "FRESH"}
+        )
+        reason_codes = ["ACTIVE_PROFILE_PRESENT"]
+        if frozen:
+            reason_codes.append("CONTINUAL_LEARNING_FROZEN_BY_HEALTH_GATE")
+        return ContinualLearningContextPayload(
+            enabled=True,
+            active_profile_id="cl-profile-1",
+            candidate_type="CALIBRATION_OVERLAY",
+            promotion_stage="LIVE_ELIGIBLE",
+            live_eligible=True,
+            baseline_target_type="MODEL_VERSION",
+            baseline_target_id="m20-live",
+            source_experiment_id="cl-exp-1",
+            drift_cap_status="WATCH",
+            latest_promotion_decision="HOLD",
+            frozen_by_health_gate=frozen,
+            reason_codes=reason_codes,
+        )
+
+
+def test_health_includes_continual_learning_fields(tmp_path: Path) -> None:
+    """/health should expose additive M21 continual-learning summary fields."""
+    client = _build_client(
+        tmp_path,
+        prob_up=0.7,
+        database=FakeDatabase(row=_feature_row()),
+        continual_learning_service=ActiveFrozenContinualLearningService(),
+    )
+    response = client.get("/health")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["active_continual_learning_profile_id"] == "cl-profile-1"
+    assert payload["continual_learning_status"] == "ACTIVE"
+    assert payload["continual_learning_drift_cap_status"] == "WATCH"
+
+
+def test_predict_includes_continual_learning_fields_without_value_changes(tmp_path: Path) -> None:
+    """/predict should add M21 context fields while preserving probability outputs."""
+    client = _build_client(
+        tmp_path,
+        prob_up=0.7,
+        database=FakeDatabase(row=_feature_row()),
+        continual_learning_service=ActiveFrozenContinualLearningService(),
+    )
+    response = client.get("/predict", params={"symbol": "BTC/USD"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["prob_up"] == pytest.approx(0.7)
+    assert payload["prob_down"] == pytest.approx(0.3)
+    assert payload["predicted_class"] == "UP"
+    assert payload["continual_learning_profile_id"] == "cl-profile-1"
+    assert payload["continual_learning_status"] == "ACTIVE"
+    assert payload["continual_learning_frozen"] is False
+    assert payload["continual_learning"]["baseline_target_id"] == "m20-live"
+    assert payload["continual_learning"]["promotion_stage"] == "LIVE_ELIGIBLE"
+
+
+def test_signal_marks_continual_learning_frozen_under_degraded_health(tmp_path: Path) -> None:
+    """/signal should expose frozen continual-learning context when freshness is degraded."""
+    base_time = datetime.now(timezone.utc).replace(second=0, microsecond=0) - timedelta(
+        minutes=20
+    )
+    client = _build_client(
+        tmp_path,
+        prob_up=0.7,
+        database=FakeDatabase(row=_feature_row(base_time=base_time)),
+        continual_learning_service=ActiveFrozenContinualLearningService(),
+    )
+
+    response = client.get("/signal", params={"symbol": "BTC/USD"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["signal"] == "HOLD"
+    assert payload["decision_source"] == "reliability"
+    assert payload["continual_learning_profile_id"] == "cl-profile-1"
+    assert payload["continual_learning_status"] == "ACTIVE"
+    assert payload["continual_learning_frozen"] is True
+    assert "CONTINUAL_LEARNING_FROZEN_BY_HEALTH_GATE" in payload["continual_learning"][
+        "reason_codes"
+    ]
+
+
+def test_continual_learning_read_only_endpoints_return_payloads(tmp_path: Path) -> None:
+    """/continual-learning/* endpoints should return additive read-only payloads."""
+    client = _build_client(
+        tmp_path,
+        prob_up=0.7,
+        database=FakeDatabase(row=_feature_row()),
+        continual_learning_service=NullContinualLearningService(),
+    )
+
+    summary = client.get("/continual-learning/summary")
+    experiments = client.get("/continual-learning/experiments", params={"limit": 10})
+    profiles = client.get("/continual-learning/profiles", params={"limit": 10})
+    drift_caps = client.get(
+        "/continual-learning/drift-caps",
+        params={"execution_mode": "paper", "symbol": "BTC/USD", "regime_label": "TREND_UP"},
+    )
+    promotions = client.get("/continual-learning/promotions", params={"limit": 10})
+    events = client.get("/continual-learning/events", params={"limit": 10})
+
+    assert summary.status_code == 200
+    assert experiments.status_code == 200
+    assert profiles.status_code == 200
+    assert drift_caps.status_code == 200
+    assert promotions.status_code == 200
+    assert events.status_code == 200
+    assert summary.json()["continual_learning_status"] == "IDLE"
+    assert profiles.json()["items"][0]["profile_id"] == "cl-profile-1"
+    assert drift_caps.json()["items"][0]["status"] == "WATCH"
+    assert promotions.json()["items"][0]["decision"] == "HOLD"
+    assert events.json()["items"][0]["event_type"] == "PROFILE_ACTIVE"

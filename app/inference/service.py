@@ -23,6 +23,16 @@ from app.alerting.config import (
 from app.alerting.repository import OperationalAlertRepository
 from app.common.config import Settings
 from app.common.time import parse_rfc3339, to_rfc3339, utc_now
+from app.continual_learning.service import ContinualLearningService
+from app.continual_learning.schemas import (
+    ContinualLearningContextPayload,
+    ContinualLearningDriftCapsResponse,
+    ContinualLearningEventsResponse,
+    ContinualLearningExperimentsResponse,
+    ContinualLearningProfilesResponse,
+    ContinualLearningPromotionsResponse,
+    ContinualLearningSummaryResponse,
+)
 from app.ensemble.config import default_ensemble_config_path, load_ensemble_config
 from app.ensemble.schemas import EnsembleResult, ParticipatingCandidate
 from app.ensemble.service import (
@@ -249,6 +259,7 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
         alert_repository: OperationalAlertRepository | Any | None = None,
         adaptation_service: AdaptationService | None = None,
         ensemble_service: EnsembleService | None = None,
+        continual_learning_service: ContinualLearningService | None = None,
     ) -> None:
         self.settings = settings
         self.started_at = utc_now()
@@ -287,6 +298,15 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
             config=load_ensemble_config(default_ensemble_config_path()),
             repository=TradingRepository(settings.postgres.dsn, settings.tables.feature_ohlc),
         )
+        self.continual_learning_service = (
+            continual_learning_service
+            or ContinualLearningService(
+                repository=TradingRepository(
+                    settings.postgres.dsn,
+                    settings.tables.feature_ohlc,
+                )
+            )
+        )
         self._symbols = set(settings.kraken.symbols)
         self._last_heartbeat_at: datetime | None = None
         self._validate_thresholds()
@@ -320,6 +340,10 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
             await self.ensemble_service.startup()
         except Exception:  # pylint: disable=broad-exception-caught
             return
+        try:
+            await self.continual_learning_service.startup()
+        except Exception:  # pylint: disable=broad-exception-caught
+            return
 
     async def shutdown(self) -> None:
         """Close the database pool."""
@@ -338,6 +362,10 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
             return
         try:
             await self.ensemble_service.shutdown()
+        except Exception:  # pylint: disable=broad-exception-caught
+            return
+        try:
+            await self.continual_learning_service.shutdown()
         except Exception:  # pylint: disable=broad-exception-caught
             return
 
@@ -580,7 +608,7 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
         """Record one completed HTTP request."""
         self.metrics.record(path=path, status_code=status_code, latency_ms=latency_ms)
 
-    async def health(self) -> tuple[int, HealthResponse]:
+    async def health(self) -> tuple[int, HealthResponse]:  # pylint: disable=too-many-locals
         """Return the current dependency health payload and status code."""
         runtime_metadata = self.runtime_metadata_fields()
         alert_health = await self._health_alert_fields()
@@ -596,8 +624,18 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
             if database_healthy and model_loaded
             else EnsembleRuntimeState(status="UNAVAILABLE")
         )
+        continual_learning_profile_id = None
+        continual_learning_status = "UNAVAILABLE"
+        continual_learning_drift_cap_status = None
         if database_healthy and model_loaded:
             freshness_rows = await self._freshness_summary_rows()
+            (
+                continual_learning_profile_id,
+                continual_learning_status,
+                continual_learning_drift_cap_status,
+            ) = await self._resolve_health_continual_learning_state(
+                freshness_rows=freshness_rows,
+            )
             health_snapshot = self._build_health_snapshot(freshness_rows)
             await self._maybe_write_service_heartbeat(
                 health_overall_status=health_snapshot.health_overall_status,
@@ -667,7 +705,70 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
                 ensemble_profile_id=ensemble_health.result.ensemble_profile_id,
                 ensemble_status=ensemble_health.status,
                 ensemble_candidate_count=ensemble_health.result.candidate_count,
+                active_continual_learning_profile_id=continual_learning_profile_id,
+                continual_learning_status=continual_learning_status,
+                continual_learning_drift_cap_status=continual_learning_drift_cap_status,
             ),
+        )
+
+    async def _resolve_health_continual_learning_state(
+        self,
+        *,
+        freshness_rows: list[FreshnessEvaluation],
+    ) -> tuple[str | None, str, str | None]:
+        """Resolve explicit M21 health summary fields from healthy runtime scopes."""
+        if not self.continual_learning_service.config.enabled:
+            return None, "DISABLED", None
+
+        latest_drift_cap_status = None
+        checked_any_scope = False
+        for row in freshness_rows:
+            if row.health_overall_status != "HEALTHY" or row.regime_label is None:
+                continue
+            context = await self._resolve_runtime_continual_learning_context(
+                symbol=row.symbol,
+                regime_label=row.regime_label,
+                health_overall_status=row.health_overall_status,
+                freshness_status=row.freshness_status,
+            )
+            if "CONTINUAL_LEARNING_REPOSITORY_UNAVAILABLE" in context.reason_codes:
+                return None, "UNAVAILABLE", None
+            checked_any_scope = True
+            if context.active_profile_id is not None:
+                return context.active_profile_id, "ACTIVE", context.drift_cap_status
+            if context.drift_cap_status is not None and latest_drift_cap_status is None:
+                latest_drift_cap_status = context.drift_cap_status
+
+        if checked_any_scope:
+            return None, "IDLE", latest_drift_cap_status
+
+        fallback_context = await self._resolve_runtime_continual_learning_context(
+            symbol="ALL",
+            regime_label="ALL",
+        )
+        if "CONTINUAL_LEARNING_REPOSITORY_UNAVAILABLE" in fallback_context.reason_codes:
+            return None, "UNAVAILABLE", None
+        return (
+            fallback_context.active_profile_id,
+            "ACTIVE" if fallback_context.active_profile_id is not None else "IDLE",
+            fallback_context.drift_cap_status,
+        )
+
+    async def _resolve_runtime_continual_learning_context(
+        self,
+        *,
+        symbol: str,
+        regime_label: str,
+        health_overall_status: str | None = None,
+        freshness_status: str | None = None,
+    ) -> ContinualLearningContextPayload:
+        """Resolve one read-only runtime continual-learning context payload."""
+        return await self.continual_learning_service.resolve_runtime_context(
+            execution_mode=self.trading_config.execution.mode,
+            symbol=symbol,
+            regime_label=regime_label,
+            health_overall_status=health_overall_status,
+            freshness_status=freshness_status,
         )
 
     def validate_symbol(self, symbol: str) -> None:
@@ -757,6 +858,14 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
             ),
             freshness_status=(None if freshness is None else freshness.freshness_status),
         )
+        continual_learning_context = await self._resolve_runtime_continual_learning_context(
+            symbol=str(row["symbol"]),
+            regime_label=resolved_regime.regime_label,
+            health_overall_status=(
+                None if freshness is None else freshness.health_overall_status
+            ),
+            freshness_status=(None if freshness is None else freshness.freshness_status),
+        )
         top_level_model_name, top_level_model_version = self._resolve_top_level_model_identity(
             ensemble_result=ensemble_result,
         )
@@ -797,6 +906,19 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
                     regime_label=resolved_regime.regime_label,
                     regime_run_id=resolved_regime.regime_run_id,
                 ),
+                continual_learning_profile_id=continual_learning_context.active_profile_id,
+                continual_learning_status=(
+                    "ACTIVE"
+                    if continual_learning_context.active_profile_id is not None
+                    else (
+                        "UNAVAILABLE"
+                        if "CONTINUAL_LEARNING_REPOSITORY_UNAVAILABLE"
+                        in continual_learning_context.reason_codes
+                        else "IDLE"
+                    )
+                ),
+                continual_learning_frozen=continual_learning_context.frozen_by_health_gate,
+                continual_learning=continual_learning_context,
             ),
             resolved_regime=resolved_regime,
             ensemble_result=ensemble_result,
@@ -890,6 +1012,14 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
             trade_allowed=trade_allowed,
             regime_reason=regime_reason,
         )
+        continual_learning_context = await self._resolve_runtime_continual_learning_context(
+            symbol=prediction.symbol,
+            regime_label=prediction.regime_label,
+            health_overall_status=(
+                None if freshness is None else freshness.health_overall_status
+            ),
+            freshness_status=(None if freshness is None else freshness.freshness_status),
+        )
 
         return SignalResponse(
             symbol=prediction.symbol,
@@ -943,6 +1073,19 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
                 regime_label=prediction.regime_label,
                 regime_run_id=prediction.regime_run_id,
             ),
+            continual_learning_profile_id=continual_learning_context.active_profile_id,
+            continual_learning_status=(
+                "ACTIVE"
+                if continual_learning_context.active_profile_id is not None
+                else (
+                    "UNAVAILABLE"
+                    if "CONTINUAL_LEARNING_REPOSITORY_UNAVAILABLE"
+                    in continual_learning_context.reason_codes
+                    else "IDLE"
+                )
+            ),
+            continual_learning_frozen=continual_learning_context.frozen_by_health_gate,
+            continual_learning=continual_learning_context,
         )
 
     async def _build_prediction_explainability(
@@ -1105,6 +1248,68 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
     async def adaptation_promotions(self, *, limit: int):
         """Return the M19 read-only adaptive promotion collection."""
         return await self.adaptation_service.promotions(limit=limit)
+
+    async def continual_learning_summary(
+        self,
+        *,
+        execution_mode: str,
+        symbol: str,
+        regime_label: str,
+    ) -> ContinualLearningSummaryResponse:
+        """Return the M21 read-only continual-learning summary."""
+        return await self.continual_learning_service.summary(
+            execution_mode=execution_mode,
+            symbol=symbol,
+            regime_label=regime_label,
+        )
+
+    async def continual_learning_experiments(
+        self,
+        *,
+        limit: int,
+    ) -> ContinualLearningExperimentsResponse:
+        """Return M21 read-only continual-learning experiments."""
+        return await self.continual_learning_service.experiments(limit=limit)
+
+    async def continual_learning_profiles(
+        self,
+        *,
+        limit: int,
+    ) -> ContinualLearningProfilesResponse:
+        """Return M21 read-only continual-learning profiles."""
+        return await self.continual_learning_service.profiles(limit=limit)
+
+    async def continual_learning_drift_caps(
+        self,
+        *,
+        execution_mode: str,
+        symbol: str,
+        regime_label: str,
+        limit: int,
+    ) -> ContinualLearningDriftCapsResponse:
+        """Return M21 read-only continual-learning drift-caps."""
+        return await self.continual_learning_service.drift_caps(
+            execution_mode=execution_mode,
+            symbol=symbol,
+            regime_label=regime_label,
+            limit=limit,
+        )
+
+    async def continual_learning_promotions(
+        self,
+        *,
+        limit: int,
+    ) -> ContinualLearningPromotionsResponse:
+        """Return M21 read-only continual-learning promotions."""
+        return await self.continual_learning_service.promotions(limit=limit)
+
+    async def continual_learning_events(
+        self,
+        *,
+        limit: int,
+    ) -> ContinualLearningEventsResponse:
+        """Return M21 read-only continual-learning events."""
+        return await self.continual_learning_service.events(limit=limit)
 
     async def system_reliability_snapshot(
         self,
@@ -1465,7 +1670,7 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
         )
 
         if row is None:
-            return self._build_reliability_hold(
+            return await self._build_reliability_hold(
                 symbol=symbol,
                 as_of_time=None,
                 row_id=freshness.row_id or _fallback_row_id(symbol, interval_begin),
@@ -1477,7 +1682,7 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
 
         if freshness.feature_freshness.freshness_status != "FRESH":
             resolved_regime = self._try_resolve_regime(row)
-            return self._build_reliability_hold(
+            return await self._build_reliability_hold(
                 symbol=symbol,
                 as_of_time=row["as_of_time"],
                 row_id=f"{row['symbol']}|{to_rfc3339(row['interval_begin'])}",
@@ -1501,7 +1706,7 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
                 ensemble_result=prediction_context.ensemble_result,
             )
         except ArtifactSchemaMismatchError as error:
-            return self._build_reliability_hold(
+            return await self._build_reliability_hold(
                 symbol=symbol,
                 as_of_time=row["as_of_time"],
                 row_id=f"{row['symbol']}|{to_rfc3339(row['interval_begin'])}",
@@ -1871,7 +2076,7 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
         )
 
     # pylint: disable=too-many-arguments
-    def _build_reliability_hold(  # pylint: disable=too-many-locals
+    async def _build_reliability_hold(  # pylint: disable=too-many-locals
         self,
         *,
         symbol: str,
@@ -1915,6 +2120,12 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
             trade_allowed=False,
             regime_reason=regime_reason,
         )
+        continual_learning_context = await self._resolve_runtime_continual_learning_context(
+            symbol=symbol,
+            regime_label=("ALL" if regime_label is None else regime_label),
+            health_overall_status=freshness.health_overall_status,
+            freshness_status=freshness.freshness_status,
+        )
         effective_as_of_time = (
             utc_now()
             if as_of_time is None
@@ -1951,6 +2162,19 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
             threshold_snapshot=threshold_snapshot,
             regime_reason=regime_reason,
             signal_explanation=signal_explanation,
+            continual_learning_profile_id=continual_learning_context.active_profile_id,
+            continual_learning_status=(
+                "ACTIVE"
+                if continual_learning_context.active_profile_id is not None
+                else (
+                    "UNAVAILABLE"
+                    if "CONTINUAL_LEARNING_REPOSITORY_UNAVAILABLE"
+                    in continual_learning_context.reason_codes
+                    else "IDLE"
+                )
+            ),
+            continual_learning_frozen=continual_learning_context.frozen_by_health_gate,
+            continual_learning=continual_learning_context,
         )
     # pylint: enable=too-many-arguments
 
