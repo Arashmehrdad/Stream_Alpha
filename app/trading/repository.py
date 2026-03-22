@@ -1815,17 +1815,30 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                 execution_mode_scope,
                 symbol_scope,
                 regime_scope,
+                baseline_target_type,
+                baseline_target_id,
                 base_model_version,
                 candidate_model_version,
+                reference_window_start,
+                reference_window_end,
+                update_window_start,
+                update_window_end,
+                shadow_window_start,
+                shadow_window_end,
                 config_json,
-                metrics_json,
+                metrics_before_json,
+                metrics_after_json,
+                shadow_summary_json,
+                research_integrity_json,
                 artifact_paths_json,
                 reason_codes,
                 created_at,
                 updated_at
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb, $11::jsonb,
-                $12::text[], COALESCE($13, NOW()), COALESCE($14, NOW())
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                $11, $12, $13, $14, $15, $16, $17::jsonb, $18::jsonb,
+                $19::jsonb, $20::jsonb, $21::jsonb, $22::jsonb, $23::text[],
+                COALESCE($24, NOW()), COALESCE($25, NOW())
             )
             ON CONFLICT (experiment_id)
             DO UPDATE SET
@@ -1834,10 +1847,21 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                 execution_mode_scope = EXCLUDED.execution_mode_scope,
                 symbol_scope = EXCLUDED.symbol_scope,
                 regime_scope = EXCLUDED.regime_scope,
+                baseline_target_type = EXCLUDED.baseline_target_type,
+                baseline_target_id = EXCLUDED.baseline_target_id,
                 base_model_version = EXCLUDED.base_model_version,
                 candidate_model_version = EXCLUDED.candidate_model_version,
+                reference_window_start = EXCLUDED.reference_window_start,
+                reference_window_end = EXCLUDED.reference_window_end,
+                update_window_start = EXCLUDED.update_window_start,
+                update_window_end = EXCLUDED.update_window_end,
+                shadow_window_start = EXCLUDED.shadow_window_start,
+                shadow_window_end = EXCLUDED.shadow_window_end,
                 config_json = EXCLUDED.config_json,
-                metrics_json = EXCLUDED.metrics_json,
+                metrics_before_json = EXCLUDED.metrics_before_json,
+                metrics_after_json = EXCLUDED.metrics_after_json,
+                shadow_summary_json = EXCLUDED.shadow_summary_json,
+                research_integrity_json = EXCLUDED.research_integrity_json,
                 artifact_paths_json = EXCLUDED.artifact_paths_json,
                 reason_codes = EXCLUDED.reason_codes,
                 updated_at = NOW()
@@ -1848,10 +1872,21 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
             record.execution_mode_scope,
             record.symbol_scope,
             record.regime_scope,
+            record.baseline_target_type,
+            record.baseline_target_id,
             record.base_model_version,
             record.candidate_model_version,
+            record.reference_window_start,
+            record.reference_window_end,
+            record.update_window_start,
+            record.update_window_end,
+            record.shadow_window_start,
+            record.shadow_window_end,
             json.dumps(record.config_json),
-            json.dumps(record.metrics_json),
+            json.dumps(record.metrics_before_json),
+            json.dumps(record.metrics_after_json),
+            json.dumps(record.shadow_summary_json),
+            json.dumps(record.research_integrity_json),
             json.dumps(record.artifact_paths_json),
             list(record.reason_codes),
             record.created_at,
@@ -1891,6 +1926,10 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                 execution_mode_scope,
                 symbol_scope,
                 regime_scope,
+                baseline_target_type,
+                baseline_target_id,
+                source_experiment_id,
+                promotion_stage,
                 calibration_overlay_json,
                 source_evidence_json,
                 live_eligible,
@@ -1900,8 +1939,8 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                 activated_at,
                 superseded_at
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10,
-                COALESCE($11, NOW()), $12, $13, $14
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12::jsonb,
+                $13, $14, COALESCE($15, NOW()), $16, $17, $18
             )
             ON CONFLICT (profile_id)
             DO UPDATE SET
@@ -1910,6 +1949,10 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                 execution_mode_scope = EXCLUDED.execution_mode_scope,
                 symbol_scope = EXCLUDED.symbol_scope,
                 regime_scope = EXCLUDED.regime_scope,
+                baseline_target_type = EXCLUDED.baseline_target_type,
+                baseline_target_id = EXCLUDED.baseline_target_id,
+                source_experiment_id = EXCLUDED.source_experiment_id,
+                promotion_stage = EXCLUDED.promotion_stage,
                 calibration_overlay_json = EXCLUDED.calibration_overlay_json,
                 source_evidence_json = EXCLUDED.source_evidence_json,
                 live_eligible = EXCLUDED.live_eligible,
@@ -1924,6 +1967,10 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
             record.execution_mode_scope,
             record.symbol_scope,
             record.regime_scope,
+            record.baseline_target_type,
+            record.baseline_target_id,
+            record.source_experiment_id,
+            record.promotion_stage,
             json.dumps(record.calibration_overlay_json.model_dump(mode="json")),
             json.dumps(record.source_evidence_json),
             record.live_eligible,
@@ -2160,11 +2207,13 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                 live_eligible_after_decision,
                 metrics_delta_json,
                 safety_checks_json,
+                research_integrity_json,
                 reason_codes,
                 summary_text,
                 decided_at
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10::text[], $11, $12
+                $1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10::jsonb,
+                $11::text[], $12, $13
             )
             ON CONFLICT (decision_id)
             DO UPDATE SET
@@ -2176,6 +2225,7 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                 live_eligible_after_decision = EXCLUDED.live_eligible_after_decision,
                 metrics_delta_json = EXCLUDED.metrics_delta_json,
                 safety_checks_json = EXCLUDED.safety_checks_json,
+                research_integrity_json = EXCLUDED.research_integrity_json,
                 reason_codes = EXCLUDED.reason_codes,
                 summary_text = EXCLUDED.summary_text,
                 decided_at = EXCLUDED.decided_at
@@ -2189,6 +2239,7 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
             record.live_eligible_after_decision,
             json.dumps(record.metrics_delta_json),
             json.dumps(record.safety_checks_json),
+            json.dumps(record.research_integrity_json),
             list(record.reason_codes),
             record.summary_text,
             record.decided_at,
@@ -3892,15 +3943,126 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                     execution_mode_scope TEXT NOT NULL DEFAULT 'ALL',
                     symbol_scope TEXT NOT NULL DEFAULT 'ALL',
                     regime_scope TEXT NOT NULL DEFAULT 'ALL',
+                    baseline_target_type TEXT NOT NULL DEFAULT 'MODEL_VERSION',
+                    baseline_target_id TEXT NOT NULL DEFAULT 'UNKNOWN_BASELINE',
                     base_model_version TEXT NULL,
                     candidate_model_version TEXT NULL,
+                    reference_window_start TIMESTAMPTZ NULL,
+                    reference_window_end TIMESTAMPTZ NULL,
+                    update_window_start TIMESTAMPTZ NULL,
+                    update_window_end TIMESTAMPTZ NULL,
+                    shadow_window_start TIMESTAMPTZ NULL,
+                    shadow_window_end TIMESTAMPTZ NULL,
                     config_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
                     metrics_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    metrics_before_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    metrics_after_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    shadow_summary_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    research_integrity_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
                     artifact_paths_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
                     reason_codes TEXT[] NOT NULL DEFAULT '{{}}',
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._continual_learning_experiments_table}
+                ADD COLUMN IF NOT EXISTS baseline_target_type TEXT NOT NULL DEFAULT 'MODEL_VERSION'
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._continual_learning_experiments_table}
+                ADD COLUMN IF NOT EXISTS baseline_target_id TEXT NOT NULL DEFAULT 'UNKNOWN_BASELINE'
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._continual_learning_experiments_table}
+                ADD COLUMN IF NOT EXISTS reference_window_start TIMESTAMPTZ NULL
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._continual_learning_experiments_table}
+                ADD COLUMN IF NOT EXISTS reference_window_end TIMESTAMPTZ NULL
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._continual_learning_experiments_table}
+                ADD COLUMN IF NOT EXISTS update_window_start TIMESTAMPTZ NULL
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._continual_learning_experiments_table}
+                ADD COLUMN IF NOT EXISTS update_window_end TIMESTAMPTZ NULL
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._continual_learning_experiments_table}
+                ADD COLUMN IF NOT EXISTS shadow_window_start TIMESTAMPTZ NULL
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._continual_learning_experiments_table}
+                ADD COLUMN IF NOT EXISTS shadow_window_end TIMESTAMPTZ NULL
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._continual_learning_experiments_table}
+                ADD COLUMN IF NOT EXISTS metrics_before_json JSONB NOT NULL DEFAULT '{{}}'::jsonb
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._continual_learning_experiments_table}
+                ADD COLUMN IF NOT EXISTS metrics_after_json JSONB NOT NULL DEFAULT '{{}}'::jsonb
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._continual_learning_experiments_table}
+                ADD COLUMN IF NOT EXISTS shadow_summary_json JSONB NOT NULL DEFAULT '{{}}'::jsonb
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._continual_learning_experiments_table}
+                ADD COLUMN IF NOT EXISTS research_integrity_json
+                JSONB NOT NULL DEFAULT '{{}}'::jsonb
+                """
+            )
+            await connection.execute(
+                f"""
+                UPDATE {self._continual_learning_experiments_table}
+                SET baseline_target_type = COALESCE(NULLIF(baseline_target_type, ''), 'MODEL_VERSION'),
+                    baseline_target_id = COALESCE(
+                        NULLIF(baseline_target_id, ''),
+                        NULLIF(base_model_version, ''),
+                        'UNKNOWN_BASELINE'
+                    ),
+                    metrics_before_json = COALESCE(metrics_before_json, '{{}}'::jsonb),
+                    metrics_after_json = COALESCE(
+                        metrics_after_json,
+                        metrics_json,
+                        '{{}}'::jsonb
+                    ),
+                    shadow_summary_json = COALESCE(shadow_summary_json, '{{}}'::jsonb),
+                    research_integrity_json = COALESCE(research_integrity_json, '{{}}'::jsonb)
+                WHERE baseline_target_type IS NULL
+                   OR baseline_target_id IS NULL
+                   OR baseline_target_id = ''
+                   OR metrics_before_json IS NULL
+                   OR metrics_after_json IS NULL
+                   OR shadow_summary_json IS NULL
+                   OR research_integrity_json IS NULL
                 """
             )
             await connection.execute(
@@ -3918,6 +4080,10 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                     execution_mode_scope TEXT NOT NULL DEFAULT 'ALL',
                     symbol_scope TEXT NOT NULL DEFAULT 'ALL',
                     regime_scope TEXT NOT NULL DEFAULT 'ALL',
+                    baseline_target_type TEXT NOT NULL DEFAULT 'MODEL_VERSION',
+                    baseline_target_id TEXT NOT NULL DEFAULT 'UNKNOWN_BASELINE',
+                    source_experiment_id TEXT NULL,
+                    promotion_stage TEXT NOT NULL DEFAULT 'SHADOW_ONLY',
                     calibration_overlay_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
                     source_evidence_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
                     live_eligible BOOLEAN NOT NULL DEFAULT FALSE,
@@ -3927,6 +4093,53 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                     activated_at TIMESTAMPTZ NULL,
                     superseded_at TIMESTAMPTZ NULL
                 )
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._continual_learning_profiles_table}
+                ADD COLUMN IF NOT EXISTS baseline_target_type TEXT NOT NULL DEFAULT 'MODEL_VERSION'
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._continual_learning_profiles_table}
+                ADD COLUMN IF NOT EXISTS baseline_target_id TEXT NOT NULL DEFAULT 'UNKNOWN_BASELINE'
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._continual_learning_profiles_table}
+                ADD COLUMN IF NOT EXISTS source_experiment_id TEXT NULL
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._continual_learning_profiles_table}
+                ADD COLUMN IF NOT EXISTS promotion_stage TEXT NOT NULL DEFAULT 'SHADOW_ONLY'
+                """
+            )
+            await connection.execute(
+                f"""
+                UPDATE {self._continual_learning_profiles_table}
+                SET baseline_target_type = COALESCE(NULLIF(baseline_target_type, ''), 'MODEL_VERSION'),
+                    baseline_target_id = COALESCE(
+                        NULLIF(baseline_target_id, ''),
+                        NULLIF(source_evidence_json ->> 'baseline_target_id', ''),
+                        'UNKNOWN_BASELINE'
+                    ),
+                    promotion_stage = COALESCE(
+                        NULLIF(promotion_stage, ''),
+                        CASE
+                            WHEN live_eligible THEN 'LIVE_ELIGIBLE'
+                            ELSE 'SHADOW_ONLY'
+                        END
+                    )
+                WHERE baseline_target_type IS NULL
+                   OR baseline_target_id IS NULL
+                   OR baseline_target_id = ''
+                   OR promotion_stage IS NULL
+                   OR promotion_stage = ''
                 """
             )
             await connection.execute(
@@ -3983,10 +4196,25 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                     live_eligible_after_decision BOOLEAN NOT NULL DEFAULT FALSE,
                     metrics_delta_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
                     safety_checks_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    research_integrity_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
                     reason_codes TEXT[] NOT NULL DEFAULT '{{}}',
                     summary_text TEXT NOT NULL,
                     decided_at TIMESTAMPTZ NOT NULL
                 )
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._continual_learning_promotion_decisions_table}
+                ADD COLUMN IF NOT EXISTS research_integrity_json
+                JSONB NOT NULL DEFAULT '{{}}'::jsonb
+                """
+            )
+            await connection.execute(
+                f"""
+                UPDATE {self._continual_learning_promotion_decisions_table}
+                SET research_integrity_json = COALESCE(research_integrity_json, '{{}}'::jsonb)
+                WHERE research_integrity_json IS NULL
                 """
             )
             await connection.execute(
@@ -4556,6 +4784,9 @@ def _ensemble_profile_from_row(row: asyncpg.Record) -> EnsembleProfileRecord:
 def _continual_learning_experiment_from_row(
     row: asyncpg.Record,
 ) -> ContinualLearningExperimentRecord:
+    baseline_target_id = row["baseline_target_id"]
+    if baseline_target_id is None or not str(baseline_target_id).strip():
+        baseline_target_id = row["base_model_version"] or "UNKNOWN_BASELINE"
     return ContinualLearningExperimentRecord.model_validate(
         {
             "experiment_id": str(row["experiment_id"]),
@@ -4564,10 +4795,21 @@ def _continual_learning_experiment_from_row(
             "execution_mode_scope": str(row["execution_mode_scope"]),
             "symbol_scope": str(row["symbol_scope"]),
             "regime_scope": str(row["regime_scope"]),
+            "baseline_target_type": str(row["baseline_target_type"] or "MODEL_VERSION"),
+            "baseline_target_id": str(baseline_target_id),
             "base_model_version": row["base_model_version"],
             "candidate_model_version": row["candidate_model_version"],
+            "reference_window_start": row["reference_window_start"],
+            "reference_window_end": row["reference_window_end"],
+            "update_window_start": row["update_window_start"],
+            "update_window_end": row["update_window_end"],
+            "shadow_window_start": row["shadow_window_start"],
+            "shadow_window_end": row["shadow_window_end"],
             "config_json": _jsonb_to_object(row["config_json"]),
-            "metrics_json": _jsonb_to_object(row["metrics_json"]),
+            "metrics_before_json": _jsonb_to_object(row["metrics_before_json"]),
+            "metrics_after_json": _jsonb_to_object(row["metrics_after_json"]),
+            "shadow_summary_json": _jsonb_to_object(row["shadow_summary_json"]),
+            "research_integrity_json": _jsonb_to_object(row["research_integrity_json"]),
             "artifact_paths_json": _jsonb_to_object(row["artifact_paths_json"]),
             "reason_codes": list(_text_array_to_tuple(row["reason_codes"])),
             "created_at": row["created_at"],
@@ -4579,6 +4821,12 @@ def _continual_learning_experiment_from_row(
 def _continual_learning_profile_from_row(
     row: asyncpg.Record,
 ) -> ContinualLearningProfileRecord:
+    baseline_target_id = row["baseline_target_id"]
+    if baseline_target_id is None or not str(baseline_target_id).strip():
+        baseline_target_id = "UNKNOWN_BASELINE"
+    promotion_stage = row["promotion_stage"]
+    if promotion_stage is None or not str(promotion_stage).strip():
+        promotion_stage = "LIVE_ELIGIBLE" if bool(row["live_eligible"]) else "SHADOW_ONLY"
     return ContinualLearningProfileRecord.model_validate(
         {
             "profile_id": str(row["profile_id"]),
@@ -4587,6 +4835,10 @@ def _continual_learning_profile_from_row(
             "execution_mode_scope": str(row["execution_mode_scope"]),
             "symbol_scope": str(row["symbol_scope"]),
             "regime_scope": str(row["regime_scope"]),
+            "baseline_target_type": str(row["baseline_target_type"] or "MODEL_VERSION"),
+            "baseline_target_id": str(baseline_target_id),
+            "source_experiment_id": row["source_experiment_id"],
+            "promotion_stage": str(promotion_stage),
             "calibration_overlay_json": _jsonb_to_object(row["calibration_overlay_json"]),
             "source_evidence_json": _jsonb_to_object(row["source_evidence_json"]),
             "live_eligible": bool(row["live_eligible"]),
@@ -4635,6 +4887,7 @@ def _continual_learning_promotion_decision_from_row(
             "live_eligible_after_decision": bool(row["live_eligible_after_decision"]),
             "metrics_delta_json": _jsonb_to_object(row["metrics_delta_json"]),
             "safety_checks_json": _jsonb_to_object(row["safety_checks_json"]),
+            "research_integrity_json": _jsonb_to_object(row["research_integrity_json"]),
             "reason_codes": list(_text_array_to_tuple(row["reason_codes"])),
             "summary_text": str(row["summary_text"]),
             "decided_at": row["decided_at"],

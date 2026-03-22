@@ -56,10 +56,21 @@ async def _run_round_trip() -> None:
         execution_mode_scope="shadow",
         symbol_scope="BTC/USD",
         regime_scope="TREND_UP",
+        baseline_target_type="MODEL_VERSION",
+        baseline_target_id="m20-live",
         base_model_version="m20-live",
         candidate_model_version="m21-overlay-1",
+        reference_window_start=datetime(2026, 3, 1, tzinfo=timezone.utc),
+        reference_window_end=datetime(2026, 3, 10, tzinfo=timezone.utc),
+        update_window_start=datetime(2026, 3, 11, tzinfo=timezone.utc),
+        update_window_end=datetime(2026, 3, 20, tzinfo=timezone.utc),
+        shadow_window_start=datetime(2026, 3, 21, tzinfo=timezone.utc),
+        shadow_window_end=datetime(2026, 4, 1, tzinfo=timezone.utc),
         config_json={"source": "unit-test"},
-        metrics_json={"ece": 0.04},
+        metrics_before_json={"ece": 0.07, "trade_count": 20},
+        metrics_after_json={"ece": 0.04, "trade_count": 20},
+        shadow_summary_json={"shadow_precision": 0.61},
+        research_integrity_json={"slice_count": 3, "leakage_detected": False},
         artifact_paths_json={"report": "artifacts/continual_learning/experiments/x.json"},
         reason_codes=["EXPERIMENT_APPROVED"],
         created_at=datetime(2026, 4, 1, tzinfo=timezone.utc),
@@ -72,6 +83,9 @@ async def _run_round_trip() -> None:
         execution_mode_scope="ALL",
         symbol_scope="ALL",
         regime_scope="ALL",
+        baseline_target_type="MODEL_VERSION",
+        baseline_target_id="m20-live",
+        promotion_stage="LIVE_ELIGIBLE",
         calibration_overlay_json=CalibrationOverlayProfile(method="identity"),
         source_evidence_json={"source": "global"},
         live_eligible=True,
@@ -85,6 +99,10 @@ async def _run_round_trip() -> None:
         execution_mode_scope="shadow",
         symbol_scope="BTC/USD",
         regime_scope="TREND_UP",
+        baseline_target_type="MODEL_VERSION",
+        baseline_target_id="m20-live",
+        source_experiment_id=experiment_id,
+        promotion_stage="LIVE_ELIGIBLE",
         calibration_overlay_json=CalibrationOverlayProfile(
             method="isotonic",
             x_points=[0.2, 0.5, 0.8],
@@ -106,6 +124,10 @@ async def _run_round_trip() -> None:
         execution_mode_scope="shadow",
         symbol_scope="BTC/USD",
         regime_scope="TREND_UP",
+        baseline_target_type="MODEL_VERSION",
+        baseline_target_id="m20-live",
+        source_experiment_id=experiment_id,
+        promotion_stage="LIVE_ELIGIBLE",
         calibration_overlay_json=CalibrationOverlayProfile(method="identity"),
         source_evidence_json={"source": "rollback-target"},
         live_eligible=True,
@@ -139,6 +161,7 @@ async def _run_round_trip() -> None:
         live_eligible_after_decision=True,
         metrics_delta_json={"ece_delta": -0.03},
         safety_checks_json={"reliability_healthy": True},
+        research_integrity_json={"slice_count": 3, "leakage_detected": False},
         reason_codes=["PROMOTION_CRITERIA_PASSED"],
         summary_text="unit-test promotion",
         decided_at=datetime(2026, 4, 1, 4, 5, tzinfo=timezone.utc),
@@ -182,11 +205,35 @@ async def _run_round_trip() -> None:
 
         assert loaded_active is not None
         assert loaded_active.profile_id == scoped_profile_id
-        assert any(item.experiment_id == experiment_id for item in loaded_experiments)
-        assert any(item.profile_id == scoped_profile_id for item in loaded_profiles)
+        loaded_experiment = next(
+            item for item in loaded_experiments if item.experiment_id == experiment_id
+        )
+        loaded_profile = next(
+            item for item in loaded_profiles if item.profile_id == scoped_profile_id
+        )
+        assert loaded_experiment.baseline_target_type == "MODEL_VERSION"
+        assert loaded_experiment.baseline_target_id == "m20-live"
+        assert loaded_experiment.reference_window_end == datetime(
+            2026, 3, 10, tzinfo=timezone.utc
+        )
+        assert loaded_experiment.update_window_end == datetime(
+            2026, 3, 20, tzinfo=timezone.utc
+        )
+        assert loaded_experiment.shadow_window_end == datetime(
+            2026, 4, 1, tzinfo=timezone.utc
+        )
+        assert loaded_experiment.metrics_before_json["ece"] == 0.07
+        assert loaded_experiment.metrics_after_json["ece"] == 0.04
+        assert loaded_experiment.research_integrity_json["slice_count"] == 3
+        assert loaded_profile.baseline_target_id == "m20-live"
+        assert loaded_profile.source_experiment_id == experiment_id
+        assert loaded_profile.promotion_stage == "LIVE_ELIGIBLE"
         assert loaded_drift is not None
         assert loaded_drift.status == "WATCH"
-        assert any(item.decision_id == decision_id for item in loaded_promotions)
+        loaded_promotion = next(
+            item for item in loaded_promotions if item.decision_id == decision_id
+        )
+        assert loaded_promotion.research_integrity_json["slice_count"] == 3
         assert any(item.event_id == event_id for item in loaded_events)
 
         changed_at = datetime(2026, 4, 1, 4, 10, tzinfo=timezone.utc)
@@ -205,6 +252,7 @@ async def _run_round_trip() -> None:
             live_eligible_after_decision=True,
             metrics_delta_json={"rolled_back_profile_id": scoped_profile_id},
             safety_checks_json={"runtime_rollback": True},
+            research_integrity_json={"rollback_verified": True},
             reason_codes=["CONTINUAL_LEARNING_ROLLBACK_TARGET_ACTIVATED"],
             summary_text="unit-test rollback",
             decided_at=changed_at,
@@ -264,3 +312,23 @@ async def _run_round_trip() -> None:
             experiment_id,
         )
         await repository.close()
+
+
+def test_continual_learning_experiment_rejects_reversed_windows() -> None:
+    try:
+        ContinualLearningExperimentRecord(
+            experiment_id="experiment-invalid",
+            candidate_type="CALIBRATION_OVERLAY",
+            status="DRAFT",
+            execution_mode_scope="paper",
+            symbol_scope="BTC/USD",
+            regime_scope="ALL",
+            baseline_target_type="MODEL_VERSION",
+            baseline_target_id="m20-live",
+            reference_window_start=datetime(2026, 4, 2, tzinfo=timezone.utc),
+            reference_window_end=datetime(2026, 4, 1, tzinfo=timezone.utc),
+        )
+    except ValueError as error:
+        assert "reference_window_start" in str(error)
+    else:
+        raise AssertionError("Expected reversed reference windows to be rejected")

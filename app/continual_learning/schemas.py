@@ -30,6 +30,43 @@ ContinualLearningExperimentStatus = Literal[
 ContinualLearningDecisionType = Literal["PROMOTE", "REJECT", "HOLD", "ROLLBACK"]
 ContinualLearningDriftCapStatus = Literal["HEALTHY", "WATCH", "BREACHED"]
 ContinualLearningPromotionTargetType = Literal["PROFILE", "EXPERIMENT"]
+ContinualLearningBaselineTargetType = Literal[
+    "MODEL_VERSION",
+    "PROFILE",
+    "ENSEMBLE_PROFILE",
+]
+ContinualLearningPromotionStage = Literal[
+    "SHADOW_ONLY",
+    "PAPER_APPROVED",
+    "LIVE_ELIGIBLE",
+]
+
+
+def _validate_window_pair(
+    start: datetime | None,
+    end: datetime | None,
+    *,
+    label: str,
+) -> None:
+    if start is not None and end is not None and start > end:
+        raise ValueError(f"{label}_start must be less than or equal to {label}_end")
+
+
+def _validate_window_sequence(
+    earlier_end: datetime | None,
+    later_start: datetime | None,
+    *,
+    earlier_label: str,
+    later_label: str,
+) -> None:
+    if (
+        earlier_end is not None
+        and later_start is not None
+        and earlier_end > later_start
+    ):
+        raise ValueError(
+            f"{earlier_label}_end must be less than or equal to {later_label}_start"
+        )
 
 
 class CalibrationOverlayProfile(BaseModel):
@@ -52,14 +89,58 @@ class ContinualLearningExperimentRecord(BaseModel):
     execution_mode_scope: str = "ALL"
     symbol_scope: str = "ALL"
     regime_scope: str = "ALL"
+    baseline_target_type: ContinualLearningBaselineTargetType
+    baseline_target_id: str = Field(min_length=1)
     base_model_version: str | None = None
     candidate_model_version: str | None = None
+    reference_window_start: datetime | None = None
+    reference_window_end: datetime | None = None
+    update_window_start: datetime | None = None
+    update_window_end: datetime | None = None
+    shadow_window_start: datetime | None = None
+    shadow_window_end: datetime | None = None
     config_json: dict[str, Any] = Field(default_factory=dict)
-    metrics_json: dict[str, Any] = Field(default_factory=dict)
+    metrics_before_json: dict[str, Any] = Field(default_factory=dict)
+    metrics_after_json: dict[str, Any] = Field(default_factory=dict)
+    shadow_summary_json: dict[str, Any] = Field(default_factory=dict)
+    research_integrity_json: dict[str, Any] = Field(default_factory=dict)
     artifact_paths_json: dict[str, Any] = Field(default_factory=dict)
     reason_codes: list[str] = Field(default_factory=list)
     created_at: datetime | None = None
     updated_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def _validate_experiment_context(self) -> "ContinualLearningExperimentRecord":
+        if not str(self.baseline_target_id).strip():
+            raise ValueError("baseline_target_id must not be empty")
+        _validate_window_pair(
+            self.reference_window_start,
+            self.reference_window_end,
+            label="reference_window",
+        )
+        _validate_window_pair(
+            self.update_window_start,
+            self.update_window_end,
+            label="update_window",
+        )
+        _validate_window_pair(
+            self.shadow_window_start,
+            self.shadow_window_end,
+            label="shadow_window",
+        )
+        _validate_window_sequence(
+            self.reference_window_end,
+            self.update_window_start,
+            earlier_label="reference_window",
+            later_label="update_window",
+        )
+        _validate_window_sequence(
+            self.update_window_end,
+            self.shadow_window_start,
+            earlier_label="update_window",
+            later_label="shadow_window",
+        )
+        return self
 
 
 class ContinualLearningProfileRecord(BaseModel):
@@ -71,6 +152,10 @@ class ContinualLearningProfileRecord(BaseModel):
     execution_mode_scope: str = "ALL"
     symbol_scope: str = "ALL"
     regime_scope: str = "ALL"
+    baseline_target_type: ContinualLearningBaselineTargetType
+    baseline_target_id: str = Field(min_length=1)
+    source_experiment_id: str | None = None
+    promotion_stage: ContinualLearningPromotionStage = "SHADOW_ONLY"
     calibration_overlay_json: CalibrationOverlayProfile = Field(
         default_factory=CalibrationOverlayProfile
     )
@@ -84,12 +169,26 @@ class ContinualLearningProfileRecord(BaseModel):
 
     @model_validator(mode="after")
     def _validate_candidate_type_constraints(self) -> "ContinualLearningProfileRecord":
+        if not str(self.baseline_target_id).strip():
+            raise ValueError("baseline_target_id must not be empty")
         if (
             self.candidate_type == "INCREMENTAL_SHADOW_CHALLENGER"
-            and self.live_eligible
+            and self.promotion_stage == "LIVE_ELIGIBLE"
         ):
             raise ValueError(
-                "INCREMENTAL_SHADOW_CHALLENGER cannot be marked live_eligible in M21"
+                "INCREMENTAL_SHADOW_CHALLENGER cannot have LIVE_ELIGIBLE promotion_stage in M21"
+            )
+        if self.live_eligible and self.promotion_stage != "LIVE_ELIGIBLE":
+            raise ValueError(
+                "live_eligible profiles must use promotion_stage LIVE_ELIGIBLE"
+            )
+        if self.promotion_stage == "SHADOW_ONLY" and self.live_eligible:
+            raise ValueError(
+                "promotion_stage SHADOW_ONLY cannot be combined with live_eligible true"
+            )
+        if self.promotion_stage == "LIVE_ELIGIBLE" and not self.live_eligible:
+            raise ValueError(
+                "promotion_stage LIVE_ELIGIBLE requires live_eligible true"
             )
         return self
 
@@ -117,19 +216,22 @@ class ContinualLearningPromotionDecisionRecord(BaseModel):
 
     decision_id: str
     target_type: ContinualLearningPromotionTargetType
-    target_id: str
+    target_id: str = Field(min_length=1)
     incumbent_id: str | None = None
     candidate_type: ContinualLearningCandidateType
     decision: ContinualLearningDecisionType
     live_eligible_after_decision: bool = False
     metrics_delta_json: dict[str, Any] = Field(default_factory=dict)
     safety_checks_json: dict[str, Any] = Field(default_factory=dict)
+    research_integrity_json: dict[str, Any] = Field(default_factory=dict)
     reason_codes: list[str] = Field(default_factory=list)
     summary_text: str
     decided_at: datetime
 
     @model_validator(mode="after")
     def _validate_live_eligibility(self) -> "ContinualLearningPromotionDecisionRecord":
+        if not str(self.target_id).strip():
+            raise ValueError("target_id must not be empty")
         if (
             self.candidate_type == "INCREMENTAL_SHADOW_CHALLENGER"
             and self.live_eligible_after_decision

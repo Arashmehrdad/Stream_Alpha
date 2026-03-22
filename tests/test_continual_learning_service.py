@@ -115,6 +115,10 @@ def _build_profiles() -> tuple[ContinualLearningProfileRecord, ContinualLearning
         execution_mode_scope="paper",
         symbol_scope="BTC/USD",
         regime_scope="TREND_UP",
+        baseline_target_type="MODEL_VERSION",
+        baseline_target_id="m20-live",
+        source_experiment_id="experiment-fallback",
+        promotion_stage="LIVE_ELIGIBLE",
         calibration_overlay_json=CalibrationOverlayProfile(method="identity"),
         source_evidence_json={"source": "fallback"},
         live_eligible=True,
@@ -130,6 +134,10 @@ def _build_profiles() -> tuple[ContinualLearningProfileRecord, ContinualLearning
         execution_mode_scope="paper",
         symbol_scope="BTC/USD",
         regime_scope="TREND_UP",
+        baseline_target_type="MODEL_VERSION",
+        baseline_target_id="m20-live",
+        source_experiment_id="experiment-active",
+        promotion_stage="LIVE_ELIGIBLE",
         calibration_overlay_json=CalibrationOverlayProfile(
             method="isotonic",
             x_points=[0.2, 0.5],
@@ -205,6 +213,7 @@ def test_continual_learning_service_summary_writes_runtime_artifacts() -> None:
         drift_payload = _read_json(service.config.artifacts.drift_caps_summary_path)
 
         assert summary_payload["active_profile_id"] == "profile-active"
+        assert summary_payload["active_candidate_type"] == "CALIBRATION_OVERLAY"
         assert drift_payload["item_count"] == 1
         assert drift_payload["items"][0]["status"] == "HEALTHY"
 
@@ -257,9 +266,56 @@ def test_continual_learning_service_rollback_restores_target_and_writes_history(
         promotion_lines = _read_lines(service.config.artifacts.promotions_history_path)
 
         assert decision.decision == "ROLLBACK"
+        assert decision.research_integrity_json["rollback_target_profile_id"] == "profile-fallback"
         assert restored_profile is not None
         assert restored_profile.status == "ACTIVE"
         assert current_profile["profile_id"] == "profile-fallback"
+        assert current_profile["baseline_target_id"] == "m20-live"
+        assert current_profile["promotion_stage"] == "LIVE_ELIGIBLE"
         assert report_payload["profile"]["profile_id"] == "profile-fallback"
+        assert (
+            report_payload["latest_promotion"]["research_integrity_json"][
+                "source_experiment_id"
+            ]
+            == "experiment-fallback"
+        )
         assert json.loads(events_lines[-1])["event_type"] == "ROLLBACK_APPLIED"
         assert json.loads(promotion_lines[-1])["decision"] == "ROLLBACK"
+
+
+def test_live_eligible_profile_stage_is_valid_for_calibration_overlay() -> None:
+    profile = ContinualLearningProfileRecord(
+        profile_id="profile-valid",
+        candidate_type="CALIBRATION_OVERLAY",
+        status="APPROVED",
+        execution_mode_scope="paper",
+        symbol_scope="BTC/USD",
+        regime_scope="ALL",
+        baseline_target_type="MODEL_VERSION",
+        baseline_target_id="m20-live",
+        promotion_stage="LIVE_ELIGIBLE",
+        live_eligible=True,
+    )
+
+    assert profile.promotion_stage == "LIVE_ELIGIBLE"
+    assert profile.live_eligible is True
+
+
+def test_shadow_challenger_live_eligible_stage_is_rejected() -> None:
+    try:
+        ContinualLearningProfileRecord(
+            profile_id="profile-invalid",
+            candidate_type="INCREMENTAL_SHADOW_CHALLENGER",
+            status="DRAFT",
+            execution_mode_scope="paper",
+            symbol_scope="BTC/USD",
+            regime_scope="ALL",
+            baseline_target_type="MODEL_VERSION",
+            baseline_target_id="m20-live",
+            promotion_stage="LIVE_ELIGIBLE",
+            live_eligible=True,
+        )
+    except ValueError as error:
+        assert "INCREMENTAL_SHADOW_CHALLENGER" in str(error)
+    else:
+        raise AssertionError("Expected live-eligible shadow challenger profile to be rejected")
