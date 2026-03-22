@@ -1,6 +1,6 @@
 """Focused M18 service and artifact generation tests."""
 
-# pylint: disable=missing-function-docstring
+# pylint: disable=missing-function-docstring,too-many-locals
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+from app.evaluation.config import default_evaluation_config
 from app.evaluation.schemas import COMPARISON_FAMILIES, EvaluationRequest
 from app.evaluation.service import EvaluationService
 from app.reliability.schemas import RecoveryEvent, ServiceHeartbeat
@@ -24,6 +25,7 @@ class FakeEvaluationRepository:
         self.traces = [
             _trace(trace_id=201, execution_mode="paper", signal="BUY"),
             _trace(trace_id=202, execution_mode="shadow", signal="BUY"),
+            _trace(trace_id=203, execution_mode="live", signal="BUY"),
         ]
         self.order_events = [
             OrderLifecycleEvent(
@@ -65,6 +67,26 @@ class FakeEvaluationRepository:
                 lifecycle_state="FILLED",
                 event_time=_ts(12, 10),
                 decision_trace_id=202,
+            ),
+            OrderLifecycleEvent(
+                order_request_id=3,
+                service_name="paper-trader",
+                execution_mode="live",
+                symbol="BTC/USD",
+                action="BUY",
+                lifecycle_state="CREATED",
+                event_time=_ts(12, 5),
+                decision_trace_id=203,
+            ),
+            OrderLifecycleEvent(
+                order_request_id=3,
+                service_name="paper-trader",
+                execution_mode="live",
+                symbol="BTC/USD",
+                action="BUY",
+                lifecycle_state="SUBMITTED",
+                event_time=_ts(12, 6),
+                decision_trace_id=203,
             ),
         ]
         self.ledger_entries = [
@@ -124,7 +146,9 @@ class FakeEvaluationRepository:
         return self.reliability_events
 
 
-def test_generate_run_writes_required_artifacts_deterministically(tmp_path: Path) -> None:
+def test_generate_run_writes_required_artifacts_deterministically(
+    tmp_path: Path,
+) -> None:
     request = EvaluationRequest(
         service_name="paper-trader",
         source_exchange="kraken",
@@ -142,6 +166,7 @@ def test_generate_run_writes_required_artifacts_deterministically(tmp_path: Path
         repository=FakeEvaluationRepository(),
         repo_root=tmp_path,
         registry_root=tmp_path / "artifacts" / "registry",
+        evaluation_config=default_evaluation_config(),
     )
 
     result = asyncio.run(service.generate_run(request))
@@ -171,3 +196,19 @@ def test_generate_run_writes_required_artifacts_deterministically(tmp_path: Path
     assert payload["artifact_paths"]["paper_to_live_degradation_json"].endswith(
         "paper_to_live_degradation.json"
     )
+    assert set(payload["degradation_summary"]["families"]) == {
+        "paper_vs_shadow",
+        "shadow_vs_tiny_live",
+        "paper_to_tiny_live",
+    }
+
+    degradation_payload = json.loads(
+        Path(result["artifact_paths"]["paper_to_live_degradation_json"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    paper_to_live_family = degradation_payload["families"]["paper_to_tiny_live"]
+    assert "Tiny-live fill comparison is unavailable" in " ".join(
+        paper_to_live_family["blockers"]
+    )
+    assert paper_to_live_family["comparable_counts"]["comparable_fill_pair_count"] == 0

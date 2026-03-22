@@ -19,8 +19,14 @@ from app.evaluation.artifacts import (
     write_json,
     write_text,
 )
+from app.evaluation.config import (
+    EvaluationConfig,
+    default_evaluation_config_path,
+    load_evaluation_config,
+)
 from app.evaluation.matching import build_comparison_windows, summarize_divergence_counts
 from app.evaluation.metrics import (
+    compute_cost_aware_precision_by_mode,
     compute_latency_distribution,
     compute_layer_comparison,
     compute_paper_to_live_degradation,
@@ -111,7 +117,7 @@ class EvaluationService:
 
     # Packet 1 deliberately exposes one public orchestration method so the CLI
     # and future API surfaces share a single canonical evaluation path.
-    # pylint: disable=too-few-public-methods
+    # pylint: disable=too-few-public-methods,too-many-arguments
 
     def __init__(
         self,
@@ -119,6 +125,8 @@ class EvaluationService:
         repository: EvaluationDataRepository,
         repo_root: Path | None = None,
         registry_root: Path | None = None,
+        evaluation_config_path: Path | None = None,
+        evaluation_config: EvaluationConfig | None = None,
     ) -> None:
         self.repository = repository
         self.repo_root = registry_repo_root() if repo_root is None else Path(repo_root)
@@ -126,6 +134,16 @@ class EvaluationService:
             self.repo_root / "artifacts" / "registry"
             if registry_root is None
             else Path(registry_root)
+        )
+        self.evaluation_config_path = (
+            default_evaluation_config_path()
+            if evaluation_config_path is None
+            else Path(evaluation_config_path)
+        )
+        self.evaluation_config = (
+            load_evaluation_config(self.evaluation_config_path)
+            if evaluation_config is None
+            else evaluation_config
         )
 
     async def generate_run(self, request: EvaluationRequest) -> dict[str, Any]:
@@ -175,6 +193,7 @@ class EvaluationService:
         comparison_windows, divergence_events = build_comparison_windows(
             opportunities=opportunities,
             comparison_families=request.comparison_families,
+            evaluation_config=self.evaluation_config,
         )
         trace_ids_by_mode = {
             mode: {
@@ -185,8 +204,13 @@ class EvaluationService:
             for mode in request.execution_modes
         }
         performance_by_asset, performance_by_regime = compute_performance_rows(
+            opportunities=opportunities,
             positions=positions,
             in_window_trace_ids_by_mode=trace_ids_by_mode,
+        )
+        cost_aware_precision_by_mode = compute_cost_aware_precision_by_mode(
+            opportunities=opportunities,
+            execution_modes=request.execution_modes,
         )
         latency_distribution = compute_latency_distribution(opportunities)
         slippage_distribution = compute_slippage_distribution(ledger_entries)
@@ -248,9 +272,30 @@ class EvaluationService:
             },
             divergence_counts_by_family=divergence_counts_by_family,
             divergence_counts_by_reason_code=divergence_counts_by_reason,
-            cost_aware_precision_by_mode=_cost_aware_precision_by_mode(performance_by_asset),
+            cost_aware_precision_by_mode={
+                mode: summary.cost_aware_precision
+                for mode, summary in cost_aware_precision_by_mode.items()
+            },
+            cost_aware_precision_counts_by_mode=cost_aware_precision_by_mode,
             slippage_availability_by_mode=_distribution_truth_status(slippage_distribution),
             latency_availability_by_mode=_distribution_truth_status(latency_distribution),
+            degradation_summary=paper_to_live_degradation,
+            threshold_context={
+                "config_path": str(self.evaluation_config_path.resolve()),
+                "latency_drift_ms_threshold": self.evaluation_config.latency_drift_ms_threshold,
+                "fill_price_drift_bps_threshold": (
+                    self.evaluation_config.fill_price_drift_bps_threshold
+                ),
+                "slippage_drift_bps_threshold": (
+                    self.evaluation_config.slippage_drift_bps_threshold
+                ),
+                "cost_aware_precision_horizon_notes": (
+                    self.evaluation_config.cost_aware_precision_horizon_notes
+                ),
+                "minimum_comparable_count_notes": (
+                    self.evaluation_config.minimum_comparable_count_notes
+                ),
+            },
             registry_context=_registry_context(current_registry_entry),
             known_limitations=known_limitations,
             artifact_paths={},
@@ -479,19 +524,6 @@ def _opportunity_counts(opportunities) -> dict[str, int]:
     for row in opportunities:
         counts[row.execution_mode] = counts.get(row.execution_mode, 0) + 1
     return dict(sorted(counts.items()))
-
-
-def _cost_aware_precision_by_mode(rows) -> dict[str, float | None]:
-    values: dict[str, float | None] = {}
-    grouped: dict[str, list[float]] = {}
-    for row in rows:
-        grouped.setdefault(row.execution_mode, [])
-        if row.cost_aware_precision is not None:
-            grouped[row.execution_mode].append(row.cost_aware_precision)
-    for mode in sorted(grouped):
-        series = grouped[mode]
-        values[mode] = None if not series else sum(series) / len(series)
-    return values
 
 
 def _distribution_truth_status(rows) -> dict[str, str]:

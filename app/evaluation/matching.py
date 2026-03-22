@@ -10,14 +10,15 @@ from datetime import datetime
 
 from app.common.serialization import make_json_safe
 from app.common.time import to_rfc3339
-from app.evaluation.schemas import ComparisonWindow, DecisionOpportunity, DivergenceEvent
+from app.evaluation.config import EvaluationConfig, default_evaluation_config
+from app.evaluation.schemas import (
+    COMPARISON_FAMILY_MODE_PAIRS,
+    ComparisonWindow,
+    DecisionOpportunity,
+    DivergenceEvent,
+)
 
 
-_FAMILY_MODES = {
-    "paper_vs_shadow": ("paper", "shadow"),
-    "shadow_vs_tiny_live": ("shadow", "live"),
-    "paper_to_tiny_live": ("paper", "live"),
-}
 _EPSILON = 1e-9
 
 
@@ -25,8 +26,10 @@ def build_comparison_windows(
     *,
     opportunities: list[DecisionOpportunity],
     comparison_families: tuple[str, ...],
+    evaluation_config: EvaluationConfig | None = None,
 ) -> tuple[list[ComparisonWindow], list[DivergenceEvent]]:
     """Build comparison windows plus canonical divergence events."""
+    config = default_evaluation_config() if evaluation_config is None else evaluation_config
     windows: list[ComparisonWindow] = []
     divergence_events: list[DivergenceEvent] = []
     by_mode: dict[str, list[DecisionOpportunity]] = {}
@@ -37,13 +40,14 @@ def build_comparison_windows(
         )
 
     for family in comparison_families:
-        left_mode, right_mode = _FAMILY_MODES[family]
+        left_mode, right_mode = COMPARISON_FAMILY_MODE_PAIRS[family]
         window, events = _compare_family(
             comparison_family=family,
             left_mode=left_mode,
             right_mode=right_mode,
             left_rows=by_mode[left_mode],
             right_rows=by_mode[right_mode],
+            evaluation_config=config,
         )
         windows.append(window)
         divergence_events.extend(events)
@@ -76,6 +80,7 @@ def _compare_family(
     right_mode: str,
     left_rows: list[DecisionOpportunity],
     right_rows: list[DecisionOpportunity],
+    evaluation_config: EvaluationConfig,
 ) -> tuple[ComparisonWindow, list[DivergenceEvent]]:
     left_start = None if not left_rows else left_rows[0].signal_as_of_time
     left_end = None if not left_rows else left_rows[-1].signal_as_of_time
@@ -145,6 +150,7 @@ def _compare_family(
                 right_mode=right_mode,
                 left=left_index[key],
                 right=right_index[key],
+                evaluation_config=evaluation_config,
             )
         )
     return (
@@ -169,6 +175,7 @@ def _classify_pair(
     right_mode: str,
     left: DecisionOpportunity,
     right: DecisionOpportunity,
+    evaluation_config: EvaluationConfig,
 ) -> list[DivergenceEvent]:
     events: list[DivergenceEvent] = []
     if (
@@ -328,7 +335,16 @@ def _classify_pair(
         left.fill.truth_status in {"OBSERVED", "SIMULATED"}
         and right.fill.truth_status in {"OBSERVED", "SIMULATED"}
     ):
-        if _float_mismatch(left.fill.fill_price, right.fill.fill_price):
+        fill_price_drift_bps = _fill_price_drift_bps(
+            left.fill.fill_price,
+            right.fill.fill_price,
+        )
+        if _material_drift_breached(
+            left_value=left.fill.fill_price,
+            right_value=right.fill.fill_price,
+            absolute_difference=fill_price_drift_bps,
+            threshold=evaluation_config.fill_price_drift_bps_threshold,
+        ):
             events.append(
                 _paired_event(
                     comparison_family=comparison_family,
@@ -339,10 +355,24 @@ def _classify_pair(
                     left=left,
                     right=right,
                     summary_text="Matched fill prices diverged across modes.",
-                    detail=f"left={left.fill.fill_price} right={right.fill.fill_price}",
+                    detail=(
+                        "left="
+                        f"{left.fill.fill_price} right={right.fill.fill_price} "
+                        f"drift_bps={fill_price_drift_bps} "
+                        f"threshold={evaluation_config.fill_price_drift_bps_threshold}"
+                    ),
                 )
             )
-        if _float_mismatch(left.fill.slippage_bps, right.fill.slippage_bps):
+        slippage_drift_bps = _absolute_difference(
+            left.fill.slippage_bps,
+            right.fill.slippage_bps,
+        )
+        if _material_drift_breached(
+            left_value=left.fill.slippage_bps,
+            right_value=right.fill.slippage_bps,
+            absolute_difference=slippage_drift_bps,
+            threshold=evaluation_config.slippage_drift_bps_threshold,
+        ):
             events.append(
                 _paired_event(
                     comparison_family=comparison_family,
@@ -353,12 +383,23 @@ def _classify_pair(
                     left=left,
                     right=right,
                     summary_text="Matched slippage measurements diverged across modes.",
-                    detail=f"left={left.fill.slippage_bps} right={right.fill.slippage_bps}",
+                    detail=(
+                        "left="
+                        f"{left.fill.slippage_bps} right={right.fill.slippage_bps} "
+                        f"drift_bps={slippage_drift_bps} "
+                        f"threshold={evaluation_config.slippage_drift_bps_threshold}"
+                    ),
                 )
             )
     left_latency = _latency_ms(left)
     right_latency = _latency_ms(right)
-    if _float_mismatch(left_latency, right_latency):
+    latency_drift_ms = _absolute_difference(left_latency, right_latency)
+    if _material_drift_breached(
+        left_value=left_latency,
+        right_value=right_latency,
+        absolute_difference=latency_drift_ms,
+        threshold=evaluation_config.latency_drift_ms_threshold,
+    ):
         events.append(
             _paired_event(
                 comparison_family=comparison_family,
@@ -369,7 +410,11 @@ def _classify_pair(
                 left=left,
                 right=right,
                 summary_text="Matched order lifecycle latency diverged across modes.",
-                detail=f"left={left_latency} right={right_latency}",
+                detail=(
+                    f"left={left_latency} right={right_latency} "
+                    f"drift_ms={latency_drift_ms} "
+                    f"threshold={evaluation_config.latency_drift_ms_threshold}"
+                ),
             )
         )
     return events
@@ -515,3 +560,37 @@ def _float_mismatch(left: float | None, right: float | None) -> bool:
     if left is None or right is None:
         return True
     return abs(left - right) > _EPSILON
+
+
+def _absolute_difference(left: float | None, right: float | None) -> float | None:
+    if left is None or right is None:
+        return None
+    return abs(left - right)
+
+
+def _fill_price_drift_bps(
+    left_price: float | None,
+    right_price: float | None,
+) -> float | None:
+    if left_price is None or right_price is None:
+        return None
+    midpoint = (abs(left_price) + abs(right_price)) / 2.0
+    if midpoint <= _EPSILON:
+        return abs(left_price - right_price) * 10000.0
+    return abs(left_price - right_price) / midpoint * 10000.0
+
+
+def _material_drift_breached(
+    *,
+    left_value: float | None,
+    right_value: float | None,
+    absolute_difference: float | None,
+    threshold: float,
+) -> bool:
+    if left_value is None and right_value is None:
+        return False
+    if left_value is None or right_value is None:
+        return True
+    if absolute_difference is None:
+        return False
+    return absolute_difference > threshold

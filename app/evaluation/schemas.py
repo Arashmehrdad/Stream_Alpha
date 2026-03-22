@@ -52,6 +52,11 @@ COMPARISON_FAMILIES: tuple[ComparisonFamily, ...] = (
     "shadow_vs_tiny_live",
     "paper_to_tiny_live",
 )
+COMPARISON_FAMILY_MODE_PAIRS: dict[ComparisonFamily, tuple[str, str]] = {
+    "paper_vs_shadow": ("paper", "shadow"),
+    "shadow_vs_tiny_live": ("shadow", "live"),
+    "paper_to_tiny_live": ("paper", "live"),
+}
 DECISION_LAYERS: tuple[DecisionLayer, ...] = (
     "model_only",
     "regime_aware",
@@ -246,6 +251,8 @@ class PerformanceBreakdownRow:
     realized_pnl: float
     average_realized_return: float | None
     win_rate: float | None
+    comparable_buy_count: int
+    positive_after_cost_buy_count: int
     total_entry_notional: float
     total_fees: float
     total_slippage_bps: float | None
@@ -317,17 +324,36 @@ class LayerComparisonReport:
 
 
 @dataclass(frozen=True, slots=True)
-class PaperToLiveDegradationReport:
-    """Canonical paper-to-tiny-live degradation summary."""
+class CostAwarePrecisionSummary:
+    """Comparable BUY counts and precision for one mode or grouping."""
 
-    schema_version: str
+    comparable_buy_count: int
+    positive_after_cost_buy_count: int
+    cost_aware_precision: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class DegradationFamilySummary:
+    """Canonical degradation summary for one comparison family."""
+
     comparison_family: ComparisonFamily
-    coverage: dict[str, int]
+    left_mode: str
+    right_mode: str
+    coverage_counts: dict[str, int]
+    matched_count: int
+    comparable_counts: dict[str, int]
     divergence_counts_by_stage: dict[str, int]
     divergence_counts_by_reason_code: dict[str, int]
-    comparable_counts: dict[str, int]
     blockers: list[str]
     notes: list[str]
+
+
+@dataclass(frozen=True, slots=True)
+class PaperToLiveDegradationReport:
+    """Canonical degradation summary across the M18 comparison families."""
+
+    schema_version: str
+    families: dict[str, DegradationFamilySummary]
 
 
 @dataclass(frozen=True, slots=True)
@@ -367,8 +393,11 @@ class EvaluationReport:
     divergence_counts_by_family: dict[str, int]
     divergence_counts_by_reason_code: dict[str, int]
     cost_aware_precision_by_mode: dict[str, float | None]
+    cost_aware_precision_counts_by_mode: dict[str, CostAwarePrecisionSummary]
     slippage_availability_by_mode: dict[str, str]
     latency_availability_by_mode: dict[str, str]
+    degradation_summary: PaperToLiveDegradationReport
+    threshold_context: dict[str, Any]
     registry_context: dict[str, Any]
     known_limitations: list[str]
     artifact_paths: dict[str, str]

@@ -1,0 +1,10 @@
+schema_version: m18_evaluation_config_v1
+latency_drift_ms_threshold: 25.0
+fill_price_drift_bps_threshold: 10.0
+slippage_drift_bps_threshold: 5.0
+cost_aware_precision_horizon_notes: >
+  Closed-position realized PnL after fees and slippage, linked back to the BUY
+  opportunity through entry_decision_trace_id.
+minimum_comparable_count_notes: >
+  Cost-aware precision returns null when a mode has zero actionable BUY
+  opportunities with comparable closed outcome truth.

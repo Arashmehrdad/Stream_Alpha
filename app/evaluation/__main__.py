@@ -8,6 +8,7 @@ from pathlib import Path
 
 from app.common.config import Settings
 from app.common.time import parse_rfc3339, utc_now
+from app.evaluation.config import default_evaluation_config_path
 from app.evaluation.repository import EvaluationRepository
 from app.evaluation.schemas import COMPARISON_FAMILIES, EvaluationRequest
 from app.evaluation.service import EvaluationService, default_evaluation_run_id
@@ -35,6 +36,11 @@ def main() -> None:
         default="",
         help="Optional explicit evaluation run id",
     )
+    parser.add_argument(
+        "--evaluation-config",
+        default="",
+        help="Optional M18 evaluation config path",
+    )
     arguments = parser.parse_args()
     generated_at = utc_now()
     config_path = resolve_trading_config_path(
@@ -61,14 +67,33 @@ def main() -> None:
         evaluation_run_id=arguments.run_id or default_evaluation_run_id(generated_at=generated_at),
         generated_at=generated_at,
     )
-    asyncio.run(_run(request=request, dsn=settings.postgres.dsn))
+    evaluation_config_path = (
+        default_evaluation_config_path()
+        if not arguments.evaluation_config
+        else Path(arguments.evaluation_config)
+    )
+    asyncio.run(
+        _run(
+            request=request,
+            dsn=settings.postgres.dsn,
+            evaluation_config_path=evaluation_config_path,
+        )
+    )
 
 
-async def _run(*, request: EvaluationRequest, dsn: str) -> None:
+async def _run(
+    *,
+    request: EvaluationRequest,
+    dsn: str,
+    evaluation_config_path: Path,
+) -> None:
     repository = EvaluationRepository(dsn)
     await repository.connect()
     try:
-        service = EvaluationService(repository=repository)
+        service = EvaluationService(
+            repository=repository,
+            evaluation_config_path=evaluation_config_path,
+        )
         result = await service.generate_run(request)
     finally:
         await repository.close()

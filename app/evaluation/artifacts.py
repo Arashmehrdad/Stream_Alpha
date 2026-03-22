@@ -1,5 +1,7 @@
 """Artifact and index writing for M18 evaluation runs."""
 
+# pylint: disable=too-many-locals
+
 from __future__ import annotations
 
 import csv
@@ -139,7 +141,28 @@ def markdown_report(
     lines.extend(["", "## Cost-Aware Precision", ""])
     for mode, value in sorted(report.cost_aware_precision_by_mode.items()):
         rendered = "n/a" if value is None else f"{value:.4f}"
-        lines.append(f"- `{mode}`: {rendered}")
+        counts = report.cost_aware_precision_counts_by_mode[mode]
+        comparable_buy_count = _nested_value(counts, "comparable_buy_count")
+        positive_after_cost = _nested_value(counts, "positive_after_cost_buy_count")
+        lines.append(
+            f"- `{mode}`: {rendered} "
+            f"(comparable_buy_count={comparable_buy_count}, "
+            f"positive_after_cost_buy_count={positive_after_cost})"
+        )
+    lines.extend(["", "## Drift Thresholds", ""])
+    for key, value in sorted(report.threshold_context.items()):
+        lines.append(f"- `{key}`: {value}")
+    lines.extend(["", "## Degradation Summary", ""])
+    degradation_families = _nested_value(report.degradation_summary, "families", default={})
+    for family, summary in sorted(degradation_families.items()):
+        comparable_counts = _nested_value(summary, "comparable_counts", default={})
+        matched_count = _nested_value(summary, "matched_count")
+        lines.append(
+            f"- `{family}`: matched={matched_count}, "
+            f"comparable_fill_pairs={comparable_counts['comparable_fill_pair_count']}, "
+            "comparable_slippage_pairs="
+            f"{comparable_counts['comparable_slippage_pair_count']}"
+        )
     lines.extend(["", "## Known Limitations", ""])
     if not report.known_limitations:
         lines.append("- none")
@@ -192,3 +215,9 @@ def _normalize_csv_row(
         else:
             normalized[fieldname] = value
     return normalized
+
+
+def _nested_value(payload: Any, key: str, default: Any = None) -> Any:
+    if isinstance(payload, dict):
+        return payload.get(key, default)
+    return getattr(payload, key, default)
