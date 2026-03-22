@@ -511,10 +511,13 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                 reconciliation_reason_code,
                 reconciliation_checked_at,
                 unresolved_incident_count,
+                can_submit_live_now,
+                primary_block_reason_code,
+                block_detail,
                 updated_at
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-                $16, $17, $18, $19, $20, $21, $22, $23, $24, NOW()
+                $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, NOW()
             )
             ON CONFLICT (service_name, execution_mode)
             DO UPDATE SET
@@ -541,6 +544,9 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                 reconciliation_reason_code = EXCLUDED.reconciliation_reason_code,
                 reconciliation_checked_at = EXCLUDED.reconciliation_checked_at,
                 unresolved_incident_count = EXCLUDED.unresolved_incident_count,
+                can_submit_live_now = EXCLUDED.can_submit_live_now,
+                primary_block_reason_code = EXCLUDED.primary_block_reason_code,
+                block_detail = EXCLUDED.block_detail,
                 updated_at = NOW()
             """,
             state.service_name,
@@ -568,6 +574,9 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
             state.reconciliation_reason_code,
             state.reconciliation_checked_at,
             state.unresolved_incident_count,
+            state.can_submit_live_now,
+            state.primary_block_reason_code,
+            state.block_detail,
         )
 
     async def save_service_heartbeat(
@@ -2021,9 +2030,12 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                 reconciliation_status TEXT NOT NULL DEFAULT 'UNKNOWN',
                 reconciliation_reason_code TEXT NULL,
                 reconciliation_checked_at TIMESTAMPTZ NULL,
-                    unresolved_incident_count INTEGER NOT NULL DEFAULT 0,
-                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    PRIMARY KEY (service_name, execution_mode)
+                unresolved_incident_count INTEGER NOT NULL DEFAULT 0,
+                can_submit_live_now BOOLEAN NOT NULL DEFAULT FALSE,
+                primary_block_reason_code TEXT NULL,
+                block_detail TEXT NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (service_name, execution_mode)
                 )
                 """
             )
@@ -2097,6 +2109,24 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                 f"""
                 ALTER TABLE {self._live_safety_table}
                 ADD COLUMN IF NOT EXISTS unresolved_incident_count INTEGER NOT NULL DEFAULT 0
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._live_safety_table}
+                ADD COLUMN IF NOT EXISTS can_submit_live_now BOOLEAN NOT NULL DEFAULT FALSE
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._live_safety_table}
+                ADD COLUMN IF NOT EXISTS primary_block_reason_code TEXT NULL
+                """
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE {self._live_safety_table}
+                ADD COLUMN IF NOT EXISTS block_detail TEXT NULL
                 """
             )
             await connection.execute(
@@ -2429,6 +2459,15 @@ def _live_safety_state_from_row(row: asyncpg.Record) -> LiveSafetyState:
         ),
         reconciliation_checked_at=row["reconciliation_checked_at"],
         unresolved_incident_count=int(row["unresolved_incident_count"]),
+        can_submit_live_now=bool(row["can_submit_live_now"]),
+        primary_block_reason_code=(
+            None
+            if row["primary_block_reason_code"] is None
+            else str(row["primary_block_reason_code"])
+        ),
+        block_detail=(
+            None if row["block_detail"] is None else str(row["block_detail"])
+        ),
         updated_at=row["updated_at"],
     )
 

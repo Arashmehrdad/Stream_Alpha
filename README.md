@@ -724,6 +724,11 @@ M12 writes:
 - `artifacts/live/startup_checklist.json`
 - `artifacts/live/live_status.json`
 
+The live status artifact and `execution_live_safety_state` persist one authoritative operator-facing live submit gate from existing runtime truth:
+- `can_submit_live_now`
+- `primary_block_reason_code`
+- `block_detail`
+
 M13 writes:
 - `artifacts/reliability/health_snapshot.json`
 - `artifacts/reliability/freshness_summary.json`
@@ -734,7 +739,7 @@ M13 writes:
 M14 writes:
 - `artifacts/explainability/<model_version>/reference.json`
 
-The operator console shows the configured execution mode, a persistent safety banner, venue and environment truth, live safety state, canonical M13 reliability state, recent decision traces, rationale report download paths, a filterable trade journal, and a current incidents view. This remains a guarded live foundation; alert routing, broker import, and automatic recovery orchestration are still intentionally deferred.
+The operator console shows the configured execution mode, a persistent safety banner, a compact live critical-state strip, venue and environment truth, live safety state, canonical M13 reliability state, recent decision traces, rationale report download paths, a filterable trade journal, and a current incidents view. This remains a guarded live foundation; alert routing, broker import, and automatic recovery orchestration are still intentionally deferred.
 
 ### 13. Run the M6 Streamlit dashboard
 
@@ -972,7 +977,7 @@ For M12 guarded-live checks:
 ```powershell
 Get-Content artifacts\live\startup_checklist.json
 Get-Content artifacts\live\live_status.json
-docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT service_name, execution_mode, broker_name, startup_checks_passed, manual_disable_active, failure_hard_stop_active, reconciliation_status, health_gate_status FROM execution_live_safety_state;"
+docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT service_name, execution_mode, broker_name, startup_checks_passed, can_submit_live_now, primary_block_reason_code, manual_disable_active, failure_hard_stop_active, reconciliation_status, health_gate_status FROM execution_live_safety_state;"
 docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT execution_mode, lifecycle_state, broker_name, external_status, COUNT(*) AS event_rows FROM execution_order_events GROUP BY execution_mode, lifecycle_state, broker_name, external_status ORDER BY execution_mode, lifecycle_state, broker_name, external_status;"
 ```
 
@@ -1051,7 +1056,7 @@ docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELE
 docker exec -it streamalpha-postgres psql -U streamalpha -d streamalpha -c "SELECT component_name, event_type, reason_code, detail, event_time FROM reliability_events WHERE component_name IN ('live_reconciliation', 'live_health_gate') ORDER BY event_time DESC LIMIT 20;"
 ```
 
-Expect `health_gate_status` and `reconciliation_status` to fail closed whenever canonical health is not `HEALTHY`, a lag breach is active, signal freshness is stale, or broker truth does not match local state.
+Expect `health_gate_status` and `reconciliation_status` to fail closed whenever canonical health is not `HEALTHY`, a lag breach is active, signal freshness is stale, or broker truth does not match local state. Expect `can_submit_live_now=false` plus one explicit `primary_block_reason_code` and `block_detail` whenever live submit is blocked.
 
 ## M14 Explainability Validation
 

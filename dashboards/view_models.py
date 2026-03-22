@@ -661,12 +661,23 @@ def build_live_status_rows(
                 "broker_cash": None,
                 "broker_equity": None,
                 "unresolved_incident_count": None,
+                "can_submit_live_now": False,
+                "primary_block_reason_code": "LIVE_SAFETY_STATE_MISSING",
+                "block_detail": (
+                    "Live mode is configured but no execution_live_safety_state row was found."
+                    if trading_config.execution.mode == "live"
+                    else None
+                ),
                 "last_failure_reason": None,
                 "updated_at": None,
                 "updated_age": None,
             }
         ]
 
+    submit_state = _resolve_live_submit_snapshot_state(
+        live_safety_state=live_safety_state,
+        trading_config=trading_config,
+    )
     return [
         {
             "execution_mode": live_safety_state.execution_mode,
@@ -702,11 +713,171 @@ def build_live_status_rows(
             "broker_cash": round_or_none(live_safety_state.broker_cash, 2),
             "broker_equity": round_or_none(live_safety_state.broker_equity, 2),
             "unresolved_incident_count": live_safety_state.unresolved_incident_count,
+            "can_submit_live_now": submit_state["can_submit_live_now"],
+            "primary_block_reason_code": submit_state["primary_block_reason_code"],
+            "block_detail": submit_state["block_detail"],
             "last_failure_reason": live_safety_state.last_failure_reason,
             "updated_at": to_rfc3339(live_safety_state.updated_at),
             "updated_age": age_text(live_safety_state.updated_at, reference_time),
         }
     ]
+
+
+def build_live_critical_state_strip(
+    *,
+    snapshot: DashboardSnapshot,
+    trading_config: PaperTradingConfig,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Build one compact always-visible live critical-state strip near the banner."""
+    if trading_config.execution.mode != "live" and snapshot.database.live_safety_state is None:
+        return {
+            "visible": False,
+            "items": [],
+            "primary_block_reason_code": None,
+            "block_detail": None,
+        }
+
+    reference_time = utc_now() if now is None else now
+    live_state = snapshot.database.live_safety_state
+    expected_environment = trading_config.execution.live.expected_environment
+    expected_account_id = trading_config.execution.live.expected_account_id
+    if live_state is None:
+        return {
+            "visible": True,
+            "primary_block_reason_code": "LIVE_SAFETY_STATE_MISSING",
+            "block_detail": (
+                "Live mode is configured but no execution_live_safety_state row "
+                "was found."
+            ),
+            "items": [
+                _live_strip_item(
+                    "Live submit allowed",
+                    "NO",
+                    severity="error",
+                    detail="No live safety state is available.",
+                ),
+                _live_strip_item("Startup checks", "UNKNOWN", severity="error"),
+                _live_strip_item("Health gate", "UNKNOWN", severity="error"),
+                _live_strip_item("Reconciliation", "UNKNOWN", severity="error"),
+                _live_strip_item("Manual disable", "UNKNOWN", severity="warning"),
+                _live_strip_item("Failure hard-stop", "UNKNOWN", severity="warning"),
+                _live_strip_item("Open live incidents", "UNKNOWN", severity="warning"),
+                _live_strip_item(
+                    "Validated environment",
+                    "-",
+                    severity="warning",
+                    detail=f"Expected {expected_environment}",
+                ),
+                _live_strip_item(
+                    "Validated account",
+                    "-",
+                    severity="warning",
+                    detail=(
+                        "-"
+                        if expected_account_id is None
+                        else f"Expected {expected_account_id}"
+                    ),
+                ),
+            ],
+        }
+
+    environment_detail = f"Expected {expected_environment}"
+    environment_severity = "success"
+    if live_state.environment_name != expected_environment:
+        environment_detail = (
+            f"Expected {expected_environment}; validated {live_state.environment_name or '-'}"
+        )
+        environment_severity = "error"
+
+    account_detail = (
+        "-"
+        if expected_account_id is None
+        else f"Expected {expected_account_id}"
+    )
+    account_severity = "success"
+    if (
+        expected_account_id is not None
+        and live_state.account_id is not None
+        and live_state.account_id != expected_account_id
+    ):
+        account_detail = (
+            f"Expected {expected_account_id}; validated {live_state.account_id}"
+        )
+        account_severity = "error"
+    submit_state = _resolve_live_submit_snapshot_state(
+        live_safety_state=live_state,
+        trading_config=trading_config,
+    )
+
+    return {
+        "visible": True,
+        "primary_block_reason_code": submit_state["primary_block_reason_code"],
+        "block_detail": submit_state["block_detail"],
+        "updated_at": to_rfc3339(live_state.updated_at),
+        "updated_age": age_text(live_state.updated_at, reference_time),
+        "items": [
+            _live_strip_item(
+                "Live submit allowed",
+                "YES" if submit_state["can_submit_live_now"] else "NO",
+                severity="success" if submit_state["can_submit_live_now"] else "error",
+                detail=(
+                    "Broker submit may proceed."
+                    if submit_state["can_submit_live_now"]
+                    else (
+                        submit_state["primary_block_reason_code"]
+                        or "Live submit is blocked."
+                    )
+                ),
+            ),
+            _live_strip_item(
+                "Startup checks",
+                "PASSED" if live_state.startup_checks_passed else "FAILED",
+                severity="success" if live_state.startup_checks_passed else "error",
+                detail=age_text(live_state.startup_checks_passed_at, reference_time),
+            ),
+            _live_strip_item(
+                "Health gate",
+                live_state.health_gate_status or "UNKNOWN",
+                severity="success" if live_state.health_gate_status == "CLEAR" else "error",
+                detail=live_state.health_gate_reason_code or live_state.health_gate_detail,
+            ),
+            _live_strip_item(
+                "Reconciliation",
+                live_state.reconciliation_status or "UNKNOWN",
+                severity="success" if live_state.reconciliation_status == "CLEAR" else "error",
+                detail=live_state.reconciliation_reason_code,
+            ),
+            _live_strip_item(
+                "Manual disable",
+                "ACTIVE" if live_state.manual_disable_active else "OFF",
+                severity="error" if live_state.manual_disable_active else "success",
+            ),
+            _live_strip_item(
+                "Failure hard-stop",
+                "ACTIVE" if live_state.failure_hard_stop_active else "OFF",
+                severity="error" if live_state.failure_hard_stop_active else "success",
+                detail=live_state.last_failure_reason,
+            ),
+            _live_strip_item(
+                "Open live incidents",
+                str(live_state.unresolved_incident_count),
+                severity="error" if live_state.unresolved_incident_count > 0 else "success",
+            ),
+            _live_strip_item(
+                "Validated environment",
+                live_state.environment_name or "-",
+                severity=environment_severity,
+                detail=environment_detail,
+            ),
+            _live_strip_item(
+                "Validated account",
+                live_state.account_id or "-",
+                severity=account_severity,
+                detail=account_detail,
+            ),
+        ],
+    }
 
 
 def build_trade_journal_rows(
@@ -786,7 +957,7 @@ def filter_trade_journal_traces(
     return tuple(filtered)
 
 
-def build_operator_incident_rows(
+def build_operator_incident_rows(  # pylint: disable=too-many-statements
     *,
     snapshot: DashboardSnapshot,
     trading_config: PaperTradingConfig,
@@ -811,6 +982,47 @@ def build_operator_incident_rows(
                 reference_time=reference_time,
             )
         else:
+            if (
+                live_state.environment_name is not None
+                and live_state.environment_name
+                != trading_config.execution.live.expected_environment
+            ):
+                _append_incident(
+                    incidents,
+                    severity="CRITICAL",
+                    category="live_safety",
+                    scope="startup",
+                    reason_code="LIVE_ENVIRONMENT_MISMATCH",
+                    detail=(
+                        "Validated broker environment does not match the configured "
+                        f"live environment: expected="
+                        f"{trading_config.execution.live.expected_environment} "
+                        f"validated={live_state.environment_name}"
+                    ),
+                    updated_at=live_state.updated_at,
+                    reference_time=reference_time,
+                )
+            if (
+                trading_config.execution.live.expected_account_id is not None
+                and live_state.account_id is not None
+                and live_state.account_id
+                != trading_config.execution.live.expected_account_id
+            ):
+                _append_incident(
+                    incidents,
+                    severity="CRITICAL",
+                    category="live_safety",
+                    scope="startup",
+                    reason_code="LIVE_ACCOUNT_ID_MISMATCH",
+                    detail=(
+                        "Validated broker account does not match the configured live "
+                        f"account: expected="
+                        f"{trading_config.execution.live.expected_account_id} "
+                        f"validated={live_state.account_id}"
+                    ),
+                    updated_at=live_state.updated_at,
+                    reference_time=reference_time,
+                )
             if not live_state.live_enabled:
                 _append_incident(
                     incidents,
@@ -1464,6 +1676,119 @@ def _journal_reason_code(trace: DecisionTraceSnapshot) -> str | None:
     if trace.primary_reason_code is not None:
         return trace.primary_reason_code
     return trace.signal_reason_code
+
+
+def _live_strip_item(
+    label: str,
+    value: str,
+    *,
+    severity: str,
+    detail: str | None = None,
+) -> dict[str, str | None]:
+    return {
+        "label": label,
+        "value": value,
+        "severity": severity,
+        "detail": detail,
+    }
+
+
+def _resolve_live_submit_snapshot_state(  # pylint: disable=too-many-return-statements
+    *,
+    live_safety_state: LiveSafetySnapshot,
+    trading_config: PaperTradingConfig,
+) -> dict[str, Any]:
+    if (
+        live_safety_state.primary_block_reason_code is not None
+        or live_safety_state.can_submit_live_now
+    ):
+        return {
+            "can_submit_live_now": live_safety_state.can_submit_live_now,
+            "primary_block_reason_code": live_safety_state.primary_block_reason_code,
+            "block_detail": live_safety_state.block_detail,
+        }
+
+    expected_environment = trading_config.execution.live.expected_environment
+    expected_account_id = trading_config.execution.live.expected_account_id
+    if not live_safety_state.live_enabled:
+        return {
+            "can_submit_live_now": False,
+            "primary_block_reason_code": "LIVE_DISABLED",
+            "block_detail": "Live execution is configured but live_enabled is false.",
+        }
+    if (
+        live_safety_state.environment_name is not None
+        and live_safety_state.environment_name != expected_environment
+    ):
+        return {
+            "can_submit_live_now": False,
+            "primary_block_reason_code": "LIVE_ENVIRONMENT_MISMATCH",
+            "block_detail": (
+                "Validated broker environment does not match the configured live "
+                f"environment: expected={expected_environment} "
+                f"validated={live_safety_state.environment_name}"
+            ),
+        }
+    if (
+        expected_account_id is not None
+        and live_safety_state.account_id is not None
+        and live_safety_state.account_id != expected_account_id
+    ):
+        return {
+            "can_submit_live_now": False,
+            "primary_block_reason_code": "LIVE_ACCOUNT_ID_MISMATCH",
+            "block_detail": (
+                "Validated broker account does not match the configured live "
+                f"account: expected={expected_account_id} "
+                f"validated={live_safety_state.account_id}"
+            ),
+        }
+    if not live_safety_state.startup_checks_passed:
+        return {
+            "can_submit_live_now": False,
+            "primary_block_reason_code": "LIVE_STARTUP_CHECKS_NOT_PASSED",
+            "block_detail": "Startup safety validation has not passed.",
+        }
+    if live_safety_state.manual_disable_active:
+        return {
+            "can_submit_live_now": False,
+            "primary_block_reason_code": "LIVE_MANUAL_DISABLE_ACTIVE",
+            "block_detail": "Manual disable is active for guarded live trading.",
+        }
+    if live_safety_state.failure_hard_stop_active:
+        return {
+            "can_submit_live_now": False,
+            "primary_block_reason_code": "LIVE_FAILURE_HARD_STOP_ACTIVE",
+            "block_detail": (
+                live_safety_state.last_failure_reason or "Live failure hard-stop is active."
+            ),
+        }
+    if live_safety_state.reconciliation_status not in {None, "CLEAR"}:
+        return {
+            "can_submit_live_now": False,
+            "primary_block_reason_code": (
+                live_safety_state.reconciliation_reason_code or "LIVE_RECONCILIATION_BLOCKED"
+            ),
+            "block_detail": "Broker reconciliation is not clear for live submit.",
+        }
+    if live_safety_state.health_gate_status not in {None, "CLEAR"}:
+        return {
+            "can_submit_live_now": False,
+            "primary_block_reason_code": (
+                live_safety_state.health_gate_reason_code
+                or live_safety_state.system_health_reason_code
+                or "LIVE_SYSTEM_HEALTH_UNAVAILABLE"
+            ),
+            "block_detail": (
+                live_safety_state.health_gate_detail
+                or "Canonical live health gating is not clear."
+            ),
+        }
+    return {
+        "can_submit_live_now": True,
+        "primary_block_reason_code": None,
+        "block_detail": None,
+    }
 
 
 def _journal_outcome_category(trace: DecisionTraceSnapshot) -> str:

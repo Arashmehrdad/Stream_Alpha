@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -30,6 +31,7 @@ from dashboards.view_models import (
     build_feature_lag_rows,
     build_latest_blocked_trade_rows,
     build_reliability_status_rows,
+    build_live_critical_state_strip,
     build_operator_banner,
     build_operator_incident_rows,
     build_service_health_rows,
@@ -412,6 +414,7 @@ def test_live_status_rows_surface_guarded_live_fields() -> None:
     assert rows[0]["validated_environment"] == "paper"
     assert rows[0]["health_gate_status"] == "CLEAR"
     assert rows[0]["reconciliation_status"] == "CLEAR"
+    assert rows[0]["can_submit_live_now"] is True
     assert rows[0]["broker_cash"] == 1000.0
 
 
@@ -679,6 +682,114 @@ def test_operator_banner_and_incidents_prioritize_blocked_live_state() -> None:
     assert incidents[0]["reason_code"] == "MANUAL_DISABLE_ACTIVE"
     assert banner["safety_posture"] == "blocked"
     assert banner["severity"] == "error"
+
+
+def test_live_critical_state_strip_surfaces_blocking_reason() -> None:
+    checked_at = datetime(2026, 3, 21, 12, 0, tzinfo=timezone.utc)
+    snapshot = DashboardSnapshot(
+        api_health=ApiHealthSnapshot(
+            available=True,
+            checked_at=checked_at,
+            status="ok",
+            health_overall_status="HEALTHY",
+            reason_code="HEALTH_HEALTHY",
+        ),
+        signals=tuple(),
+        freshness=tuple(),
+        database=DatabaseSnapshot(
+            available=True,
+            checked_at=checked_at,
+            live_safety_state=LiveSafetySnapshot(
+                service_name="paper-trader",
+                execution_mode="live",
+                broker_name="alpaca",
+                live_enabled=True,
+                startup_checks_passed=True,
+                startup_checks_passed_at=checked_at,
+                account_validated=True,
+                account_id="PA12345",
+                environment_name="paper",
+                manual_disable_active=True,
+                consecutive_live_failures=0,
+                failure_hard_stop_active=False,
+                last_failure_reason=None,
+                health_gate_status="CLEAR",
+                reconciliation_status="CLEAR",
+                unresolved_incident_count=0,
+                primary_block_reason_code="LIVE_MANUAL_DISABLE_ACTIVE",
+                block_detail="Manual disable is active for guarded live trading.",
+                updated_at=checked_at,
+            ),
+        ),
+    )
+
+    strip = build_live_critical_state_strip(
+        snapshot=snapshot,
+        trading_config=_config(execution_mode="live"),
+        now=checked_at,
+    )
+
+    assert strip["visible"] is True
+    assert strip["primary_block_reason_code"] == "LIVE_MANUAL_DISABLE_ACTIVE"
+    assert strip["items"][0]["value"] == "NO"
+    assert strip["items"][4]["value"] == "ACTIVE"
+
+
+def test_operator_incidents_surface_account_environment_mismatch() -> None:
+    checked_at = datetime(2026, 3, 21, 12, 0, tzinfo=timezone.utc)
+    trading_config = replace(
+        _config(execution_mode="live"),
+        execution=replace(
+            _config(execution_mode="live").execution,
+            live=replace(
+                _config(execution_mode="live").execution.live,
+                expected_account_id="PA12345",
+            ),
+        ),
+    )
+    snapshot = DashboardSnapshot(
+        api_health=ApiHealthSnapshot(
+            available=True,
+            checked_at=checked_at,
+            status="ok",
+            health_overall_status="HEALTHY",
+            reason_code="HEALTH_HEALTHY",
+        ),
+        signals=tuple(),
+        freshness=tuple(),
+        database=DatabaseSnapshot(
+            available=True,
+            checked_at=checked_at,
+            live_safety_state=LiveSafetySnapshot(
+                service_name="paper-trader",
+                execution_mode="live",
+                broker_name="alpaca",
+                live_enabled=True,
+                startup_checks_passed=False,
+                startup_checks_passed_at=None,
+                account_validated=True,
+                account_id="WRONG-ACCOUNT",
+                environment_name="live",
+                manual_disable_active=False,
+                consecutive_live_failures=0,
+                failure_hard_stop_active=False,
+                last_failure_reason=None,
+                health_gate_status="CLEAR",
+                reconciliation_status="CLEAR",
+                unresolved_incident_count=0,
+                updated_at=checked_at,
+            ),
+        ),
+    )
+
+    incidents = build_operator_incident_rows(
+        snapshot=snapshot,
+        trading_config=trading_config,
+        now=checked_at,
+    )
+
+    reason_codes = [row["reason_code"] for row in incidents[:2]]
+    assert reason_codes == ["LIVE_ENVIRONMENT_MISMATCH", "LIVE_ACCOUNT_ID_MISMATCH"]
 
 
 def test_config_summary_shows_operator_facing_truth() -> None:

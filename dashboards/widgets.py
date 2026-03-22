@@ -79,6 +79,68 @@ def render_operator_banner(banner: dict[str, str | None]) -> None:
     )
 
 
+def render_live_critical_state_strip(strip: dict[str, object]) -> None:
+    """Render a compact always-visible live critical-state strip near the banner."""
+    if not bool(strip.get("visible")):
+        return
+
+    items = strip.get("items", [])
+    if not isinstance(items, list) or not items:
+        return
+
+    st.markdown("**Live Critical State**")
+    columns = st.columns(len(items))
+    for column, item in zip(columns, items):
+        severity = str(item.get("severity", "warning"))
+        theme = _BANNER_THEME.get(severity, _BANNER_THEME["warning"])
+        detail = item.get("detail")
+        detail_html = ""
+        if detail:
+            detail_html = (
+                f"<div style='margin-top:0.35rem; font-size:0.8rem; opacity:0.92;'>"
+                f"{detail}</div>"
+            )
+        column.markdown(
+            f"""
+            <div style="
+                background:{theme['background']};
+                border:1px solid {theme['border']};
+                border-radius:0.75rem;
+                padding:0.65rem 0.7rem;
+                min-height:6.2rem;
+                color:{theme['text']};
+                margin-bottom:0.5rem;
+            ">
+                <div style="font-size:0.75rem; opacity:0.92;">{item.get("label", "-")}</div>
+                <div style="font-size:1.05rem; font-weight:700; margin-top:0.15rem;">
+                    {item.get("value", "-")}
+                </div>
+                {detail_html}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    if strip.get("primary_block_reason_code"):
+        block_detail = strip.get("block_detail") or "Live submit is blocked."
+        st.markdown(
+            f"""
+            <div style="
+                background:{_BANNER_THEME['error']['background']};
+                border:1px solid {_BANNER_THEME['error']['border']};
+                border-radius:0.75rem;
+                padding:0.7rem 0.9rem;
+                color:{_BANNER_THEME['error']['text']};
+                margin-bottom:1rem;
+            ">
+                <strong>Primary live block</strong>: {strip['primary_block_reason_code']}<br>
+                <span style="font-size:0.9rem;">{block_detail}</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
 def render_summary_cards(*, title: str, items: list[dict[str, str]]) -> None:
     """Render a row of operator-friendly summary cards."""
     st.subheader(title)

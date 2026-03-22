@@ -20,6 +20,7 @@ from dashboards.view_models import (
     build_latest_blocked_trade_rows,
     build_latest_recovery_rows,
     build_latest_signal_rows,
+    build_live_critical_state_strip,
     build_live_status_rows,
     build_model_reference_rows,
     build_open_position_rows,
@@ -43,6 +44,7 @@ from dashboards.view_models import (
 from dashboards.widgets import (
     render_health_card,
     render_incidents_panel,
+    render_live_critical_state_strip,
     render_operator_banner,
     render_summary_cards,
     render_table,
@@ -133,6 +135,11 @@ def main() -> None:
         live_safety_state=snapshot.database.live_safety_state,
         now=reference_time,
     )
+    live_critical_strip = build_live_critical_state_strip(
+        snapshot=snapshot,
+        trading_config=trading_config,
+        now=reference_time,
+    )
     recent_decision_trace_rows = build_recent_decision_trace_rows(
         snapshot.database.recent_decision_traces,
         now=reference_time,
@@ -177,6 +184,7 @@ def main() -> None:
     trader_freshness = build_trader_freshness(snapshot.database.engine_states)
 
     render_operator_banner(banner)
+    render_live_critical_state_strip(live_critical_strip)
     render_summary_cards(
         title="Venue and Environment",
         items=_venue_summary_cards(venue_rows[0]),

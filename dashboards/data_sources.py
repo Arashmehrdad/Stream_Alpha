@@ -217,6 +217,9 @@ class LiveSafetySnapshot:
     reconciliation_reason_code: str | None = None
     reconciliation_checked_at: datetime | None = None
     unresolved_incident_count: int = 0
+    can_submit_live_now: bool = False
+    primary_block_reason_code: str | None = None
+    block_detail: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1389,6 +1392,15 @@ def _live_safety_from_row(row: Mapping[str, Any]) -> LiveSafetySnapshot:
         ),
         reconciliation_checked_at=row.get("reconciliation_checked_at"),
         unresolved_incident_count=int(row.get("unresolved_incident_count", 0)),
+        can_submit_live_now=bool(row.get("can_submit_live_now", False)),
+        primary_block_reason_code=(
+            None
+            if row.get("primary_block_reason_code") is None
+            else str(row.get("primary_block_reason_code"))
+        ),
+        block_detail=(
+            None if row.get("block_detail") is None else str(row.get("block_detail"))
+        ),
     )
 
 

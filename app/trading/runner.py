@@ -49,6 +49,7 @@ from app.trading.execution import (
     build_pending_order_request,
 )
 from app.trading.live import (
+    derive_live_submit_state,
     LIVE_HEALTH_GATE_CLEAR,
     LIVE_RECONCILIATION_BROKER_UNAVAILABLE,
     LIVE_RECONCILIATION_CLEAR,
@@ -139,6 +140,11 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
                 failure_hard_stop_active=existing_live_state.failure_hard_stop_active,
                 last_failure_reason=existing_live_state.last_failure_reason,
             )
+        live_safety_state = derive_live_submit_state(
+            state=live_safety_state,
+            expected_account_id=self.config.execution.live.expected_account_id,
+            expected_environment=self.config.execution.live.expected_environment,
+        )
         self.live_safety_state = live_safety_state
         self.live_safety_state = await self._refresh_live_reconciliation(
             open_positions=await self.repository.load_open_positions(
@@ -733,6 +739,11 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
                 state=self.live_safety_state,
                 reason_code=LIVE_RECONCILIATION_BROKER_UNAVAILABLE,
             )
+            updated_state = derive_live_submit_state(
+                state=updated_state,
+                expected_account_id=self.config.execution.live.expected_account_id,
+                expected_environment=self.config.execution.live.expected_environment,
+            )
             await self._record_live_reconciliation_events(
                 previous_state=self.live_safety_state,
                 updated_state=updated_state,
@@ -749,6 +760,11 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
             updated_state = mark_live_reconciliation_unavailable(
                 state=self.live_safety_state,
                 reason_code=LIVE_RECONCILIATION_BROKER_UNAVAILABLE,
+            )
+            updated_state = derive_live_submit_state(
+                state=updated_state,
+                expected_account_id=self.config.execution.live.expected_account_id,
+                expected_environment=self.config.execution.live.expected_environment,
             )
             await self._record_live_reconciliation_events(
                 previous_state=self.live_safety_state,
@@ -770,6 +786,11 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
             broker_positions=broker_positions,
             local_order_events=local_order_events,
             local_open_positions=open_positions,
+        )
+        updated_state = derive_live_submit_state(
+            state=updated_state,
+            expected_account_id=self.config.execution.live.expected_account_id,
+            expected_environment=self.config.execution.live.expected_environment,
         )
         await self._record_live_reconciliation_events(
             previous_state=self.live_safety_state,
@@ -809,6 +830,11 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
             signal=signal,
             candle=candle,
             order_request=order_request,
+        )
+        updated_state = derive_live_submit_state(
+            state=updated_state,
+            expected_account_id=self.config.execution.live.expected_account_id,
+            expected_environment=self.config.execution.live.expected_environment,
         )
         await self._record_live_health_gate_events(
             previous_state=self.live_safety_state,

@@ -386,6 +386,9 @@ def test_dashboard_snapshot_includes_live_safety_state_when_present() -> None:
                     "reconciliation_reason_code": "RECONCILIATION_CLEAR",
                     "reconciliation_checked_at": datetime(2026, 3, 21, 12, 0, tzinfo=timezone.utc),
                     "unresolved_incident_count": 0,
+                    "can_submit_live_now": True,
+                    "primary_block_reason_code": None,
+                    "block_detail": None,
                     "updated_at": datetime(2026, 3, 21, 12, 0, tzinfo=timezone.utc),
                 }
             return None
@@ -409,6 +412,8 @@ def test_dashboard_snapshot_includes_live_safety_state_when_present() -> None:
     assert snapshot.database.live_safety_state.account_id == "PA12345"
     assert snapshot.database.live_safety_state.health_gate_status == "CLEAR"
     assert snapshot.database.live_safety_state.reconciliation_status == "CLEAR"
+    assert snapshot.database.live_safety_state.can_submit_live_now is True
+    assert snapshot.database.live_safety_state.primary_block_reason_code is None
     assert snapshot.database.live_safety_state.broker_cash == 1000.0
 
 

@@ -27,7 +27,11 @@ from app.trading.config import (
 )
 from app.trading.execution import LiveExecutionAdapter, build_order_request
 from app.trading.live import (
+    derive_live_submit_state,
+    LIVE_ACCOUNT_ID_MISMATCH,
     LIVE_CONFIRMATION_PHRASE,
+    LIVE_ENVIRONMENT_MISMATCH,
+    LIVE_FAILURE_HARD_STOP_ACTIVE,
     LIVE_HEALTH_GATE_CLEAR,
     LIVE_MANUAL_DISABLE_ACTIVE,
     LIVE_MAX_ORDER_NOTIONAL_EXCEEDED,
@@ -356,6 +360,62 @@ def _order_request(config: PaperTradingConfig, *, approved_notional: float = 10.
     assert order_request is not None
     assert order_request.target_fill_interval_begin == due_candle.interval_begin
     return replace(order_request, order_request_id=1)
+
+
+def test_derive_live_submit_state_blocks_on_account_mismatch(tmp_path: Path) -> None:
+    config = _live_config(tmp_path)
+    derived = derive_live_submit_state(
+        state=_live_safety_state(),
+        expected_account_id="WRONG-ACCOUNT",
+        expected_environment=config.execution.live.expected_environment,
+    )
+
+    assert derived.can_submit_live_now is False
+    assert derived.primary_block_reason_code == LIVE_ACCOUNT_ID_MISMATCH
+    assert "WRONG-ACCOUNT" in (derived.block_detail or "")
+
+
+def test_derive_live_submit_state_blocks_on_environment_mismatch(tmp_path: Path) -> None:
+    config = _live_config(tmp_path)
+    derived = derive_live_submit_state(
+        state=_live_safety_state(environment_name="live"),
+        expected_account_id=config.execution.live.expected_account_id,
+        expected_environment=config.execution.live.expected_environment,
+    )
+
+    assert derived.can_submit_live_now is False
+    assert derived.primary_block_reason_code == LIVE_ENVIRONMENT_MISMATCH
+    assert "validated=live" in (derived.block_detail or "")
+
+
+def test_derive_live_submit_state_blocks_when_health_gate_not_clear(tmp_path: Path) -> None:
+    config = _live_config(tmp_path)
+    derived = derive_live_submit_state(
+        state=_live_safety_state(
+            health_gate_status="DEGRADED",
+            health_gate_reason_code="FEATURE_LAG_BREACH",
+        ),
+        expected_account_id=config.execution.live.expected_account_id,
+        expected_environment=config.execution.live.expected_environment,
+    )
+
+    assert derived.can_submit_live_now is False
+    assert derived.primary_block_reason_code == "FEATURE_LAG_BREACH"
+
+
+def test_derive_live_submit_state_blocks_when_reconciliation_not_clear(tmp_path: Path) -> None:
+    config = _live_config(tmp_path)
+    derived = derive_live_submit_state(
+        state=_live_safety_state(
+            reconciliation_status="BLOCKED",
+            reconciliation_reason_code=LIVE_RECONCILIATION_ORPHAN_POSITION,
+        ),
+        expected_account_id=config.execution.live.expected_account_id,
+        expected_environment=config.execution.live.expected_environment,
+    )
+
+    assert derived.can_submit_live_now is False
+    assert derived.primary_block_reason_code == LIVE_RECONCILIATION_ORPHAN_POSITION
 
 
 class FakeBrokerClient:
@@ -706,9 +766,16 @@ def test_paper_probe_policy_activates_only_in_paper_environment(tmp_path: Path) 
 
     live_broker_client = FakeBrokerClient()
     live_adapter = LiveExecutionAdapter(broker_client=live_broker_client)
+    live_environment_config = replace(
+        config,
+        execution=replace(
+            config.execution,
+            live=replace(config.execution.live, expected_environment="live"),
+        ),
+    )
     live_result = asyncio.run(
         live_adapter.execute_candle(
-            config=config,
+            config=live_environment_config,
             candle=_candle(1),
             state=_pending_state(candle=_candle(1), order_request=order_request),
             open_position=None,
@@ -1193,6 +1260,33 @@ def test_manual_disable_blocks_live_submit(tmp_path: Path) -> None:
     assert result.live_safety_state.manual_disable_active is True
 
 
+def test_failure_hard_stop_blocks_live_submit(tmp_path: Path) -> None:
+    config = _live_config(tmp_path)
+    order_request = _order_request(config)
+    broker_client = FakeBrokerClient()
+    adapter = LiveExecutionAdapter(broker_client=broker_client)
+    result = asyncio.run(
+        adapter.execute_candle(
+            config=config,
+            candle=_candle(1),
+            state=_pending_state(candle=_candle(1), order_request=order_request),
+            open_position=None,
+            signal=_hold_signal(_candle(1).interval_begin),
+            portfolio=_portfolio(),
+            order_request=order_request,
+            live_safety_state=_live_safety_state(
+                consecutive_live_failures=2,
+                failure_hard_stop_active=True,
+            ),
+        )
+    )
+
+    assert broker_client.submit_calls == []
+    assert result.lifecycle_events[0].reason_code == LIVE_FAILURE_HARD_STOP_ACTIVE
+    assert result.live_safety_state is not None
+    assert result.live_safety_state.failure_hard_stop_active is True
+
+
 def test_non_whitelisted_symbol_blocks_live_submit(tmp_path: Path) -> None:
     config = _live_config(tmp_path, symbol_whitelist=("ETH/USD",))
     order_request = _order_request(config)
@@ -1533,7 +1627,32 @@ def test_live_status_artifact_writing(tmp_path: Path) -> None:
     assert payload["max_order_notional"] == config.execution.live.max_order_notional
     assert payload["health_gate_status"] == "CLEAR"
     assert payload["system_health_status"] == "HEALTHY"
+    assert payload["can_submit_live_now"] is True
+    assert payload["primary_block_reason_code"] is None
+    assert payload["block_detail"] is None
     assert payload["portfolio_truth_source"] == "BROKER_RECONCILIATION_ONLY"
     assert "lifecycle events only" in payload["order_submit_contract"]
     assert payload["cross_venue_context"]["venue_mismatch"] is True
     assert payload["canonical_system_health"]["health_overall_status"] == "HEALTHY"
+
+
+def test_live_status_artifact_writing_surfaces_primary_block_reason(tmp_path: Path) -> None:
+    config = _live_config(tmp_path)
+    state = _live_safety_state(
+        manual_disable_active=True,
+        health_gate_status="BLOCKED",
+        health_gate_reason_code=LIVE_SIGNAL_STALE,
+    )
+
+    write_live_status_artifact(
+        state=state,
+        config=config,
+        system_reliability=_system_reliability(),
+    )
+
+    payload = json.loads(
+        Path(config.execution.live.live_status_path).read_text(encoding="utf-8")
+    )
+    assert payload["can_submit_live_now"] is False
+    assert payload["primary_block_reason_code"] == LIVE_MANUAL_DISABLE_ACTIVE
+    assert "Manual disable" in payload["block_detail"]

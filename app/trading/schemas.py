@@ -336,6 +336,9 @@ class LiveSafetyState:
     reconciliation_reason_code: str | None = None
     reconciliation_checked_at: datetime | None = None
     unresolved_incident_count: int = 0
+    can_submit_live_now: bool = False
+    primary_block_reason_code: str | None = None
+    block_detail: str | None = None
     updated_at: datetime | None = None
 
 

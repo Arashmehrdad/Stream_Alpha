@@ -11,9 +11,8 @@ from app.trading.alpaca import AlpacaClientError, AlpacaOrderConstraintError
 from app.trading.config import PaperTradingConfig
 from app.trading.engine import process_candle
 from app.trading.live import (
+    derive_live_submit_state,
     LIVE_BROKER_SUBMIT_FAILED,
-    LIVE_FAILURE_HARD_STOP_ACTIVE,
-    LIVE_MANUAL_DISABLE_ACTIVE,
     LIVE_MAX_ORDER_NOTIONAL_EXCEEDED,
     LIVE_ORDER_ACCEPTED,
     LIVE_ORDER_CANCELED,
@@ -26,14 +25,12 @@ from app.trading.live import (
     LIVE_PAPER_PROBE_MAX_ORDERS_PER_RUN_REACHED,
     LIVE_PAPER_PROBE_MIN_ORDER_VALUE_REQUIRED,
     LIVE_PAPER_PROBE_SYMBOL_NOT_WHITELISTED,
-    LIVE_RECONCILIATION_BLOCKED,
     LIVE_SIGNAL_STALE,
-    LIVE_STARTUP_CHECKS_NOT_PASSED,
-    LIVE_SYSTEM_HEALTH_UNAVAILABLE,
     LIVE_SYMBOL_NOT_WHITELISTED,
     record_live_failure,
     record_live_success,
     refresh_manual_disable_state,
+    resolve_live_submit_gate,
 )
 from app.trading.schemas import (
     BrokerAccount,
@@ -411,6 +408,11 @@ class LiveExecutionAdapter:  # pylint: disable=too-few-public-methods
             state=live_safety_state,
             manual_disable_path=config.execution.live.manual_disable_path,
         )
+        refreshed_live_state = derive_live_submit_state(
+            state=refreshed_live_state,
+            expected_account_id=config.execution.live.expected_account_id,
+            expected_environment=config.execution.live.expected_environment,
+        )
         if order_request is None:
             return ExecutionResult(
                 state=_advance_state(state=state, candle=candle, clear_pending=False),
@@ -593,23 +595,13 @@ def _live_precheck_failure(
     order_request: OrderRequest,
     live_safety_state: LiveSafetyState,
 ) -> str | None:
-    if not live_safety_state.startup_checks_passed:
-        return LIVE_STARTUP_CHECKS_NOT_PASSED
-    if live_safety_state.manual_disable_active:
-        return LIVE_MANUAL_DISABLE_ACTIVE
-    if live_safety_state.failure_hard_stop_active:
-        return LIVE_FAILURE_HARD_STOP_ACTIVE
-    if live_safety_state.reconciliation_status != "CLEAR":
-        return (
-            live_safety_state.reconciliation_reason_code
-            or LIVE_RECONCILIATION_BLOCKED
-        )
-    if live_safety_state.health_gate_status != "CLEAR":
-        return (
-            live_safety_state.health_gate_reason_code
-            or live_safety_state.system_health_reason_code
-            or LIVE_SYSTEM_HEALTH_UNAVAILABLE
-        )
+    gate_reason_code, _gate_detail = resolve_live_submit_gate(
+        state=live_safety_state,
+        expected_account_id=config.execution.live.expected_account_id,
+        expected_environment=config.execution.live.expected_environment,
+    )
+    if gate_reason_code is not None:
+        return gate_reason_code
     if order_request.target_fill_interval_begin < candle.interval_begin:
         return LIVE_SIGNAL_STALE
     if order_request.symbol not in config.execution.live.symbol_whitelist:
@@ -838,12 +830,20 @@ def _next_live_state_after_submit(
     mapped_state: str,
 ) -> LiveSafetyState:
     if mapped_state in {"REJECTED", "CANCELED", "FAILED"}:
-        return record_live_failure(
-            state=state,
-            threshold=config.execution.live.failure_hard_stop_threshold,
-            reason_code=reason_code,
+        return derive_live_submit_state(
+            state=record_live_failure(
+                state=state,
+                threshold=config.execution.live.failure_hard_stop_threshold,
+                reason_code=reason_code,
+            ),
+            expected_account_id=config.execution.live.expected_account_id,
+            expected_environment=config.execution.live.expected_environment,
         )
-    return record_live_success(state)
+    return derive_live_submit_state(
+        state=record_live_success(state),
+        expected_account_id=config.execution.live.expected_account_id,
+        expected_environment=config.execution.live.expected_environment,
+    )
 
 
 # pylint: disable=too-many-return-statements

@@ -29,6 +29,9 @@ from app.trading.schemas import (
 
 ALPACA_BROKER_NAME = "alpaca"
 LIVE_CONFIRMATION_PHRASE = "I UNDERSTAND STREAM ALPHA LIVE TRADING IS ENABLED"
+LIVE_DISABLED = "LIVE_DISABLED"
+LIVE_ACCOUNT_ID_MISMATCH = "LIVE_ACCOUNT_ID_MISMATCH"
+LIVE_ENVIRONMENT_MISMATCH = "LIVE_ENVIRONMENT_MISMATCH"
 LIVE_NOT_ARMED = "LIVE_NOT_ARMED"
 LIVE_CONFIRMATION_MISMATCH = "LIVE_CONFIRMATION_MISMATCH"
 LIVE_STARTUP_CHECKS_NOT_PASSED = "LIVE_STARTUP_CHECKS_NOT_PASSED"
@@ -78,6 +81,83 @@ class LiveReconciliationIncident:
 
 class LiveStartupValidationError(RuntimeError):
     """Raised when M12 live startup validation fails."""
+
+
+def resolve_live_submit_gate(  # pylint: disable=too-many-return-statements
+    *,
+    state: LiveSafetyState,
+    expected_account_id: str | None = None,
+    expected_environment: str | None = None,
+) -> tuple[str | None, str | None]:
+    """Resolve the operator-facing live submit gate from existing live truth."""
+    if not state.live_enabled:
+        return (
+            LIVE_DISABLED,
+            "Live execution is configured but live_enabled is false.",
+        )
+    if expected_environment is not None and state.environment_name is not None:
+        if state.environment_name != expected_environment:
+            return (
+                LIVE_ENVIRONMENT_MISMATCH,
+                "Validated broker environment does not match the configured live "
+                f"environment: expected={expected_environment} "
+                f"validated={state.environment_name}",
+            )
+    if expected_account_id is not None and state.account_id is not None:
+        if state.account_id != expected_account_id:
+            return (
+                LIVE_ACCOUNT_ID_MISMATCH,
+                "Validated broker account does not match the configured live "
+                f"account: expected={expected_account_id} validated={state.account_id}",
+            )
+    if not state.startup_checks_passed:
+        return (
+            LIVE_STARTUP_CHECKS_NOT_PASSED,
+            "Startup safety validation has not passed.",
+        )
+    if state.manual_disable_active:
+        return (
+            LIVE_MANUAL_DISABLE_ACTIVE,
+            "Manual disable is active for guarded live trading.",
+        )
+    if state.failure_hard_stop_active:
+        return (
+            LIVE_FAILURE_HARD_STOP_ACTIVE,
+            state.last_failure_reason or "Live failure hard-stop is active.",
+        )
+    if state.reconciliation_status != "CLEAR":
+        return (
+            state.reconciliation_reason_code or LIVE_RECONCILIATION_BLOCKED,
+            "Broker reconciliation is not clear for live submit.",
+        )
+    if state.health_gate_status != "CLEAR":
+        return (
+            state.health_gate_reason_code
+            or state.system_health_reason_code
+            or LIVE_SYSTEM_HEALTH_UNAVAILABLE,
+            state.health_gate_detail or "Canonical live health gating is not clear.",
+        )
+    return None, None
+
+
+def derive_live_submit_state(
+    *,
+    state: LiveSafetyState,
+    expected_account_id: str | None = None,
+    expected_environment: str | None = None,
+) -> LiveSafetyState:
+    """Attach the canonical operator-facing live submit state to persisted safety state."""
+    reason_code, block_detail = resolve_live_submit_gate(
+        state=state,
+        expected_account_id=expected_account_id,
+        expected_environment=expected_environment,
+    )
+    return replace(
+        state,
+        can_submit_live_now=reason_code is None,
+        primary_block_reason_code=reason_code,
+        block_detail=block_detail,
+    )
 
 
 def is_runtime_live_enabled() -> bool:
@@ -307,6 +387,11 @@ async def validate_live_startup(  # pylint: disable=too-many-locals,too-many-sta
         broker_cash=broker_cash,
         broker_equity=broker_equity,
         updated_at=checked_at,
+    )
+    state = derive_live_submit_state(
+        state=state,
+        expected_account_id=live_config.expected_account_id,
+        expected_environment=live_config.expected_environment,
     )
     checklist = LiveStartupChecklist(
         service_name=config.service_name,
@@ -624,31 +709,38 @@ def write_live_status_artifact(
 ) -> None:
     """Write the current guarded-live safety status artifact."""
     live_config = config.execution.live
+    resolved_state = derive_live_submit_state(
+        state=state,
+        expected_account_id=live_config.expected_account_id,
+        expected_environment=live_config.expected_environment,
+    )
     payload = {
-        "service_name": state.service_name,
-        "execution_mode": state.execution_mode,
-        "broker_name": state.broker_name,
-        "live_enabled": state.live_enabled,
-        "startup_checks_passed": state.startup_checks_passed,
+        "service_name": resolved_state.service_name,
+        "execution_mode": resolved_state.execution_mode,
+        "broker_name": resolved_state.broker_name,
+        "live_enabled": resolved_state.live_enabled,
+        "startup_checks_passed": resolved_state.startup_checks_passed,
         "startup_checks_passed_at": (
             None
-            if state.startup_checks_passed_at is None
-            else to_rfc3339(state.startup_checks_passed_at)
+            if resolved_state.startup_checks_passed_at is None
+            else to_rfc3339(resolved_state.startup_checks_passed_at)
         ),
-        "account_validated": state.account_validated,
-        "account_id": state.account_id,
-        "environment_name": state.environment_name,
-        "broker_cash": state.broker_cash,
-        "broker_equity": state.broker_equity,
+        "account_validated": resolved_state.account_validated,
+        "account_id": resolved_state.account_id,
+        "environment_name": resolved_state.environment_name,
+        "broker_cash": resolved_state.broker_cash,
+        "broker_equity": resolved_state.broker_equity,
         "expected_account_id": live_config.expected_account_id,
         "expected_environment": live_config.expected_environment,
         "research_source_exchange": config.source_exchange,
-        "execution_broker_name": state.broker_name,
+        "execution_broker_name": resolved_state.broker_name,
         "cross_venue_context": {
             "data_venue": config.source_exchange,
-            "execution_venue": state.broker_name,
-            "execution_environment": state.environment_name,
-            "venue_mismatch": config.source_exchange.lower() != state.broker_name.lower(),
+            "execution_venue": resolved_state.broker_name,
+            "execution_environment": resolved_state.environment_name,
+            "venue_mismatch": (
+                config.source_exchange.lower() != resolved_state.broker_name.lower()
+            ),
         },
         "order_submit_contract": (
             "Broker submit success records lifecycle events only; local portfolio "
@@ -658,36 +750,41 @@ def write_live_status_artifact(
         "portfolio_truth_source": "BROKER_RECONCILIATION_ONLY",
         "symbol_whitelist": list(live_config.symbol_whitelist),
         "max_order_notional": live_config.max_order_notional,
-        "manual_disable_active": state.manual_disable_active,
+        "manual_disable_active": resolved_state.manual_disable_active,
         "manual_disable_path": live_config.manual_disable_path,
-        "consecutive_live_failures": state.consecutive_live_failures,
-        "failure_hard_stop_active": state.failure_hard_stop_active,
+        "consecutive_live_failures": resolved_state.consecutive_live_failures,
+        "failure_hard_stop_active": resolved_state.failure_hard_stop_active,
         "failure_hard_stop_threshold": live_config.failure_hard_stop_threshold,
-        "last_failure_reason": state.last_failure_reason,
-        "system_health_status": state.system_health_status,
-        "system_health_reason_code": state.system_health_reason_code,
+        "last_failure_reason": resolved_state.last_failure_reason,
+        "can_submit_live_now": resolved_state.can_submit_live_now,
+        "primary_block_reason_code": resolved_state.primary_block_reason_code,
+        "block_detail": resolved_state.block_detail,
+        "system_health_status": resolved_state.system_health_status,
+        "system_health_reason_code": resolved_state.system_health_reason_code,
         "system_health_checked_at": (
             None
-            if state.system_health_checked_at is None
-            else to_rfc3339(state.system_health_checked_at)
+            if resolved_state.system_health_checked_at is None
+            else to_rfc3339(resolved_state.system_health_checked_at)
         ),
-        "health_gate_status": state.health_gate_status,
-        "health_gate_reason_code": state.health_gate_reason_code,
-        "health_gate_detail": state.health_gate_detail,
-        "reconciliation_status": state.reconciliation_status,
-        "reconciliation_reason_code": state.reconciliation_reason_code,
+        "health_gate_status": resolved_state.health_gate_status,
+        "health_gate_reason_code": resolved_state.health_gate_reason_code,
+        "health_gate_detail": resolved_state.health_gate_detail,
+        "reconciliation_status": resolved_state.reconciliation_status,
+        "reconciliation_reason_code": resolved_state.reconciliation_reason_code,
         "reconciliation_checked_at": (
             None
-            if state.reconciliation_checked_at is None
-            else to_rfc3339(state.reconciliation_checked_at)
+            if resolved_state.reconciliation_checked_at is None
+            else to_rfc3339(resolved_state.reconciliation_checked_at)
         ),
-        "unresolved_incident_count": state.unresolved_incident_count,
+        "unresolved_incident_count": resolved_state.unresolved_incident_count,
         "canonical_system_health": (
             None
             if system_reliability is None
             else make_json_safe(asdict(system_reliability))
         ),
-        "updated_at": None if state.updated_at is None else to_rfc3339(state.updated_at),
+        "updated_at": (
+            None if resolved_state.updated_at is None else to_rfc3339(resolved_state.updated_at)
+        ),
     }
     _write_json(Path(live_config.live_status_path), payload)
 
