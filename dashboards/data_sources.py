@@ -67,6 +67,10 @@ class ApiHealthSnapshot:
     health_overall_status: str | None = None
     reason_code: str | None = None
     freshness_status: str | None = None
+    active_alert_count: int | None = None
+    max_alert_severity: str | None = None
+    startup_safety_status: str | None = None
+    startup_safety_reason_code: str | None = None
     error: str | None = None
 
 
@@ -310,6 +314,110 @@ class SystemReliabilitySnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class ActiveAlertSnapshot:
+    """Current active M17 alert state from the API."""
+
+    fingerprint: str
+    service_name: str
+    execution_mode: str
+    category: str
+    severity: str
+    reason_code: str
+    source_component: str
+    is_active: bool
+    opened_at: datetime
+    last_seen_at: datetime
+    symbol: str | None = None
+    last_event_id: int | None = None
+    occurrence_count: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class ActiveAlertsSnapshot:
+    """Read-only M17 active-alert collection from the API."""
+
+    available: bool
+    checked_at: datetime
+    items: tuple[ActiveAlertSnapshot, ...] = field(default_factory=tuple)
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AlertTimelineEventSnapshot:
+    """Canonical M17 timeline event from the API."""
+
+    event_id: int | None
+    service_name: str
+    execution_mode: str
+    category: str
+    severity: str
+    event_state: str
+    reason_code: str
+    source_component: str
+    fingerprint: str
+    summary_text: str
+    event_time: datetime
+    symbol: str | None = None
+    detail: str | None = None
+    related_order_request_id: int | None = None
+    related_decision_trace_id: int | None = None
+    payload_json: dict[str, Any] = field(default_factory=dict)
+    created_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AlertTimelineSnapshot:
+    """Read-only M17 timeline collection from the API."""
+
+    available: bool
+    checked_at: datetime
+    items: tuple[AlertTimelineEventSnapshot, ...] = field(default_factory=tuple)
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class StartupSafetySnapshot:
+    """Canonical M17 startup-safety artifact snapshot from the API."""
+
+    available: bool
+    checked_at: datetime
+    generated_at: datetime | None = None
+    service_name: str | None = None
+    execution_mode: str | None = None
+    runtime_profile: str | None = None
+    startup_safety_passed: bool | None = None
+    primary_reason_code: str | None = None
+    summary_text: str | None = None
+    startup_report_path: str | None = None
+    startup_validation_passed: bool | None = None
+    live_startup_reason_code: str | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DailyOperationsSummarySnapshot:
+    """Canonical M17 daily operations summary artifact snapshot from the API."""
+
+    available: bool
+    checked_at: datetime
+    generated_at: datetime | None = None
+    service_name: str | None = None
+    execution_mode: str | None = None
+    runtime_profile: str | None = None
+    summary_date: str | None = None
+    unresolved_count: int | None = None
+    highest_severity: str | None = None
+    counts_by_category: dict[str, int] = field(default_factory=dict)
+    startup_safety_status: dict[str, Any] = field(default_factory=dict)
+    order_failure_counts: dict[str, Any] = field(default_factory=dict)
+    drawdown_state: dict[str, Any] = field(default_factory=dict)
+    actionable_signal_counts: dict[str, Any] = field(default_factory=dict)
+    silence_flood_episodes: dict[str, int] = field(default_factory=dict)
+    live_mode_activation_count: int | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class EngineStateSnapshot:
     """Persisted per-symbol paper-trading engine state."""
 
@@ -381,6 +489,38 @@ class DatabaseSnapshot:
     error: str | None = None
 
 
+def _default_active_alerts_snapshot() -> ActiveAlertsSnapshot:
+    return ActiveAlertsSnapshot(
+        available=False,
+        checked_at=utc_now(),
+        error="M17 active alert snapshot unavailable",
+    )
+
+
+def _default_alert_timeline_snapshot() -> AlertTimelineSnapshot:
+    return AlertTimelineSnapshot(
+        available=False,
+        checked_at=utc_now(),
+        error="M17 alert timeline snapshot unavailable",
+    )
+
+
+def _default_startup_safety_snapshot() -> StartupSafetySnapshot:
+    return StartupSafetySnapshot(
+        available=False,
+        checked_at=utc_now(),
+        error="M17 startup safety snapshot unavailable",
+    )
+
+
+def _default_daily_operations_summary_snapshot() -> DailyOperationsSummarySnapshot:
+    return DailyOperationsSummarySnapshot(
+        available=False,
+        checked_at=utc_now(),
+        error="M17 daily operations summary unavailable",
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class DashboardSnapshot:
     """Combined API and database state used by the Streamlit app."""
@@ -390,6 +530,12 @@ class DashboardSnapshot:
     freshness: tuple[FreshnessSnapshot, ...]
     database: DatabaseSnapshot
     system_reliability: SystemReliabilitySnapshot | None = None
+    active_alerts: ActiveAlertsSnapshot = field(default_factory=_default_active_alerts_snapshot)
+    alert_timeline: AlertTimelineSnapshot = field(default_factory=_default_alert_timeline_snapshot)
+    startup_safety: StartupSafetySnapshot = field(default_factory=_default_startup_safety_snapshot)
+    daily_operations_summary: DailyOperationsSummarySnapshot = field(
+        default_factory=_default_daily_operations_summary_snapshot
+    )
 
 
 class DashboardDataSources:
@@ -430,6 +576,10 @@ class DashboardDataSources:
     async def _load_with_http_client(self, http_client: Any) -> DashboardSnapshot:
         api_health = await self._load_api_health(http_client)
         system_reliability = await self._load_system_reliability(http_client)
+        active_alerts = await self._load_active_alerts(http_client)
+        alert_timeline = await self._load_alert_timeline(http_client)
+        startup_safety = await self._load_startup_safety(http_client)
+        daily_operations_summary = await self._load_daily_operations_summary(http_client)
         signals = await self._load_signals(http_client)
         freshness = await self._load_freshness(http_client)
         database = await self._load_database_snapshot()
@@ -439,6 +589,10 @@ class DashboardDataSources:
             freshness=freshness,
             database=database,
             system_reliability=system_reliability,
+            active_alerts=active_alerts,
+            alert_timeline=alert_timeline,
+            startup_safety=startup_safety,
+            daily_operations_summary=daily_operations_summary,
         )
 
     async def _load_api_health(self, http_client: Any) -> ApiHealthSnapshot:
@@ -502,6 +656,26 @@ class DashboardDataSources:
                 if payload.get("freshness_status") is None
                 else str(payload["freshness_status"])
             ),
+            active_alert_count=(
+                None
+                if payload.get("active_alert_count") is None
+                else int(payload["active_alert_count"])
+            ),
+            max_alert_severity=(
+                None
+                if payload.get("max_alert_severity") is None
+                else str(payload["max_alert_severity"])
+            ),
+            startup_safety_status=(
+                None
+                if payload.get("startup_safety_status") is None
+                else str(payload["startup_safety_status"])
+            ),
+            startup_safety_reason_code=(
+                None
+                if payload.get("startup_safety_reason_code") is None
+                else str(payload["startup_safety_reason_code"])
+            ),
             error=None if response.status_code == 200 else f"HTTP {response.status_code}",
         )
 
@@ -517,8 +691,98 @@ class DashboardDataSources:
                 available=False,
                 checked_at=checked_at,
                 error=str(error),
-            )
+        )
         return _system_reliability_from_payload(payload=payload, checked_at=checked_at)
+
+    async def _load_active_alerts(self, http_client: Any) -> ActiveAlertsSnapshot:
+        checked_at = utc_now()
+        try:
+            response = await http_client.get("/alerts/active")
+            if response.status_code != 200:
+                raise RuntimeError(f"HTTP {response.status_code}")
+            payload = response.json()
+            if not isinstance(payload, list):
+                raise ValueError("`/alerts/active` payload must be a list")
+        except Exception as error:  # pylint: disable=broad-exception-caught
+            return ActiveAlertsSnapshot(
+                available=False,
+                checked_at=checked_at,
+                error=str(error),
+            )
+        return ActiveAlertsSnapshot(
+            available=True,
+            checked_at=checked_at,
+            items=tuple(
+                _active_alert_from_payload(item)
+                for item in payload
+                if isinstance(item, Mapping)
+            ),
+        )
+
+    async def _load_alert_timeline(self, http_client: Any) -> AlertTimelineSnapshot:
+        checked_at = utc_now()
+        try:
+            response = await http_client.get("/alerts/timeline", params={"limit": 50})
+            if response.status_code != 200:
+                raise RuntimeError(f"HTTP {response.status_code}")
+            payload = response.json()
+            if not isinstance(payload, list):
+                raise ValueError("`/alerts/timeline` payload must be a list")
+        except Exception as error:  # pylint: disable=broad-exception-caught
+            return AlertTimelineSnapshot(
+                available=False,
+                checked_at=checked_at,
+                error=str(error),
+            )
+        return AlertTimelineSnapshot(
+            available=True,
+            checked_at=checked_at,
+            items=tuple(
+                _alert_timeline_event_from_payload(item)
+                for item in payload
+                if isinstance(item, Mapping)
+            ),
+        )
+
+    async def _load_startup_safety(self, http_client: Any) -> StartupSafetySnapshot:
+        checked_at = utc_now()
+        try:
+            response = await http_client.get("/operations/startup-safety")
+            if response.status_code != 200:
+                raise RuntimeError(f"HTTP {response.status_code}")
+            payload = response.json()
+            if not isinstance(payload, Mapping):
+                raise ValueError("`/operations/startup-safety` payload must be a mapping")
+        except Exception as error:  # pylint: disable=broad-exception-caught
+            return StartupSafetySnapshot(
+                available=False,
+                checked_at=checked_at,
+                error=str(error),
+            )
+        return _startup_safety_from_payload(payload=payload, checked_at=checked_at)
+
+    async def _load_daily_operations_summary(
+        self,
+        http_client: Any,
+    ) -> DailyOperationsSummarySnapshot:
+        checked_at = utc_now()
+        try:
+            response = await http_client.get("/operations/daily-summary")
+            if response.status_code != 200:
+                raise RuntimeError(f"HTTP {response.status_code}")
+            payload = response.json()
+            if not isinstance(payload, Mapping):
+                raise ValueError("`/operations/daily-summary` payload must be a mapping")
+        except Exception as error:  # pylint: disable=broad-exception-caught
+            return DailyOperationsSummarySnapshot(
+                available=False,
+                checked_at=checked_at,
+                error=str(error),
+            )
+        return _daily_operations_summary_from_payload(
+            payload=payload,
+            checked_at=checked_at,
+        )
 
     async def _load_signals(self, http_client: Any) -> tuple[SignalSnapshot, ...]:
         signals: list[SignalSnapshot] = []
@@ -976,6 +1240,222 @@ def _system_reliability_from_payload(
             if isinstance(lag_snapshot, Mapping)
         ),
         latest_recovery_event=latest_recovery_event,
+    )
+
+
+def _active_alert_from_payload(
+    payload: Mapping[str, Any],
+) -> ActiveAlertSnapshot:
+    return ActiveAlertSnapshot(
+        fingerprint=str(payload["fingerprint"]),
+        service_name=str(payload["service_name"]),
+        execution_mode=str(payload["execution_mode"]),
+        category=str(payload["category"]),
+        severity=str(payload["severity"]),
+        reason_code=str(payload["reason_code"]),
+        source_component=str(payload["source_component"]),
+        is_active=bool(payload["is_active"]),
+        opened_at=parse_rfc3339(str(payload["opened_at"])),
+        last_seen_at=parse_rfc3339(str(payload["last_seen_at"])),
+        symbol=None if payload.get("symbol") is None else str(payload["symbol"]),
+        last_event_id=(
+            None if payload.get("last_event_id") is None else int(payload["last_event_id"])
+        ),
+        occurrence_count=int(payload.get("occurrence_count", 0)),
+    )
+
+
+def _alert_timeline_event_from_payload(
+    payload: Mapping[str, Any],
+) -> AlertTimelineEventSnapshot:
+    created_at = None
+    if isinstance(payload.get("created_at"), str):
+        created_at = parse_rfc3339(str(payload["created_at"]))
+    raw_payload_json = payload.get("payload_json", {})
+    payload_json = (
+        dict(raw_payload_json)
+        if isinstance(raw_payload_json, Mapping)
+        else {}
+    )
+    return AlertTimelineEventSnapshot(
+        event_id=None if payload.get("id") is None else int(payload["id"]),
+        service_name=str(payload["service_name"]),
+        execution_mode=str(payload["execution_mode"]),
+        category=str(payload["category"]),
+        severity=str(payload["severity"]),
+        event_state=str(payload["event_state"]),
+        reason_code=str(payload["reason_code"]),
+        source_component=str(payload["source_component"]),
+        fingerprint=str(payload["fingerprint"]),
+        summary_text=str(payload["summary_text"]),
+        event_time=parse_rfc3339(str(payload["event_time"])),
+        symbol=None if payload.get("symbol") is None else str(payload["symbol"]),
+        detail=None if payload.get("detail") is None else str(payload["detail"]),
+        related_order_request_id=(
+            None
+            if payload.get("related_order_request_id") is None
+            else int(payload["related_order_request_id"])
+        ),
+        related_decision_trace_id=(
+            None
+            if payload.get("related_decision_trace_id") is None
+            else int(payload["related_decision_trace_id"])
+        ),
+        payload_json=payload_json,
+        created_at=created_at,
+    )
+
+
+def _startup_safety_from_payload(
+    *,
+    payload: Mapping[str, Any],
+    checked_at: datetime,
+) -> StartupSafetySnapshot:
+    generated_at = None
+    if isinstance(payload.get("generated_at"), str):
+        generated_at = parse_rfc3339(str(payload["generated_at"]))
+    startup_validation_payload = payload.get("startup_validation", {})
+    live_startup_payload = payload.get("live_startup", {})
+    startup_report_path = None
+    startup_validation_passed = None
+    if isinstance(startup_validation_payload, Mapping):
+        startup_report_path = (
+            None
+            if startup_validation_payload.get("report_path") is None
+            else str(startup_validation_payload["report_path"])
+        )
+        if startup_validation_payload.get("startup_validation_passed") is not None:
+            startup_validation_passed = bool(
+                startup_validation_payload["startup_validation_passed"]
+            )
+    live_reason_code = None
+    if isinstance(live_startup_payload, Mapping):
+        live_reason_code = (
+            None
+            if live_startup_payload.get("primary_reason_code") is None
+            else str(live_startup_payload["primary_reason_code"])
+        )
+    return StartupSafetySnapshot(
+        available=True,
+        checked_at=checked_at,
+        generated_at=generated_at,
+        service_name=(
+            None if payload.get("service_name") is None else str(payload["service_name"])
+        ),
+        execution_mode=(
+            None
+            if payload.get("execution_mode") is None
+            else str(payload["execution_mode"])
+        ),
+        runtime_profile=(
+            None
+            if payload.get("runtime_profile") is None
+            else str(payload["runtime_profile"])
+        ),
+        startup_safety_passed=(
+            None
+            if payload.get("startup_safety_passed") is None
+            else bool(payload["startup_safety_passed"])
+        ),
+        primary_reason_code=(
+            None
+            if payload.get("primary_reason_code") is None
+            else str(payload["primary_reason_code"])
+        ),
+        summary_text=(
+            None if payload.get("summary_text") is None else str(payload["summary_text"])
+        ),
+        startup_report_path=startup_report_path,
+        startup_validation_passed=startup_validation_passed,
+        live_startup_reason_code=live_reason_code,
+    )
+
+
+def _daily_operations_summary_from_payload(
+    *,
+    payload: Mapping[str, Any],
+    checked_at: datetime,
+) -> DailyOperationsSummarySnapshot:
+    generated_at = None
+    if isinstance(payload.get("generated_at"), str):
+        generated_at = parse_rfc3339(str(payload["generated_at"]))
+    counts_by_category = payload.get("counts_by_category", {})
+    startup_safety_status = payload.get("startup_safety_status", {})
+    order_failure_counts = payload.get("order_failure_counts", {})
+    drawdown_state = payload.get("drawdown_state", {})
+    actionable_signal_counts = payload.get("actionable_signal_counts", {})
+    silence_flood_episodes = payload.get("silence_flood_episodes", {})
+    return DailyOperationsSummarySnapshot(
+        available=True,
+        checked_at=checked_at,
+        generated_at=generated_at,
+        service_name=(
+            None if payload.get("service_name") is None else str(payload["service_name"])
+        ),
+        execution_mode=(
+            None
+            if payload.get("execution_mode") is None
+            else str(payload["execution_mode"])
+        ),
+        runtime_profile=(
+            None
+            if payload.get("runtime_profile") is None
+            else str(payload["runtime_profile"])
+        ),
+        summary_date=(
+            None if payload.get("summary_date") is None else str(payload["summary_date"])
+        ),
+        unresolved_count=(
+            None
+            if payload.get("unresolved_count") is None
+            else int(payload["unresolved_count"])
+        ),
+        highest_severity=(
+            None
+            if payload.get("highest_severity") is None
+            else str(payload["highest_severity"])
+        ),
+        counts_by_category=(
+            {
+                str(key): int(value)
+                for key, value in counts_by_category.items()
+            }
+            if isinstance(counts_by_category, Mapping)
+            else {}
+        ),
+        startup_safety_status=(
+            dict(startup_safety_status)
+            if isinstance(startup_safety_status, Mapping)
+            else {}
+        ),
+        order_failure_counts=(
+            dict(order_failure_counts)
+            if isinstance(order_failure_counts, Mapping)
+            else {}
+        ),
+        drawdown_state=(
+            dict(drawdown_state)
+            if isinstance(drawdown_state, Mapping)
+            else {}
+        ),
+        actionable_signal_counts=(
+            dict(actionable_signal_counts)
+            if isinstance(actionable_signal_counts, Mapping)
+            else {}
+        ),
+        silence_flood_episodes=(
+            {
+                str(key): int(value)
+                for key, value in silence_flood_episodes.items()
+            }
+            if isinstance(silence_flood_episodes, Mapping)
+            else {}
+        ),
+        live_mode_activation_count=(
+            None
+            if payload.get("live_mode_activation_count") is None
+            else int(payload["live_mode_activation_count"])
+        ),
     )
 
 

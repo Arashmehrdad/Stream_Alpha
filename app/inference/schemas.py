@@ -1,10 +1,10 @@
-"""Typed API schemas for the Stream Alpha M4 inference service."""
+"""Typed API schemas for the Stream Alpha M4 and additive M17 surfaces."""
 
 # pylint: disable=duplicate-code
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -37,6 +37,10 @@ class HealthResponse(BaseModel):
     health_overall_status: str | None = None
     reason_code: str | None = None
     freshness_status: str | None = None
+    active_alert_count: int | None = None
+    max_alert_severity: str | None = None
+    startup_safety_status: str | None = None
+    startup_safety_reason_code: str | None = None
 
 
 class FeatureRowResponse(BaseModel):  # pylint: disable=too-many-instance-attributes
@@ -276,3 +280,93 @@ class SystemReliabilityResponse(BaseModel):
     services: list[ServiceReliabilityResponse]
     lag_by_symbol: list[FeatureLagResponse]
     latest_recovery_event: ReliabilityEventResponse | None = None
+
+
+class OperationalAlertStateResponse(BaseModel):
+    """Current active M17 alert state payload."""
+
+    fingerprint: str
+    service_name: str
+    execution_mode: str
+    category: str
+    symbol: str | None = None
+    source_component: str
+    is_active: bool
+    severity: str
+    reason_code: str
+    opened_at: datetime
+    last_seen_at: datetime
+    last_event_id: int | None = None
+    occurrence_count: int
+
+
+class OperationalAlertEventResponse(BaseModel):
+    """Canonical M17 alert timeline event payload."""
+
+    id: int | None = None
+    service_name: str
+    execution_mode: str
+    category: str
+    severity: str
+    event_state: str
+    reason_code: str
+    source_component: str
+    symbol: str | None = None
+    fingerprint: str
+    summary_text: str
+    detail: str | None = None
+    event_time: datetime
+    related_order_request_id: int | None = None
+    related_decision_trace_id: int | None = None
+    payload_json: dict[str, object] = Field(default_factory=dict)
+    created_at: datetime | None = None
+
+
+class StartupSafetySectionResponse(BaseModel):
+    """Typed startup-safety artifact section."""
+
+    report_path: str
+    report_exists: bool
+    startup_validation_passed: bool | None = None
+    checklist_path: str | None = None
+    checklist_exists: bool = False
+    checklist_passed: bool | None = None
+    primary_reason_code: str | None = None
+    summary_text: str | None = None
+    detail: str | None = None
+    payload: dict[str, object] = Field(default_factory=dict)
+
+
+class StartupSafetyReportResponse(BaseModel):
+    """Canonical startup-safety artifact payload."""
+
+    schema_version: str
+    generated_at: datetime
+    service_name: str
+    execution_mode: str
+    runtime_profile: str
+    startup_safety_passed: bool
+    primary_reason_code: str
+    summary_text: str
+    startup_validation: StartupSafetySectionResponse
+    live_startup: StartupSafetySectionResponse
+
+
+class DailyOperationsSummaryResponse(BaseModel):
+    """Canonical daily operations artifact payload."""
+
+    schema_version: str
+    generated_at: datetime
+    service_name: str
+    execution_mode: str
+    runtime_profile: str
+    summary_date: date
+    counts_by_category: dict[str, int]
+    unresolved_count: int
+    highest_severity: str
+    startup_safety_status: dict[str, object]
+    order_failure_counts: dict[str, object]
+    drawdown_state: dict[str, object]
+    actionable_signal_counts: dict[str, object]
+    silence_flood_episodes: dict[str, int]
+    live_mode_activation_count: int

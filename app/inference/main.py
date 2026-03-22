@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from dataclasses import asdict
+from datetime import date
 import logging
 from time import perf_counter
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 
 from app.common.config import Settings
@@ -16,10 +17,14 @@ from app.common.logging import configure_logging
 from app.common.time import parse_rfc3339
 from app.inference.db import DatabaseUnavailableError
 from app.inference.schemas import (
+    DailyOperationsSummaryResponse,
     FeatureRowResponse,
     FreshnessResponse,
     HealthResponse,
     MetricsResponse,
+    OperationalAlertEventResponse,
+    OperationalAlertStateResponse,
+    StartupSafetyReportResponse,
     SystemReliabilityResponse,
 )
 from app.inference.schemas import PredictionResponse, RegimeResponse, SignalResponse
@@ -30,7 +35,7 @@ from app.inference.service import (
     request_latency_ms,
 )
 
-# pylint: disable=too-many-statements
+# pylint: disable=too-many-statements,too-many-locals
 def create_app(
     service: InferenceService | None = None,
 ) -> FastAPI:
@@ -205,6 +210,54 @@ def create_app(
             status_code=status_code,
             content=payload.model_dump(mode="json"),
         )
+
+    @app.get("/alerts/active", response_model=list[OperationalAlertStateResponse])
+    async def alerts_active() -> list[OperationalAlertStateResponse]:
+        try:
+            return await service.active_alerts()
+        except RuntimeError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+
+    @app.get("/alerts/timeline", response_model=list[OperationalAlertEventResponse])
+    async def alerts_timeline(
+        limit: int = Query(default=50, ge=1, le=500),
+        category: str | None = None,
+        severity: str | None = None,
+        symbol: str | None = None,
+        active_only: bool = False,
+    ) -> list[OperationalAlertEventResponse]:
+        try:
+            return await service.alert_timeline(
+                limit=limit,
+                category=category,
+                severity=severity,
+                symbol=symbol,
+                active_only=active_only,
+            )
+        except RuntimeError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+
+    @app.get(
+        "/operations/daily-summary",
+        response_model=DailyOperationsSummaryResponse,
+    )
+    async def operations_daily_summary(
+        summary_date: date | None = Query(default=None, alias="date"),
+    ) -> DailyOperationsSummaryResponse:
+        try:
+            return await service.daily_operations_summary(summary_date=summary_date)
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+
+    @app.get(
+        "/operations/startup-safety",
+        response_model=StartupSafetyReportResponse,
+    )
+    async def operations_startup_safety() -> StartupSafetyReportResponse:
+        try:
+            return await service.startup_safety_report()
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
 
     return app
 # pylint: enable=too-many-statements

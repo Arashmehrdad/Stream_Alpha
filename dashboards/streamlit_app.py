@@ -51,7 +51,7 @@ from dashboards.widgets import (
     render_table,
 )
 
-# pylint: disable=too-many-locals,too-many-arguments,too-many-statements
+# pylint: disable=too-many-locals,too-many-arguments,too-many-statements,too-many-lines
 
 
 def main() -> None:
@@ -173,6 +173,19 @@ def main() -> None:
         snapshot.database.latest_recovery_event,
         now=reference_time,
     )
+    active_alert_rows = _build_active_alert_rows(
+        snapshot=snapshot,
+        now=reference_time,
+    )
+    incident_timeline_rows = _build_incident_timeline_rows(
+        snapshot=snapshot,
+        now=reference_time,
+    )
+    startup_safety_rows = _build_startup_safety_rows(
+        snapshot=snapshot,
+        now=reference_time,
+    )
+    daily_summary_rows = _build_daily_operations_summary_rows(snapshot=snapshot)
     overview_metrics = build_overview_metrics(
         snapshot=snapshot,
         trading_config=trading_config,
@@ -263,6 +276,9 @@ def main() -> None:
             freshness_rows=freshness_rows,
             live_status_rows=live_status_rows,
             latest_recovery_rows=latest_recovery_rows,
+            active_alert_rows=active_alert_rows,
+            startup_safety_rows=startup_safety_rows,
+            daily_summary_rows=daily_summary_rows,
             trader_freshness=trader_freshness,
         )
 
@@ -279,6 +295,7 @@ def main() -> None:
             incidents=incidents,
             latest_recovery_rows=latest_recovery_rows,
             latest_blocked_trade_rows=latest_blocked_trade_rows,
+            incident_timeline_rows=incident_timeline_rows,
         )
 
 
@@ -547,6 +564,9 @@ def _render_health_view(
     freshness_rows,
     live_status_rows,
     latest_recovery_rows,
+    active_alert_rows,
+    startup_safety_rows,
+    daily_summary_rows,
     trader_freshness,
 ) -> None:
     system_health = (
@@ -575,6 +595,14 @@ def _render_health_view(
             {
                 "label": "Live submit gate",
                 "value": "-" if trading_config.execution.mode != "live" else str(live_gate),
+            },
+            {
+                "label": "Active alerts",
+                "value": str(
+                    0 if snapshot.api_health.active_alert_count is None
+                    else snapshot.api_health.active_alert_count
+                ),
+                "detail": snapshot.api_health.max_alert_severity or "none",
             },
         ],
     )
@@ -618,6 +646,9 @@ def _render_health_view(
         )
 
     render_table("Reliability Summary", reliability_rows)
+    render_table("Active Alerts", active_alert_rows)
+    render_table("Startup Safety", startup_safety_rows)
+    render_table("Daily Operations Summary", daily_summary_rows)
     render_table("Live Safety State", live_status_rows)
     render_table("Per-Service Health", service_health_rows)
     render_table("Per-Symbol Freshness", freshness_rows)
@@ -669,10 +700,134 @@ def _render_incidents_view(
     incidents,
     latest_recovery_rows,
     latest_blocked_trade_rows,
+    incident_timeline_rows,
 ) -> None:
     render_incidents_panel(incidents)
+    render_table("Incident Timeline", incident_timeline_rows)
     render_table("Latest Recovery Event", latest_recovery_rows)
     render_table("Latest Blocked Trade Rationale", latest_blocked_trade_rows)
+
+
+def _build_active_alert_rows(*, snapshot, now: datetime) -> list[dict[str, object]]:
+    if not snapshot.active_alerts.available:
+        return [
+            {
+                "severity": "UNAVAILABLE",
+                "category": "-",
+                "execution_mode": "-",
+                "symbol": "-",
+                "reason_code": "-",
+                "source_component": snapshot.active_alerts.error or "unavailable",
+                "opened_at": None,
+                "opened_age": None,
+                "last_seen_at": None,
+                "last_seen_age": None,
+            }
+        ]
+    return [
+        {
+            "severity": row.severity,
+            "category": row.category,
+            "execution_mode": row.execution_mode,
+            "symbol": row.symbol,
+            "reason_code": row.reason_code,
+            "source_component": row.source_component,
+            "opened_at": row.opened_at.isoformat().replace("+00:00", "Z"),
+            "opened_age": age_text(row.opened_at, now),
+            "last_seen_at": row.last_seen_at.isoformat().replace("+00:00", "Z"),
+            "last_seen_age": age_text(row.last_seen_at, now),
+        }
+        for row in snapshot.active_alerts.items
+    ]
+
+
+def _build_incident_timeline_rows(*, snapshot, now: datetime) -> list[dict[str, object]]:
+    if not snapshot.alert_timeline.available:
+        return [
+            {
+                "event_time": None,
+                "event_age": None,
+                "event_state": "UNAVAILABLE",
+                "severity": "-",
+                "category": "-",
+                "symbol": "-",
+                "reason_code": "-",
+                "summary_text": snapshot.alert_timeline.error or "unavailable",
+            }
+        ]
+    return [
+        {
+            "event_time": row.event_time.isoformat().replace("+00:00", "Z"),
+            "event_age": age_text(row.event_time, now),
+            "event_state": row.event_state,
+            "severity": row.severity,
+            "category": row.category,
+            "symbol": row.symbol,
+            "reason_code": row.reason_code,
+            "summary_text": row.summary_text,
+        }
+        for row in snapshot.alert_timeline.items
+    ]
+
+
+def _build_startup_safety_rows(*, snapshot, now: datetime) -> list[dict[str, object]]:
+    if not snapshot.startup_safety.available:
+        return [
+            {
+                "startup_safety_passed": None,
+                "primary_reason_code": None,
+                "summary_text": snapshot.startup_safety.error or "unavailable",
+                "startup_report_path": None,
+                "generated_at": None,
+                "generated_age": None,
+            }
+        ]
+    row = snapshot.startup_safety
+    return [
+        {
+            "startup_safety_passed": row.startup_safety_passed,
+            "primary_reason_code": row.primary_reason_code,
+            "summary_text": row.summary_text,
+            "startup_report_path": row.startup_report_path,
+            "generated_at": (
+                None
+                if row.generated_at is None
+                else row.generated_at.isoformat().replace("+00:00", "Z")
+            ),
+            "generated_age": age_text(row.generated_at, now),
+        }
+    ]
+
+
+def _build_daily_operations_summary_rows(*, snapshot) -> list[dict[str, object]]:
+    if not snapshot.daily_operations_summary.available:
+        return [
+            {
+                "summary_date": None,
+                "unresolved_count": None,
+                "highest_severity": None,
+                "counts_by_category": snapshot.daily_operations_summary.error or "unavailable",
+                "order_failure_counts": None,
+                "drawdown_state": None,
+                "actionable_signal_counts": None,
+                "silence_flood_episodes": None,
+                "live_mode_activation_count": None,
+            }
+        ]
+    row = snapshot.daily_operations_summary
+    return [
+        {
+            "summary_date": row.summary_date,
+            "unresolved_count": row.unresolved_count,
+            "highest_severity": row.highest_severity,
+            "counts_by_category": row.counts_by_category,
+            "order_failure_counts": row.order_failure_counts,
+            "drawdown_state": row.drawdown_state,
+            "actionable_signal_counts": row.actionable_signal_counts,
+            "silence_flood_episodes": row.silence_flood_episodes,
+            "live_mode_activation_count": row.live_mode_activation_count,
+        }
+    ]
 
 
 def _venue_summary_cards(row: dict[str, object]) -> list[dict[str, str]]:

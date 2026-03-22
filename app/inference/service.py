@@ -5,13 +5,20 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import date, datetime
+import json
 from pathlib import Path
 from time import perf_counter
 from typing import Any
 
 import joblib
 
+from app.alerting.config import (
+    AlertingConfig,
+    default_alerting_config_path,
+    load_alerting_config,
+)
+from app.alerting.repository import OperationalAlertRepository
 from app.common.config import Settings
 from app.common.time import parse_rfc3339, to_rfc3339, utc_now
 from app.explainability.config import (
@@ -22,13 +29,17 @@ from app.explainability.schemas import PredictionExplanation, TopFeatureContribu
 from app.explainability.service import ExplainabilityService, build_regime_reason
 from app.inference.db import InferenceDatabase
 from app.inference.schemas import (
+    DailyOperationsSummaryResponse,
     FreshnessResponse,
     HealthResponse,
     LatencyStatsResponse,
     MetricsResponse,
+    OperationalAlertEventResponse,
+    OperationalAlertStateResponse,
     PredictionResponse,
     RegimeResponse,
     SignalResponse,
+    StartupSafetyReportResponse,
     ThresholdsResponse,
 )
 from app.reliability.artifacts import write_json_artifact
@@ -211,11 +222,16 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
         model_artifact: LoadedModelArtifact | None = None,
         regime_runtime: LiveRegimeRuntime | None = None,
         reliability_store: ReliabilityStore | None = None,
+        alerting_config: AlertingConfig | None = None,
+        alert_repository: OperationalAlertRepository | Any | None = None,
     ) -> None:
         self.settings = settings
         self.started_at = utc_now()
         self.metrics = MetricsState(started_at=self.started_at)
         self.reliability_config = load_reliability_config(default_reliability_config_path())
+        self.alerting_config = alerting_config or load_alerting_config(
+            default_alerting_config_path()
+        )
         self.explainability_config = load_explainability_config(
             default_explainability_config_path()
         )
@@ -224,6 +240,9 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
             settings.tables.feature_ohlc,
         )
         self.reliability_store = reliability_store or ReliabilityStore(
+            settings.postgres.dsn
+        )
+        self.alert_repository = alert_repository or OperationalAlertRepository(
             settings.postgres.dsn
         )
         self.model_artifact = model_artifact or load_model_artifact(
@@ -256,12 +275,20 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
             await self.reliability_store.connect()
         except Exception:  # pylint: disable=broad-exception-caught
             return
+        try:
+            await self.alert_repository.connect()
+        except Exception:  # pylint: disable=broad-exception-caught
+            return
 
     async def shutdown(self) -> None:
         """Close the database pool."""
         await self.database.close()
         try:
             await self.reliability_store.close()
+        except Exception:  # pylint: disable=broad-exception-caught
+            pass
+        try:
+            await self.alert_repository.close()
         except Exception:  # pylint: disable=broad-exception-caught
             return
 
@@ -272,6 +299,7 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
     async def health(self) -> tuple[int, HealthResponse]:
         """Return the current dependency health payload and status code."""
         runtime_metadata = self.runtime_metadata_fields()
+        alert_health = await self._health_alert_fields()
         database_healthy = await self.database.is_healthy()
         model_loaded = self.model_artifact is not None
         if database_healthy and model_loaded:
@@ -336,6 +364,10 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
                 health_overall_status=health_overall_status,
                 reason_code=reason_code,
                 freshness_status=freshness_status,
+                active_alert_count=alert_health["active_alert_count"],
+                max_alert_severity=alert_health["max_alert_severity"],
+                startup_safety_status=alert_health["startup_safety_status"],
+                startup_safety_reason_code=alert_health["startup_safety_reason_code"],
             ),
         )
 
@@ -731,6 +763,92 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
         self._write_system_reliability_artifact(snapshot)
         return 200, snapshot
 
+    async def active_alerts(self) -> list[OperationalAlertStateResponse]:
+        """Return current active M17 alert states for the trading runtime."""
+        states = await self.alert_repository.load_active_states(
+            service_name=self.trading_config.service_name,
+            execution_mode=self.trading_config.execution.mode,
+        )
+        return [
+            OperationalAlertStateResponse(
+                fingerprint=state.fingerprint,
+                service_name=state.service_name,
+                execution_mode=state.execution_mode,
+                category=state.category,
+                symbol=state.symbol,
+                source_component=state.source_component,
+                is_active=state.is_active,
+                severity=state.severity,
+                reason_code=state.reason_code,
+                opened_at=state.opened_at,
+                last_seen_at=state.last_seen_at,
+                last_event_id=state.last_event_id,
+                occurrence_count=state.occurrence_count,
+            )
+            for state in states
+        ]
+
+    async def alert_timeline(  # pylint: disable=too-many-arguments
+        self,
+        *,
+        limit: int,
+        category: str | None = None,
+        severity: str | None = None,
+        symbol: str | None = None,
+        active_only: bool = False,
+    ) -> list[OperationalAlertEventResponse]:
+        """Return recent canonical alert timeline events for the trading runtime."""
+        events = await self.alert_repository.load_timeline_events(
+            service_name=self.trading_config.service_name,
+            execution_mode=self.trading_config.execution.mode,
+            limit=limit,
+            category=category,
+            severity=severity,
+            symbol=symbol,
+            active_only=active_only,
+        )
+        return [
+            OperationalAlertEventResponse(
+                id=event.event_id,
+                service_name=event.service_name,
+                execution_mode=event.execution_mode,
+                category=event.category,
+                severity=event.severity,
+                event_state=event.event_state,
+                reason_code=event.reason_code,
+                source_component=event.source_component,
+                symbol=event.symbol,
+                fingerprint=event.fingerprint,
+                summary_text=event.summary_text,
+                detail=event.detail,
+                event_time=event.event_time,
+                related_order_request_id=event.related_order_request_id,
+                related_decision_trace_id=event.related_decision_trace_id,
+                payload_json=event.payload_json,
+                created_at=event.created_at,
+            )
+            for event in events
+        ]
+
+    async def daily_operations_summary(
+        self,
+        *,
+        summary_date: date | None = None,
+    ) -> DailyOperationsSummaryResponse:
+        """Read the canonical M17 daily operations summary artifact."""
+        resolved_date = utc_now().date() if summary_date is None else summary_date
+        artifact_path = (
+            Path(self.alerting_config.artifacts.daily_summary_dir)
+            / f"{resolved_date.isoformat()}.json"
+        )
+        return DailyOperationsSummaryResponse.model_validate(
+            self._load_required_json_artifact(artifact_path)
+        )
+
+    async def startup_safety_report(self) -> StartupSafetyReportResponse:
+        """Read the canonical M17 startup-safety artifact."""
+        return self._load_startup_safety_report_model()
+
     def runtime_metadata_fields(self) -> dict[str, str | bool | None]:
         """Return additive runtime metadata exposed by M16 APIs."""
         metadata = build_runtime_metadata(
@@ -742,6 +860,55 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes
             "startup_validation_passed": metadata.startup_validation_passed,
             "startup_report_path": metadata.startup_report_path,
         }
+
+    async def _health_alert_fields(self) -> dict[str, int | str | None]:
+        """Return additive M17 health-summary fields without breaking `/health`."""
+        try:
+            active_states = await self.alert_repository.load_active_states(
+                service_name=self.trading_config.service_name,
+                execution_mode=self.trading_config.execution.mode,
+            )
+        except Exception:  # pylint: disable=broad-exception-caught
+            active_states = None
+
+        try:
+            startup_safety = self._load_startup_safety_report_model()
+        except Exception:  # pylint: disable=broad-exception-caught
+            startup_safety = None
+
+        return {
+            "active_alert_count": (
+                None if active_states is None else len(active_states)
+            ),
+            "max_alert_severity": _max_alert_severity(active_states),
+            "startup_safety_status": (
+                None
+                if startup_safety is None
+                else (
+                    "PASSED"
+                    if startup_safety.startup_safety_passed
+                    else "FAILED"
+                )
+            ),
+            "startup_safety_reason_code": (
+                None if startup_safety is None else startup_safety.primary_reason_code
+            ),
+        }
+
+    def _load_startup_safety_report_model(self) -> StartupSafetyReportResponse:
+        return StartupSafetyReportResponse.model_validate(
+            self._load_required_json_artifact(
+                Path(self.alerting_config.artifacts.startup_safety_path)
+            )
+        )
+
+    def _load_required_json_artifact(self, path: Path) -> dict[str, Any]:
+        if not path.is_file():
+            raise FileNotFoundError(f"Artifact not found: {path}")
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(parsed, dict):
+            raise ValueError(f"Artifact must deserialize into a mapping: {path}")
+        return parsed
 
     async def _refresh_inference_health_snapshot(
         self,
@@ -1359,3 +1526,17 @@ def _fallback_row_id(symbol: str, interval_begin: datetime | None) -> str:
 
 def _parse_cached_rfc3339(value: str) -> datetime:
     return parse_rfc3339(value)
+
+
+def _max_alert_severity(active_states: list[Any] | None) -> str | None:
+    if active_states is None or not active_states:
+        return None
+    severity_order = {
+        "INFO": 0,
+        "WARNING": 1,
+        "CRITICAL": 2,
+    }
+    return max(
+        (str(state.severity) for state in active_states),
+        key=lambda value: severity_order.get(value, -1),
+    )

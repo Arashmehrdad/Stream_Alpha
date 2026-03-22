@@ -112,16 +112,21 @@ class _FailingHttpClient:
 
 
 class _Response:
-    def __init__(self, status_code: int, payload: dict) -> None:
+    def __init__(self, status_code: int, payload: object) -> None:
         self.status_code = status_code
         self._payload = payload
 
-    def json(self) -> dict:
+    def json(self) -> object:
         return self._payload
 
 
 class _HealthyHttpClient:
-    async def get(self, path: str, *_args, **_kwargs):
+    async def get(  # pylint: disable=too-many-return-statements
+        self,
+        path: str,
+        *_args,
+        **_kwargs,
+    ):
         if path == "/health":
             return _Response(
                 200,
@@ -129,6 +134,10 @@ class _HealthyHttpClient:
                     "status": "ok",
                     "service": "inference",
                     "runtime_profile": "paper",
+                    "active_alert_count": 1,
+                    "max_alert_severity": "WARNING",
+                    "startup_safety_status": "PASSED",
+                    "startup_safety_reason_code": "STARTUP_SAFETY_PASSED",
                     "model_loaded": True,
                     "model_name": "logistic_regression",
                     "model_artifact_path": "artifacts/training/m3/model.joblib",
@@ -222,6 +231,120 @@ class _HealthyHttpClient:
                     },
                 },
             )
+        if path == "/alerts/active":
+            return _Response(
+                200,
+                [
+                    {
+                        "fingerprint": "paper-trader|paper|FEED_STALE|producer|*",
+                        "service_name": "paper-trader",
+                        "execution_mode": "paper",
+                        "category": "FEED_STALE",
+                        "severity": "WARNING",
+                        "reason_code": "FEED_STALE",
+                        "source_component": "producer",
+                        "is_active": True,
+                        "opened_at": "2026-03-20T11:55:00Z",
+                        "last_seen_at": "2026-03-20T12:00:00Z",
+                        "occurrence_count": 2,
+                    }
+                ],
+            )
+        if path == "/alerts/timeline":
+            return _Response(
+                200,
+                [
+                    {
+                        "id": 7,
+                        "service_name": "paper-trader",
+                        "execution_mode": "paper",
+                        "category": "FEED_STALE",
+                        "severity": "WARNING",
+                        "event_state": "OPEN",
+                        "reason_code": "FEED_STALE",
+                        "source_component": "producer",
+                        "symbol": None,
+                        "fingerprint": "paper-trader|paper|FEED_STALE|producer|*",
+                        "summary_text": "Producer feed is stale.",
+                        "detail": "feed age exceeded max threshold",
+                        "event_time": "2026-03-20T12:00:00Z",
+                        "related_order_request_id": None,
+                        "related_decision_trace_id": None,
+                        "payload_json": {"feed_age_seconds": 120.0},
+                        "created_at": "2026-03-20T12:00:00Z",
+                    }
+                ],
+            )
+        if path == "/operations/startup-safety":
+            return _Response(
+                200,
+                {
+                    "schema_version": "m17_startup_safety_report_v1",
+                    "generated_at": "2026-03-20T12:00:00Z",
+                    "service_name": "paper-trader",
+                    "execution_mode": "paper",
+                    "runtime_profile": "paper",
+                    "startup_safety_passed": True,
+                    "primary_reason_code": "STARTUP_SAFETY_PASSED",
+                    "summary_text": "Startup safety is clear for this non-live runtime.",
+                    "startup_validation": {
+                        "report_path": "artifacts/runtime/startup_report.json",
+                        "report_exists": True,
+                        "startup_validation_passed": True,
+                        "primary_reason_code": "STARTUP_SAFETY_PASSED",
+                        "summary_text": "M16 startup validation passed.",
+                        "payload": {},
+                    },
+                    "live_startup": {
+                        "report_path": "artifacts/runtime/startup_report.json",
+                        "report_exists": False,
+                        "startup_validation_passed": True,
+                        "primary_reason_code": "STARTUP_SAFETY_PASSED",
+                        "summary_text": (
+                            "M12 guarded-live startup checks are not required "
+                            "for this mode."
+                        ),
+                        "payload": {},
+                    },
+                },
+            )
+        if path == "/operations/daily-summary":
+            return _Response(
+                200,
+                {
+                    "schema_version": "m17_daily_operations_summary_v1",
+                    "generated_at": "2026-03-20T12:00:00Z",
+                    "service_name": "paper-trader",
+                    "execution_mode": "paper",
+                    "runtime_profile": "paper",
+                    "summary_date": "2026-03-20",
+                    "counts_by_category": {"FEED_STALE": 1, "CONSUMER_LAG": 0},
+                    "unresolved_count": 1,
+                    "highest_severity": "WARNING",
+                    "startup_safety_status": {
+                        "startup_safety_passed": True,
+                        "primary_reason_code": "STARTUP_SAFETY_PASSED",
+                    },
+                    "order_failure_counts": {
+                        "rejected": 1,
+                        "failed": 0,
+                        "total_failures": 1,
+                        "window_minutes": 15,
+                    },
+                    "drawdown_state": {"available": True, "breached": False},
+                    "actionable_signal_counts": {
+                        "buy_count": 2,
+                        "sell_count": 1,
+                        "total_actionable": 3,
+                        "decision_trace_count": 5,
+                    },
+                    "silence_flood_episodes": {
+                        "signal_silence_events": 0,
+                        "signal_flood_events": 1,
+                    },
+                    "live_mode_activation_count": 0,
+                },
+            )
         return _Response(
             200,
             {
@@ -286,10 +409,20 @@ def test_dashboard_snapshot_parses_regime_fields_from_api_payloads() -> None:
     assert snapshot.api_health.runtime_profile == "paper"
     assert snapshot.api_health.regime_run_id == "20260320T120000Z"
     assert snapshot.api_health.health_overall_status == "HEALTHY"
+    assert snapshot.api_health.active_alert_count == 1
+    assert snapshot.api_health.max_alert_severity == "WARNING"
     assert snapshot.system_reliability is not None
     assert snapshot.system_reliability.available is True
     assert snapshot.system_reliability.health_overall_status == "DEGRADED"
     assert snapshot.system_reliability.lag_breach_active is True
+    assert snapshot.active_alerts.available is True
+    assert snapshot.active_alerts.items[0].category == "FEED_STALE"
+    assert snapshot.alert_timeline.available is True
+    assert snapshot.alert_timeline.items[0].event_state == "OPEN"
+    assert snapshot.startup_safety.available is True
+    assert snapshot.startup_safety.startup_safety_passed is True
+    assert snapshot.daily_operations_summary.available is True
+    assert snapshot.daily_operations_summary.unresolved_count == 1
     assert snapshot.signals[0].regime_label == "TREND_UP"
     assert snapshot.signals[0].trade_allowed is True
     assert snapshot.signals[0].decision_source == "model"

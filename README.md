@@ -38,6 +38,8 @@ Milestone `M15` upgrades the Streamlit UI into an operator console foundation. I
 
 Milestone `M16` adds the deployment and environment foundation. It keeps M4, M10, M11, M12, M13, M14, and M15 authority boundaries intact, adds one reusable app image, Compose profiles for `dev`, `paper`, `shadow`, and `live`, a one-shot startup validator, env-driven trading-config selection for the trader and dashboard, startup-report metadata on the existing inference APIs, PowerShell startup helpers, and explicit local retention rules without adding a new orchestration platform or alerting layer.
 
+Milestone `M17` adds a local-first operational alerting foundation on top of the accepted M12 through M16 runtime truth. Packet 1 normalizes alert events and active state into PostgreSQL plus canonical startup-safety and daily-summary artifacts. Packet 2 adds read-only API surfaces and additive operator-console views for active alerts, incident timeline, startup safety, and daily operations summaries without changing trading, risk, execution, reliability, or explainability authority.
+
 ## Deployment
 
 M16 introduces one-command local startup helpers plus a deployment guide:
@@ -496,6 +498,50 @@ M15 does not do:
 - add alert routing, deployment automation, broker import, or a new orchestration layer
 - pretend broker fills or reconciliation state exist when they do not
 - add a new backend service or write dashboard state back into PostgreSQL
+
+## M17 Scope
+
+M17 does:
+- keep M17 alerting local-first and inspectable by reading canonical PostgreSQL alert rows plus canonical JSON artifacts only
+- expose read-only API endpoints: `GET /alerts/active`, `GET /alerts/timeline`, `GET /operations/daily-summary`, and `GET /operations/startup-safety`
+- extend `GET /health` additively with `active_alert_count`, `max_alert_severity`, `startup_safety_status`, and `startup_safety_reason_code`
+- keep active-alert and incident-timeline truth sourced from `operational_alert_state` and `operational_alert_events`
+- keep startup-safety truth sourced from `artifacts/operations/startup_safety.json`
+- keep daily-operations truth sourced from `artifacts/operations/daily/YYYY-MM-DD.json`
+- surface active alerts, incident timeline, startup safety, and daily operations summaries in the existing operator console without adding write controls or a new backend service
+
+M17 does not do:
+- change M10 risk decisions, M11 execution routing, M12 guarded-live gating, M13 reliability logic, or M14 explainability payloads
+- add ack, mute, resolve, or admin alert actions
+- add alert routing, external paging, or a separate control plane
+
+## M17 Operator Workflow
+
+Canonical M17 artifact paths:
+
+- `artifacts/operations/startup_safety.json`
+- `artifacts/operations/daily/YYYY-MM-DD.json`
+
+Read-only M17 API endpoints:
+
+- `GET /alerts/active`
+- `GET /alerts/timeline?limit=50&category=FEED_STALE&severity=WARNING&symbol=BTC/USD&active_only=true`
+- `GET /operations/daily-summary?date=YYYY-MM-DD`
+- `GET /operations/startup-safety`
+
+Operator-console additions:
+
+- `Health` view now includes `Active Alerts`, `Startup Safety`, and `Daily Operations Summary`
+- `Incidents` view now includes `Incident Timeline`
+
+Local validation commands:
+
+```powershell
+python -m pytest tests\test_inference_api.py -q
+python -m pytest tests\test_dashboard_data_sources.py -q
+python -m pytest -q
+python -m pylint app\inference\main.py app\inference\schemas.py app\inference\service.py dashboards\data_sources.py dashboards\streamlit_app.py tests\test_inference_api.py tests\test_dashboard_data_sources.py
+```
 
 ## Environment Variables
 

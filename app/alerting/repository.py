@@ -232,6 +232,61 @@ class OperationalAlertRepository:
         )
         return [_event_from_row(row) for row in rows]
 
+    async def load_timeline_events(  # pylint: disable=too-many-arguments
+        self,
+        *,
+        service_name: str,
+        execution_mode: str,
+        limit: int,
+        category: str | None = None,
+        severity: str | None = None,
+        symbol: str | None = None,
+        active_only: bool = False,
+    ) -> list[OperationalAlertEvent]:
+        """Load recent canonical alert timeline events with simple filters."""
+        pool = self._require_pool()
+        clauses = [
+            "events.service_name = $1",
+            "events.execution_mode = $2",
+        ]
+        params: list[object] = [service_name, execution_mode]
+        next_index = 3
+        if category is not None:
+            clauses.append(f"events.category = ${next_index}")
+            params.append(category)
+            next_index += 1
+        if severity is not None:
+            clauses.append(f"events.severity = ${next_index}")
+            params.append(severity)
+            next_index += 1
+        if symbol is not None:
+            clauses.append(f"events.symbol = ${next_index}")
+            params.append(symbol)
+            next_index += 1
+        if active_only:
+            clauses.append(
+                f"""
+                EXISTS (
+                    SELECT 1
+                    FROM {self._state_table} AS state
+                    WHERE state.fingerprint = events.fingerprint
+                      AND state.is_active = TRUE
+                )
+                """
+            )
+        params.append(limit)
+        rows = await pool.fetch(
+            f"""
+            SELECT events.*
+            FROM {self._events_table} AS events
+            WHERE {" AND ".join(clauses)}
+            ORDER BY events.event_time DESC, events.id DESC
+            LIMIT ${next_index}
+            """,
+            *params,
+        )
+        return [_event_from_row(row) for row in rows]
+
     async def _ensure_schema(self) -> None:
         pool = self._require_pool()
         events_time_index = _build_index_name(

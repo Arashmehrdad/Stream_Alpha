@@ -1,6 +1,7 @@
 """API tests for the Stream Alpha M4 inference service."""
 
-# pylint: disable=duplicate-code,missing-function-docstring,too-few-public-methods
+# pylint: disable=duplicate-code,missing-function-docstring
+# pylint: disable=too-few-public-methods,too-many-lines
 
 from __future__ import annotations
 
@@ -11,6 +12,13 @@ import json
 import joblib
 from fastapi.testclient import TestClient
 
+from app.alerting.config import (
+    AlertingArtifactConfig,
+    AlertingConfig,
+    OrderFailureSpikeConfig,
+    SignalAlertConfig,
+)
+from app.alerting.schemas import OperationalAlertEvent, OperationalAlertState
 from app.common.time import to_rfc3339, utc_now
 from app.common.config import (
     FeatureSettings,
@@ -198,6 +206,74 @@ class FakeReliabilityStore:
         self.saved_system_snapshots.append(snapshot)
 
 
+class FakeAlertRepository:
+    """Minimal alert repository stub for M17 inference API tests."""
+
+    def __init__(
+        self,
+        *,
+        active_states: list[OperationalAlertState] | None = None,
+        timeline_events: list[OperationalAlertEvent] | None = None,
+    ) -> None:
+        self.active_states = [] if active_states is None else list(active_states)
+        self.timeline_events = [] if timeline_events is None else list(timeline_events)
+
+    async def connect(self) -> None:
+        return None
+
+    async def close(self) -> None:
+        return None
+
+    async def load_active_states(
+        self,
+        *,
+        service_name: str,
+        execution_mode: str,
+    ) -> list[OperationalAlertState]:
+        return [
+            state
+            for state in self.active_states
+            if state.service_name == service_name and state.execution_mode == execution_mode
+        ]
+
+    async def load_timeline_events(  # pylint: disable=too-many-arguments
+        self,
+        *,
+        service_name: str,
+        execution_mode: str,
+        limit: int,
+        category: str | None = None,
+        severity: str | None = None,
+        symbol: str | None = None,
+        active_only: bool = False,
+    ) -> list[OperationalAlertEvent]:
+        active_fingerprints = {
+            state.fingerprint
+            for state in self.active_states
+            if state.is_active
+        }
+        events = [
+            event
+            for event in self.timeline_events
+            if event.service_name == service_name
+            and event.execution_mode == execution_mode
+            and (category is None or event.category == category)
+            and (severity is None or event.severity == severity)
+            and (symbol is None or event.symbol == symbol)
+            and (not active_only or event.fingerprint in active_fingerprints)
+        ]
+        return list(
+            sorted(
+                events,
+                key=lambda event: (
+                    event.event_time,
+                    -1 if event.event_id is None else event.event_id,
+                ),
+                reverse=True,
+            )
+        )[:limit]
+
+
 def _build_settings(model_path: str) -> Settings:
     return Settings(
         app_name="streamalpha",
@@ -343,6 +419,125 @@ def _build_regime_runtime(tmp_path: Path):
     )
 
 
+def _build_alerting_config(tmp_path: Path) -> AlertingConfig:
+    operations_dir = tmp_path / "artifacts" / "operations"
+    return AlertingConfig(
+        schema_version="m17_alerting_v1",
+        order_failure_spike=OrderFailureSpikeConfig(
+            window_minutes=15,
+            warning_count=2,
+            critical_count=4,
+        ),
+        signals=SignalAlertConfig(
+            silence_window_intervals=3,
+            flood_window_intervals=3,
+            flood_warning_count=2,
+            flood_critical_count=4,
+        ),
+        artifacts=AlertingArtifactConfig(
+            daily_summary_dir=str((operations_dir / "daily").resolve()),
+            startup_safety_path=str((operations_dir / "startup_safety.json").resolve()),
+        ),
+    )
+
+
+def _write_startup_safety_artifact(tmp_path: Path) -> Path:
+    alerting_config = _build_alerting_config(tmp_path)
+    artifact_path = Path(alerting_config.artifacts.startup_safety_path)
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "m17_startup_safety_report_v1",
+                "generated_at": "2026-03-22T10:05:00Z",
+                "service_name": "paper-trader",
+                "execution_mode": "paper",
+                "runtime_profile": "paper",
+                "startup_safety_passed": True,
+                "primary_reason_code": "STARTUP_SAFETY_PASSED",
+                "summary_text": "Startup safety is clear for this non-live runtime.",
+                "startup_validation": {
+                    "report_path": str((tmp_path / "startup_report.json").resolve()),
+                    "report_exists": True,
+                    "startup_validation_passed": True,
+                    "primary_reason_code": "STARTUP_SAFETY_PASSED",
+                    "summary_text": "M16 startup validation passed.",
+                    "payload": {
+                        "startup_validation_passed": True,
+                    },
+                },
+                "live_startup": {
+                    "report_path": str((tmp_path / "startup_report.json").resolve()),
+                    "report_exists": False,
+                    "startup_validation_passed": True,
+                    "primary_reason_code": "STARTUP_SAFETY_PASSED",
+                    "summary_text": (
+                        "M12 guarded-live startup checks are not required for this mode."
+                    ),
+                    "payload": {},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    return artifact_path
+
+
+def _write_daily_summary_artifact(tmp_path: Path) -> Path:
+    alerting_config = _build_alerting_config(tmp_path)
+    artifact_path = (
+        Path(alerting_config.artifacts.daily_summary_dir) / "2026-03-22.json"
+    )
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "m17_daily_operations_summary_v1",
+                "generated_at": "2026-03-22T10:10:00Z",
+                "service_name": "paper-trader",
+                "execution_mode": "paper",
+                "runtime_profile": "paper",
+                "summary_date": "2026-03-22",
+                "counts_by_category": {
+                    "FEED_STALE": 1,
+                    "CONSUMER_LAG": 0,
+                },
+                "unresolved_count": 1,
+                "highest_severity": "WARNING",
+                "startup_safety_status": {
+                    "startup_safety_passed": True,
+                    "primary_reason_code": "STARTUP_SAFETY_PASSED",
+                    "summary_text": "Startup safety is clear for this non-live runtime.",
+                    "startup_report_path": str((tmp_path / "startup_report.json").resolve()),
+                },
+                "order_failure_counts": {
+                    "rejected": 1,
+                    "failed": 0,
+                    "total_failures": 1,
+                    "window_minutes": 15,
+                },
+                "drawdown_state": {
+                    "available": True,
+                    "breached": False,
+                },
+                "actionable_signal_counts": {
+                    "buy_count": 2,
+                    "sell_count": 1,
+                    "total_actionable": 3,
+                    "decision_trace_count": 5,
+                },
+                "silence_flood_episodes": {
+                    "signal_silence_events": 0,
+                    "signal_flood_events": 1,
+                },
+                "live_mode_activation_count": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return artifact_path
+
+
 def _write_artifact(tmp_path: Path, *, prob_up: float) -> Path:
     artifact_path = tmp_path / f"model-{prob_up:.2f}.joblib"
     joblib.dump(
@@ -436,12 +631,13 @@ def _feature_row(
     }
 
 
-def _build_client(
+def _build_client(  # pylint: disable=too-many-arguments
     tmp_path: Path,
     *,
     prob_up: float = 0.7,
     database: FakeDatabase,
     reliability_store: FakeReliabilityStore | None = None,
+    alert_repository: FakeAlertRepository | None = None,
     artifact_path: Path | None = None,
 ) -> TestClient:
     resolved_artifact_path = (
@@ -456,6 +652,8 @@ def _build_client(
         model_artifact=artifact,
         regime_runtime=_build_regime_runtime(tmp_path),
         reliability_store=reliability_store or FakeReliabilityStore(),
+        alerting_config=_build_alerting_config(tmp_path),
+        alert_repository=alert_repository or FakeAlertRepository(),
     )
     return TestClient(create_app(service))
 
@@ -519,6 +717,79 @@ def test_additive_runtime_metadata_is_exposed_on_health_metrics_and_reliability(
     assert reliability_payload["runtime_profile"] == "paper"
     assert reliability_payload["execution_mode"] == "paper"
     assert reliability_payload["startup_validation_passed"] is True
+
+
+def test_m17_alert_and_operations_endpoints_are_exposed_read_only(
+    tmp_path: Path,
+) -> None:
+    checked_at = datetime(2026, 3, 22, 10, 15, tzinfo=timezone.utc)
+    _write_startup_safety_artifact(tmp_path)
+    _write_daily_summary_artifact(tmp_path)
+    active_state = OperationalAlertState(
+        fingerprint="paper-trader|paper|FEED_STALE|producer|*",
+        service_name="paper-trader",
+        execution_mode="paper",
+        category="FEED_STALE",
+        symbol=None,
+        source_component="producer",
+        is_active=True,
+        severity="WARNING",
+        reason_code="FEED_STALE",
+        opened_at=checked_at - timedelta(minutes=5),
+        last_seen_at=checked_at,
+        last_event_id=7,
+        occurrence_count=2,
+    )
+    timeline_event = OperationalAlertEvent(
+        service_name="paper-trader",
+        execution_mode="paper",
+        category="FEED_STALE",
+        severity="WARNING",
+        event_state="OPEN",
+        reason_code="FEED_STALE",
+        source_component="producer",
+        symbol=None,
+        fingerprint=active_state.fingerprint,
+        summary_text="Producer feed is stale.",
+        detail="feed age exceeded max threshold",
+        event_time=checked_at,
+        payload_json={"feed_age_seconds": 120.0},
+        event_id=7,
+        created_at=checked_at,
+    )
+    client = _build_client(
+        tmp_path,
+        database=FakeDatabase(row=_feature_row(base_time=checked_at - timedelta(minutes=5))),
+        alert_repository=FakeAlertRepository(
+            active_states=[active_state],
+            timeline_events=[timeline_event],
+        ),
+    )
+
+    health_payload = client.get("/health").json()
+    active_payload = client.get("/alerts/active").json()
+    timeline_payload = client.get(
+        "/alerts/timeline",
+        params={"limit": 10, "category": "FEED_STALE", "active_only": True},
+    ).json()
+    daily_payload = client.get(
+        "/operations/daily-summary",
+        params={"date": "2026-03-22"},
+    ).json()
+    startup_payload = client.get("/operations/startup-safety").json()
+
+    assert health_payload["active_alert_count"] == 1
+    assert health_payload["max_alert_severity"] == "WARNING"
+    assert health_payload["startup_safety_status"] == "PASSED"
+    assert health_payload["startup_safety_reason_code"] == "STARTUP_SAFETY_PASSED"
+    assert active_payload[0]["category"] == "FEED_STALE"
+    assert active_payload[0]["reason_code"] == "FEED_STALE"
+    assert timeline_payload[0]["event_state"] == "OPEN"
+    assert timeline_payload[0]["summary_text"] == "Producer feed is stale."
+    assert daily_payload["summary_date"] == "2026-03-22"
+    assert daily_payload["unresolved_count"] == 1
+    assert startup_payload["startup_safety_passed"] is True
+    assert startup_payload["primary_reason_code"] == "STARTUP_SAFETY_PASSED"
 
 
 def test_reliability_system_endpoint_returns_canonical_cross_service_summary(
