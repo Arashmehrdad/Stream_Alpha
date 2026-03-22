@@ -161,6 +161,7 @@ class LedgerEntrySnapshot:
     model_name: str | None
     confidence: float | None
     regime_label: str | None
+    decision_trace_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,6 +184,7 @@ class OrderAuditSnapshot:
     probe_policy_active: bool = False
     probe_symbol: str | None = None
     probe_qty: int | None = None
+    decision_trace_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,6 +205,18 @@ class LiveSafetySnapshot:
     failure_hard_stop_active: bool
     last_failure_reason: str | None
     updated_at: datetime
+    system_health_status: str | None = None
+    system_health_reason_code: str | None = None
+    system_health_checked_at: datetime | None = None
+    health_gate_status: str | None = None
+    health_gate_reason_code: str | None = None
+    health_gate_detail: str | None = None
+    broker_cash: float | None = None
+    broker_equity: float | None = None
+    reconciliation_status: str | None = None
+    reconciliation_reason_code: str | None = None
+    reconciliation_checked_at: datetime | None = None
+    unresolved_incident_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -326,6 +340,19 @@ class DecisionTraceSnapshot:
     markdown_report_path: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    regime_label: str | None = None
+    regime_run_id: str | None = None
+    allow_new_long_entries: bool | None = None
+    signal_reason_code: str | None = None
+    signal_freshness_status: str | None = None
+    signal_health_overall_status: str | None = None
+    prediction_summary_text: str | None = None
+    signal_summary_text: str | None = None
+    top_feature_count: int = 0
+    risk_reason_codes: tuple[str, ...] = field(default_factory=tuple)
+    requested_notional: float | None = None
+    approved_notional: float | None = None
+    ordered_adjustment_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -587,7 +614,8 @@ class DashboardDataSources:
                 f"""
                 SELECT id, symbol, action, reason, fill_interval_begin, fill_time,
                        fill_price, quantity, notional, fee, cash_flow,
-                       realized_pnl, signal_row_id, model_name, confidence, regime_label
+                       realized_pnl, signal_row_id, model_name, confidence, regime_label,
+                       decision_trace_id
                 FROM {self._ledger_table}
                 WHERE service_name = $1 AND execution_mode = $2
                 ORDER BY fill_time DESC, id DESC
@@ -602,7 +630,8 @@ class DashboardDataSources:
                 SELECT id, order_request_id, symbol, action, lifecycle_state, event_time,
                        reason_code, details, external_order_id, external_status,
                        account_id, environment_name, broker_name,
-                       probe_policy_active, probe_symbol, probe_qty
+                       probe_policy_active, probe_symbol, probe_qty,
+                       decision_trace_id
                 FROM {self._order_events_table}
                 WHERE service_name = $1 AND execution_mode = $2
                 ORDER BY event_time DESC, id DESC
@@ -662,7 +691,13 @@ class DashboardDataSources:
                        startup_checks_passed, startup_checks_passed_at,
                        account_validated, account_id, environment_name,
                        manual_disable_active, consecutive_live_failures,
-                       failure_hard_stop_active, last_failure_reason, updated_at
+                       failure_hard_stop_active, last_failure_reason,
+                       system_health_status, system_health_reason_code,
+                       system_health_checked_at, health_gate_status,
+                       health_gate_reason_code, health_gate_detail,
+                       broker_cash, broker_equity, reconciliation_status,
+                       reconciliation_reason_code, reconciliation_checked_at,
+                       unresolved_incident_count, updated_at
                 FROM {self._live_safety_table}
                 WHERE service_name = $1 AND execution_mode = $2
                 """,
@@ -1119,6 +1154,11 @@ def _ledger_entry_from_row(row: Mapping[str, Any]) -> LedgerEntrySnapshot:
         model_name=None if row["model_name"] is None else str(row["model_name"]),
         confidence=None if row["confidence"] is None else float(row["confidence"]),
         regime_label=None if row["regime_label"] is None else str(row["regime_label"]),
+        decision_trace_id=(
+            None
+            if row.get("decision_trace_id") is None
+            else int(row.get("decision_trace_id"))
+        ),
     )
 
 
@@ -1143,6 +1183,10 @@ def _decision_trace_from_row(row: Mapping[str, Any]) -> DecisionTraceSnapshot:
     trace_payload = DecisionTracePayload.model_validate(row["trace_payload"])
     risk_payload = trace_payload.risk
     blocked_trade = trace_payload.blocked_trade
+    threshold_snapshot = trace_payload.threshold_snapshot
+    regime_reason = trace_payload.regime_reason
+    prediction_explanation = trace_payload.prediction.prediction_explanation
+    signal_explanation = trace_payload.signal.signal_explanation
     return DecisionTraceSnapshot(
         decision_trace_id=int(row["id"]),
         service_name=str(row["service_name"]),
@@ -1175,6 +1219,65 @@ def _decision_trace_from_row(row: Mapping[str, Any]) -> DecisionTraceSnapshot:
         ),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+        regime_label=(
+            None
+            if regime_reason is None
+            else regime_reason.regime_label
+        )
+        or (
+            None
+            if threshold_snapshot is None
+            else threshold_snapshot.regime_label
+        ),
+        regime_run_id=(
+            None
+            if regime_reason is None
+            else regime_reason.regime_run_id
+        )
+        or (
+            None
+            if threshold_snapshot is None
+            else threshold_snapshot.regime_run_id
+        ),
+        allow_new_long_entries=(
+            None
+            if threshold_snapshot is None
+            else threshold_snapshot.allow_new_long_entries
+        ),
+        signal_reason_code=trace_payload.signal.reason_code,
+        signal_freshness_status=trace_payload.signal.freshness_status,
+        signal_health_overall_status=trace_payload.signal.health_overall_status,
+        prediction_summary_text=(
+            None
+            if prediction_explanation is None
+            else prediction_explanation.summary_text
+        ),
+        signal_summary_text=(
+            None
+            if signal_explanation is None
+            else signal_explanation.summary_text
+        ),
+        top_feature_count=len(trace_payload.prediction.top_features),
+        risk_reason_codes=(
+            ()
+            if risk_payload is None
+            else tuple(str(code) for code in risk_payload.reason_codes)
+        ),
+        requested_notional=(
+            None
+            if risk_payload is None
+            else risk_payload.requested_notional
+        ),
+        approved_notional=(
+            None
+            if risk_payload is None
+            else risk_payload.approved_notional
+        ),
+        ordered_adjustment_count=(
+            0
+            if risk_payload is None
+            else len(risk_payload.ordered_adjustments)
+        ),
     )
 
 
@@ -1208,6 +1311,11 @@ def _order_audit_from_row(row: Mapping[str, Any]) -> OrderAuditSnapshot:
             else str(row.get("probe_symbol"))
         ),
         probe_qty=None if row.get("probe_qty") is None else int(row.get("probe_qty")),
+        decision_trace_id=(
+            None
+            if row.get("decision_trace_id") is None
+            else int(row.get("decision_trace_id"))
+        ),
     )
 
 
@@ -1233,6 +1341,54 @@ def _live_safety_from_row(row: Mapping[str, Any]) -> LiveSafetySnapshot:
             else str(row["last_failure_reason"])
         ),
         updated_at=row["updated_at"],
+        system_health_status=(
+            None
+            if row.get("system_health_status") is None
+            else str(row.get("system_health_status"))
+        ),
+        system_health_reason_code=(
+            None
+            if row.get("system_health_reason_code") is None
+            else str(row.get("system_health_reason_code"))
+        ),
+        system_health_checked_at=row.get("system_health_checked_at"),
+        health_gate_status=(
+            None
+            if row.get("health_gate_status") is None
+            else str(row.get("health_gate_status"))
+        ),
+        health_gate_reason_code=(
+            None
+            if row.get("health_gate_reason_code") is None
+            else str(row.get("health_gate_reason_code"))
+        ),
+        health_gate_detail=(
+            None
+            if row.get("health_gate_detail") is None
+            else str(row.get("health_gate_detail"))
+        ),
+        broker_cash=(
+            None
+            if row.get("broker_cash") is None
+            else float(row.get("broker_cash"))
+        ),
+        broker_equity=(
+            None
+            if row.get("broker_equity") is None
+            else float(row.get("broker_equity"))
+        ),
+        reconciliation_status=(
+            None
+            if row.get("reconciliation_status") is None
+            else str(row.get("reconciliation_status"))
+        ),
+        reconciliation_reason_code=(
+            None
+            if row.get("reconciliation_reason_code") is None
+            else str(row.get("reconciliation_reason_code"))
+        ),
+        reconciliation_checked_at=row.get("reconciliation_checked_at"),
+        unresolved_incident_count=int(row.get("unresolved_incident_count", 0)),
     )
 
 

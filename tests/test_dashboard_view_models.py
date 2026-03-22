@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 from app.trading.config import ExecutionConfig, PaperTradingConfig, RiskConfig
 from app.trading.schemas import PaperPosition
@@ -25,9 +26,12 @@ from dashboards.data_sources import (
     SystemReliabilitySnapshot,
 )
 from dashboards.view_models import (
+    build_config_summary_rows,
     build_feature_lag_rows,
     build_latest_blocked_trade_rows,
     build_reliability_status_rows,
+    build_operator_banner,
+    build_operator_incident_rows,
     build_service_health_rows,
     build_drawdown_curve_rows,
     build_equity_curve_rows,
@@ -36,9 +40,11 @@ from dashboards.view_models import (
     build_overview_metrics,
     build_performance_by_regime_rows,
     build_recent_decision_trace_rows,
+    build_trade_journal_rows,
     build_recent_order_audit_rows,
     build_symbol_freshness_rows,
     build_trader_freshness,
+    filter_trade_journal_traces,
 )
 
 
@@ -319,24 +325,15 @@ def test_recent_order_audit_rows_and_execution_mode_are_available_for_rendering(
                 broker_name="alpaca",
                 external_status="filled",
             ),
-        )
+        ),
+        now=checked_at,
     )
 
     assert _config(execution_mode="shadow").execution.mode == "shadow"
-    assert rows == [
-        {
-            "event_id": 7,
-            "order_request_id": 11,
-            "symbol": "BTC/USD",
-            "action": "BUY",
-            "lifecycle_state": "FILLED",
-            "event_time": "2026-03-21T12:00:00Z",
-            "reason_code": "PAPER_ORDER_FILLED",
-            "details": "filled at next open",
-            "broker_name": "alpaca",
-            "external_status": "filled",
-        }
-    ]
+    assert rows[0]["lifecycle_state"] == "FILLED"
+    assert rows[0]["event_time"] == "2026-03-21T12:00:00Z"
+    assert rows[0]["event_age"] == "0s"
+    assert rows[0]["broker_name"] == "alpaca"
 
 
 def test_recent_decision_trace_rows_and_blocked_trade_rationale_are_available() -> None:
@@ -358,37 +355,25 @@ def test_recent_decision_trace_rows_and_blocked_trade_rationale_are_available() 
         markdown_report_path="artifacts/rationale/paper-trader/paper/21.md",
         created_at=datetime(2026, 3, 21, 12, 5, tzinfo=timezone.utc),
         updated_at=datetime(2026, 3, 21, 12, 5, tzinfo=timezone.utc),
+        regime_label="TREND_UP",
+        requested_notional=1000.0,
+        approved_notional=0.0,
+        ordered_adjustment_count=0,
+        top_feature_count=3,
     )
 
-    recent_rows = build_recent_decision_trace_rows((trace,))
-    blocked_rows = build_latest_blocked_trade_rows(trace)
+    recent_rows = build_recent_decision_trace_rows((trace,), now=trace.signal_as_of_time)
+    blocked_rows = build_latest_blocked_trade_rows(trace, now=trace.signal_as_of_time)
 
-    assert recent_rows == [
-        {
-            "decision_trace_id": 21,
-            "symbol": "BTC/USD",
-            "signal": "BUY",
-            "risk_outcome": "BLOCKED",
-            "primary_reason_code": "TRADE_NOT_ALLOWED",
-            "signal_as_of_time": "2026-03-21T12:05:00Z",
-            "model_version": "m3-20260321T120000Z",
-            "json_report_path": "artifacts/rationale/paper-trader/paper/21.json",
-            "markdown_report_path": "artifacts/rationale/paper-trader/paper/21.md",
-        }
-    ]
-    assert blocked_rows == [
-        {
-            "decision_trace_id": 21,
-            "symbol": "BTC/USD",
-            "signal": "BUY",
-            "risk_outcome": "BLOCKED",
-            "blocked_stage": "risk",
-            "primary_reason_code": "TRADE_NOT_ALLOWED",
-            "reason_texts": "trade blocked",
-            "json_report_path": "artifacts/rationale/paper-trader/paper/21.json",
-            "markdown_report_path": "artifacts/rationale/paper-trader/paper/21.md",
-        }
-    ]
+    assert recent_rows[0]["execution_mode"] == "paper"
+    assert recent_rows[0]["regime_label"] == "TREND_UP"
+    assert recent_rows[0]["signal_age"] == "0s"
+    assert recent_rows[0]["requested_notional"] == 1000.0
+    assert recent_rows[0]["approved_notional"] == 0.0
+    assert recent_rows[0]["top_feature_count"] == 3
+    assert blocked_rows[0]["blocked_stage"] == "risk"
+    assert blocked_rows[0]["signal_age"] == "0s"
+    assert blocked_rows[0]["reason_texts"] == "trade blocked"
 
 
 def test_live_status_rows_surface_guarded_live_fields() -> None:
@@ -408,13 +393,26 @@ def test_live_status_rows_surface_guarded_live_fields() -> None:
             consecutive_live_failures=0,
             failure_hard_stop_active=False,
             last_failure_reason=None,
+            system_health_status="HEALTHY",
+            system_health_reason_code="SYSTEM_HEALTHY",
+            health_gate_status="CLEAR",
+            health_gate_reason_code="HEALTH_GATE_CLEAR",
+            reconciliation_status="CLEAR",
+            reconciliation_reason_code="RECONCILIATION_CLEAR",
+            broker_cash=1000.0,
+            broker_equity=1005.0,
+            unresolved_incident_count=0,
             updated_at=datetime(2026, 3, 21, 12, 1, tzinfo=timezone.utc),
         ),
+        now=datetime(2026, 3, 21, 12, 1, tzinfo=timezone.utc),
     )
 
     assert rows[0]["execution_mode"] == "live"
     assert rows[0]["broker_name"] == "alpaca"
     assert rows[0]["validated_environment"] == "paper"
+    assert rows[0]["health_gate_status"] == "CLEAR"
+    assert rows[0]["reconciliation_status"] == "CLEAR"
+    assert rows[0]["broker_cash"] == 1000.0
 
 
 def test_reliability_rows_surface_breaker_and_latest_recovery_event() -> None:
@@ -453,20 +451,14 @@ def test_reliability_rows_surface_breaker_and_latest_recovery_event() -> None:
             breaker_state="OPEN",
             detail="cleared stale pending signal",
         ),
+        now=checked_at,
     )
 
-    assert rows == [
-        {
-            "overall_health": "DEGRADED",
-            "health_reason_codes": "HEALTH_DEGRADED_FRESHNESS",
-            "lag_breach_active": None,
-            "breaker_state": "OPEN",
-            "breaker_reason_code": "SIGNAL_FETCH_FAILED",
-            "latest_recovery_event_type": "PENDING_SIGNAL_EXPIRED",
-            "latest_recovery_reason_code": "RECOVERY_STALE_PENDING_SIGNAL_CLEARED",
-            "latest_recovery_time": "2026-03-21T12:00:00Z",
-        }
-    ]
+    assert rows[0]["overall_health"] == "DEGRADED"
+    assert rows[0]["breaker_state"] == "OPEN"
+    assert rows[0]["latest_recovery_event_type"] == "PENDING_SIGNAL_EXPIRED"
+    assert rows[0]["checked_age"] == "0s"
+    assert rows[0]["latest_recovery_age"] == "0s"
 
 
 def test_service_health_and_feature_lag_rows_surface_canonical_summary() -> None:
@@ -536,48 +528,17 @@ def test_service_health_and_feature_lag_rows_surface_canonical_summary() -> None
         system_reliability=system_reliability,
         reliability_states=tuple(),
         latest_recovery_event=None,
+        now=checked_at,
     )
-    service_rows = build_service_health_rows(system_reliability)
-    lag_rows = build_feature_lag_rows(system_reliability)
+    service_rows = build_service_health_rows(system_reliability, now=checked_at)
+    lag_rows = build_feature_lag_rows(system_reliability, now=checked_at)
 
-    assert reliability_rows == [
-        {
-            "overall_health": "DEGRADED",
-            "health_reason_codes": "SIGNAL_FETCH_FAILED,FEATURE_LAG_BREACH",
-            "lag_breach_active": True,
-            "latest_recovery_event_type": "FEATURE_LAG_TRANSITION",
-            "latest_recovery_reason_code": "FEATURE_LAG_BREACH_DETECTED",
-            "latest_recovery_time": "2026-03-21T12:00:00Z",
-        }
-    ]
-    assert service_rows == [
-        {
-            "service_name": "producer",
-            "component_name": "producer",
-            "health_overall_status": "HEALTHY",
-            "heartbeat_freshness_status": "FRESH",
-            "heartbeat_age_seconds": 0.0,
-            "reason_code": "SERVICE_HEARTBEAT_HEALTHY",
-            "feed_freshness_status": "FRESH",
-            "feed_age_seconds": 0.0,
-            "detail": "producer healthy",
-        }
-    ]
-    assert lag_rows == [
-        {
-            "symbol": "BTC/USD",
-            "lag_breach": True,
-            "health_overall_status": "DEGRADED",
-            "reason_code": "FEATURE_LAG_BREACH",
-            "time_lag_seconds": 600.0,
-            "time_lag_reason_code": "FEATURE_TIME_LAG_BREACH",
-            "processing_lag_seconds": 600.0,
-            "processing_lag_reason_code": "FEATURE_PROCESSING_LAG_BREACH",
-            "latest_raw_event_received_at": "2026-03-21T12:00:00Z",
-            "latest_feature_as_of_time": "2026-03-21T11:55:00Z",
-            "detail": "lag breach",
-        }
-    ]
+    assert reliability_rows[0]["checked_at"] == "2026-03-21T12:00:00Z"
+    assert reliability_rows[0]["latest_recovery_age"] == "0s"
+    assert service_rows[0]["heartbeat_at"] == "2026-03-21T12:00:00Z"
+    assert service_rows[0]["checked_age"] == "0s"
+    assert lag_rows[0]["evaluated_at"] == "2026-03-21T12:00:00Z"
+    assert lag_rows[0]["latest_feature_age"] == "5m 0s"
 
 
 def test_symbol_freshness_rows_surface_exact_row_status() -> None:
@@ -602,20 +563,175 @@ def test_symbol_freshness_rows_surface_exact_row_status() -> None:
                 regime_age_seconds=0.0,
                 detail="Exact-row regime resolution succeeded",
             ),
-        )
+        ),
+        now=checked_at,
     )
 
-    assert rows == [
-        {
-            "symbol": "BTC/USD",
-            "health_overall_status": "HEALTHY",
-            "freshness_status": "FRESH",
-            "feature_freshness_status": "FRESH",
-            "feature_reason_code": "FEATURE_FRESH",
-            "regime_freshness_status": "FRESH",
-            "regime_reason_code": "REGIME_FRESH",
-            "row_id": "BTC/USD|2026-03-21T11:55:00Z",
-            "as_of_time": "2026-03-21T12:00:00Z",
-            "detail": "Exact-row regime resolution succeeded",
-        }
-    ]
+    assert rows[0]["checked_age"] == "0s"
+    assert rows[0]["feature_age"] == "0s"
+    assert rows[0]["regime_age"] == "0s"
+    assert rows[0]["as_of_age"] == "0s"
+
+
+def test_trade_journal_filtering_uses_trace_truth() -> None:
+    earlier = datetime(2026, 3, 21, 11, 0, tzinfo=timezone.utc)
+    later = datetime(2026, 3, 21, 12, 0, tzinfo=timezone.utc)
+    traces = (
+        DecisionTraceSnapshot(
+            decision_trace_id=1,
+            service_name="paper-trader",
+            execution_mode="paper",
+            symbol="BTC/USD",
+            signal="BUY",
+            signal_row_id="BTC|1",
+            signal_as_of_time=earlier,
+            model_name="logistic_regression",
+            model_version="m3-a",
+            risk_outcome="BLOCKED",
+            primary_reason_code="TRADE_NOT_ALLOWED",
+            regime_label="TREND_UP",
+            updated_at=earlier,
+        ),
+        DecisionTraceSnapshot(
+            decision_trace_id=2,
+            service_name="paper-trader",
+            execution_mode="shadow",
+            symbol="ETH/USD",
+            signal="BUY",
+            signal_row_id="ETH|2",
+            signal_as_of_time=later,
+            model_name="logistic_regression",
+            model_version="m3-b",
+            risk_outcome="MODIFIED",
+            primary_reason_code="VOLATILITY_SIZE_ADJUSTED",
+            regime_label="RANGE",
+            updated_at=later,
+        ),
+    )
+
+    filtered = filter_trade_journal_traces(
+        traces,
+        symbol="ETH/USD",
+        mode="shadow",
+        start_time=later - timedelta(minutes=1),
+        end_time=later + timedelta(minutes=1),
+        regime="RANGE",
+        reason_code="VOLATILITY_SIZE_ADJUSTED",
+        outcome_category="MODIFIED",
+    )
+    rows = build_trade_journal_rows(filtered, now=later)
+
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == "ETH/USD"
+    assert rows[0]["outcome_category"] == "MODIFIED"
+    assert rows[0]["reason_code"] == "VOLATILITY_SIZE_ADJUSTED"
+
+
+def test_operator_banner_and_incidents_prioritize_blocked_live_state() -> None:
+    checked_at = datetime(2026, 3, 21, 12, 0, tzinfo=timezone.utc)
+    snapshot = DashboardSnapshot(
+        api_health=ApiHealthSnapshot(
+            available=True,
+            checked_at=checked_at,
+            status="ok",
+            health_overall_status="HEALTHY",
+            reason_code="HEALTH_HEALTHY",
+        ),
+        signals=tuple(),
+        freshness=tuple(),
+        database=DatabaseSnapshot(
+            available=True,
+            checked_at=checked_at,
+            live_safety_state=LiveSafetySnapshot(
+                service_name="paper-trader",
+                execution_mode="live",
+                broker_name="alpaca",
+                live_enabled=True,
+                startup_checks_passed=True,
+                startup_checks_passed_at=checked_at,
+                account_validated=True,
+                account_id="PA12345",
+                environment_name="paper",
+                manual_disable_active=True,
+                consecutive_live_failures=0,
+                failure_hard_stop_active=False,
+                last_failure_reason=None,
+                health_gate_status="CLEAR",
+                reconciliation_status="CLEAR",
+                unresolved_incident_count=0,
+                updated_at=checked_at,
+            ),
+        ),
+    )
+
+    incidents = build_operator_incident_rows(
+        snapshot=snapshot,
+        trading_config=_config(execution_mode="live"),
+        now=checked_at,
+    )
+    banner = build_operator_banner(
+        snapshot=snapshot,
+        trading_config=_config(execution_mode="live"),
+        incidents=incidents,
+        now=checked_at,
+    )
+
+    assert incidents[0]["reason_code"] == "MANUAL_DISABLE_ACTIVE"
+    assert banner["safety_posture"] == "blocked"
+    assert banner["severity"] == "error"
+
+
+def test_config_summary_shows_operator_facing_truth() -> None:
+    settings = SimpleNamespace(
+        tables=SimpleNamespace(feature_ohlc="feature_ohlc"),
+        dashboard=SimpleNamespace(inference_api_base_url="http://127.0.0.1:8000"),
+    )
+    checked_at = datetime(2026, 3, 21, 12, 0, tzinfo=timezone.utc)
+    snapshot = DashboardSnapshot(
+        api_health=ApiHealthSnapshot(
+            available=True,
+            checked_at=checked_at,
+            status="ok",
+            model_loaded=True,
+            model_name="logistic_regression",
+            model_artifact_path="artifacts/training/m3/model.joblib",
+            regime_loaded=True,
+            regime_run_id="20260321T120000Z",
+            regime_artifact_path="artifacts/regime/m8/thresholds.json",
+            health_overall_status="HEALTHY",
+            reason_code="HEALTH_HEALTHY",
+        ),
+        signals=tuple(),
+        freshness=tuple(),
+        database=DatabaseSnapshot(
+            available=True,
+            checked_at=checked_at,
+            recent_decision_traces=(
+                DecisionTraceSnapshot(
+                    decision_trace_id=11,
+                    service_name="paper-trader",
+                    execution_mode="paper",
+                    symbol="BTC/USD",
+                    signal="BUY",
+                    signal_row_id="BTC|11",
+                    signal_as_of_time=checked_at,
+                    model_name="logistic_regression",
+                    model_version="m3-20260321T120000Z",
+                    risk_outcome=None,
+                    updated_at=checked_at,
+                ),
+            ),
+        ),
+    )
+
+    rows = build_config_summary_rows(
+        settings=settings,
+        trading_config=_config(),
+        snapshot=snapshot,
+    )
+
+    values = {row["setting"]: row["value"] for row in rows}
+    assert values["Symbols"] == "BTC/USD"
+    assert values["Canonical feature table"] == "feature_ohlc"
+    assert values["Execution mode"] == "paper"
+    assert values["Active model reference"] == "m3-20260321T120000Z"

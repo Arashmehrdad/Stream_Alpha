@@ -374,6 +374,18 @@ def test_dashboard_snapshot_includes_live_safety_state_when_present() -> None:
                     "consecutive_live_failures": 0,
                     "failure_hard_stop_active": False,
                     "last_failure_reason": None,
+                    "system_health_status": "HEALTHY",
+                    "system_health_reason_code": "SYSTEM_HEALTHY",
+                    "system_health_checked_at": datetime(2026, 3, 21, 12, 0, tzinfo=timezone.utc),
+                    "health_gate_status": "CLEAR",
+                    "health_gate_reason_code": "HEALTH_GATE_CLEAR",
+                    "health_gate_detail": "all clear",
+                    "broker_cash": 1000.0,
+                    "broker_equity": 1005.0,
+                    "reconciliation_status": "CLEAR",
+                    "reconciliation_reason_code": "RECONCILIATION_CLEAR",
+                    "reconciliation_checked_at": datetime(2026, 3, 21, 12, 0, tzinfo=timezone.utc),
+                    "unresolved_incident_count": 0,
                     "updated_at": datetime(2026, 3, 21, 12, 0, tzinfo=timezone.utc),
                 }
             return None
@@ -395,6 +407,9 @@ def test_dashboard_snapshot_includes_live_safety_state_when_present() -> None:
     assert snapshot.database.live_safety_state is not None
     assert snapshot.database.live_safety_state.broker_name == "alpaca"
     assert snapshot.database.live_safety_state.account_id == "PA12345"
+    assert snapshot.database.live_safety_state.health_gate_status == "CLEAR"
+    assert snapshot.database.live_safety_state.reconciliation_status == "CLEAR"
+    assert snapshot.database.live_safety_state.broker_cash == 1000.0
 
 
 def test_dashboard_snapshot_includes_recent_decision_traces_and_latest_blocked_trade() -> None:
@@ -561,6 +576,8 @@ def test_dashboard_snapshot_includes_recent_decision_traces_and_latest_blocked_t
     assert snapshot.database.recent_decision_traces
     assert snapshot.database.recent_decision_traces[0].decision_trace_id == 11
     assert snapshot.database.recent_decision_traces[0].json_report_path.endswith("11.json")
+    assert snapshot.database.recent_decision_traces[0].requested_notional == 1000.0
+    assert snapshot.database.recent_decision_traces[0].approved_notional == 500.0
     assert snapshot.database.latest_blocked_trade is not None
     assert snapshot.database.latest_blocked_trade.blocked_stage == "risk"
     assert snapshot.database.latest_blocked_trade.primary_reason_code == "TRADE_NOT_ALLOWED"

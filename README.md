@@ -34,6 +34,8 @@ Milestone `M14` Packet 2 adds a canonical decision-trace and risk-rationale foun
 
 Milestone `M14` Packet 3 finishes the remaining explainability linkage without drifting into M15 console maturity. It carries the same canonical trace id through execution-facing rows, writes deterministic JSON plus Markdown rationale reports under `artifacts/rationale/`, persists those report paths back into `decision_traces`, and adds one minimal dashboard view for recent traces, blocked-trade rationale, and report downloads.
 
+Milestone `M15` upgrades the Streamlit UI into an operator console foundation. It keeps all accepted M4, M10, M11, M12, M13, and M14 authority boundaries intact, replaces the older three-tab layout with explicit market, signals, trades, risk, health, models, and incidents views, adds a persistent mode and safety banner, surfaces venue and environment truth, adds a filterable trade journal from canonical decision traces, and makes unsafe state visibly obvious without adding alerting, broker import, or a new backend service.
+
 ## Repository Tree
 
 ```text
@@ -185,7 +187,7 @@ Milestone `M14` Packet 3 finishes the remaining explainability linkage without d
 - `features`: OHLC-only feature consumer from M2
 - `inference`: FastAPI prediction API from M4, run directly from the repo with the accepted M3 artifact
 - `paper-trader`: long-only spot execution engine from M5/M9/M11/M12, run directly from the repo against canonical features plus authoritative M4 signals, M9 regime decisions, the M10 risk engine, and the configured paper, shadow, or guarded live execution mode
-- `dashboard`: read-only Streamlit UI from M6, run directly from the repo against the accepted API and PostgreSQL sources, including additive M9 regime fields
+- `dashboard`: read-only Streamlit operator console from M6 through M15, run directly from the repo against the accepted API and PostgreSQL sources, including additive regime, reliability, live-safety, and decision-trace visibility
 
 ## M2 Scope
 
@@ -458,6 +460,24 @@ M14 Packet 3 does not do:
 - add M15 operator-console redesign, alerting, deployment automation, or a new orchestration service
 - duplicate the canonical rationale payload outside `decision_traces`
 
+## M15 Scope
+
+M15 does:
+- keep the accepted M4, M10, M11, M12, M13, and M14 authority boundaries unchanged
+- replace the old three-tab Streamlit layout with seven operator views: `Market`, `Signals`, `Trades`, `Risk`, `Health`, `Models`, and `Incidents`
+- render one persistent top banner showing execution mode, safety posture, venue, environment, latest evaluation time, and the primary active blocking or degraded reason when applicable
+- surface venue and environment truth near the banner, including validated account and environment fields when guarded-live state is available
+- add freshness timestamps and compact age text across market, signals, risk, health, incidents, and recent trade or order activity tables
+- add a filterable trade journal from canonical `decision_traces` and their linkage ids without inventing fill state
+- aggregate current unsafe state from live safety, canonical reliability, freshness, breaker state, and latest blocked-trade truth into one incidents view
+- add an operator-friendly config summary that shows active symbols, feature table, inference API URL, execution mode, venue and environment context, fee assumptions, major risk caps, live whitelist, and active model or regime references
+
+M15 does not do:
+- change strategy logic, M10 sizing policy, M11 execution routing, or M13 reliability semantics
+- add alert routing, deployment automation, broker import, or a new orchestration layer
+- pretend broker fills or reconciliation state exist when they do not
+- add a new backend service or write dashboard state back into PostgreSQL
+
 ## Environment Variables
 
 Copy `.env.example` to `.env` before running the stack.
@@ -714,7 +734,7 @@ M13 writes:
 M14 writes:
 - `artifacts/explainability/<model_version>/reference.json`
 
-The dashboard shows the configured execution mode, a strong `LIVE` banner when `mode: live`, the current live safety state, recent live order audit rows, and the canonical M13 reliability summary. This remains a guarded live foundation; alert routing and automatic recovery orchestration are still intentionally deferred.
+The operator console shows the configured execution mode, a persistent safety banner, venue and environment truth, live safety state, canonical M13 reliability state, recent decision traces, rationale report download paths, a filterable trade journal, and a current incidents view. This remains a guarded live foundation; alert routing, broker import, and automatic recovery orchestration are still intentionally deferred.
 
 ### 13. Run the M6 Streamlit dashboard
 
@@ -1118,7 +1138,7 @@ Open the existing dashboard and confirm the trading tab now shows recent decisio
 streamlit run dashboards\streamlit_app.py
 ```
 
-Expect `Recent Decision Traces`, `Latest Blocked Trade Rationale`, and `Rationale Reports` sections. The selected report should show both stored paths and offer JSON plus Markdown downloads when the files exist.
+Expect the persistent top banner, visible venue or environment summary, seven named views, a trade journal with filters, an incidents panel with explicit empty-safe or active-incident output, `Recent Decision Traces`, `Latest Blocked Trade Rationale`, and `Rationale Reports`. The selected report should show both stored paths and offer JSON plus Markdown downloads when the files exist.
 
 ## Inspect Topics
 

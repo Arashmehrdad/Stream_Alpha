@@ -1,74 +1,76 @@
-"""Read-only Stream Alpha M6 operator dashboard."""
+"""Read-only Stream Alpha M15 operator console."""
 
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, time, timezone
 from pathlib import Path
 
 import streamlit as st
 import streamlit.components.v1 as components
 
 from app.common.config import Settings
-from app.trading.config import load_paper_trading_config
-from dashboards.data_sources import DashboardDataSources
+from app.trading.config import PaperTradingConfig, load_paper_trading_config
+from dashboards.data_sources import DashboardDataSources, DecisionTraceSnapshot
 from dashboards.view_models import (
     age_text,
+    build_config_summary_rows,
     build_feature_lag_rows,
-    build_reliability_status_rows,
-    build_service_health_rows,
-    build_latest_blocked_trade_rows,
-    build_drawdown_curve_rows,
-    build_equity_curve_rows,
     build_feature_snapshot_rows,
+    build_latest_blocked_trade_rows,
+    build_latest_recovery_rows,
     build_latest_signal_rows,
     build_live_status_rows,
+    build_model_reference_rows,
     build_open_position_rows,
+    build_operator_banner,
+    build_operator_incident_rows,
     build_overview_metrics,
     build_performance_by_regime_rows,
-    build_recent_decision_trace_rows,
     build_recent_closed_trade_rows,
+    build_recent_decision_trace_rows,
     build_recent_ledger_rows,
     build_recent_order_audit_rows,
+    build_reliability_status_rows,
+    build_service_health_rows,
     build_symbol_freshness_rows,
+    build_trade_journal_rows,
     build_trader_freshness,
+    build_venue_environment_rows,
+    filter_trade_journal_traces,
     latest_feature_as_of,
 )
-from dashboards.widgets import render_health_card, render_table
+from dashboards.widgets import (
+    render_health_card,
+    render_incidents_panel,
+    render_operator_banner,
+    render_summary_cards,
+    render_table,
+)
+
+# pylint: disable=too-many-locals,too-many-arguments,too-many-statements
 
 
 CONFIG_PATH = Path("configs/paper_trading.yaml")
 
 
 def main() -> None:
-    """Run the read-only Stream Alpha M6 dashboard."""
+    """Run the read-only Stream Alpha M15 operator console."""
     settings = Settings.from_env()
     trading_config = load_paper_trading_config(CONFIG_PATH)
 
     st.set_page_config(
-        page_title="Stream Alpha Dashboard",
+        page_title="Stream Alpha Operator Console",
         page_icon="SA",
         layout="wide",
     )
     _maybe_enable_auto_refresh(settings.dashboard.refresh_seconds)
 
     st.title("Stream Alpha")
-    st.caption("Milestone M6 operator dashboard")
+    st.caption("Milestone M15 operator console foundation")
 
     with st.sidebar:
-        st.header("Runtime")
-        st.write(f"Inference API: `{settings.dashboard.inference_api_base_url}`")
-        st.write(f"Feature source table: `{settings.tables.feature_ohlc}`")
-        st.write(f"Paper trader service: `{trading_config.service_name}`")
-        st.write(f"Execution mode: `{trading_config.execution.mode}`")
-        if trading_config.execution.mode == "live":
-            st.write("Broker: `alpaca`")
-            st.write(
-                "Expected environment: "
-                f"`{trading_config.execution.live.expected_environment}`"
-            )
-        st.write(f"Refresh target: `{settings.dashboard.refresh_seconds}s`")
-        if st.button("Refresh now", width="stretch"):
-            st.rerun()
+        _render_sidebar(settings=settings, trading_config=trading_config)
 
     snapshot = asyncio.run(
         DashboardDataSources(
@@ -76,257 +78,334 @@ def main() -> None:
             trading_config=trading_config,
         ).load_snapshot()
     )
-
-    _render_mode_banner(trading_config=trading_config, snapshot=snapshot)
-
-    overview_tab, signals_tab, trading_tab = st.tabs(
-        ["Overview", "Signals and Features", "Trading"]
+    reference_time = max(snapshot.api_health.checked_at, snapshot.database.checked_at)
+    incidents = build_operator_incident_rows(
+        snapshot=snapshot,
+        trading_config=trading_config,
+        now=reference_time,
     )
-
+    banner = build_operator_banner(
+        snapshot=snapshot,
+        trading_config=trading_config,
+        incidents=incidents,
+        now=reference_time,
+    )
+    venue_rows = build_venue_environment_rows(
+        snapshot=snapshot,
+        trading_config=trading_config,
+    )
+    config_summary_rows = build_config_summary_rows(
+        settings=settings,
+        trading_config=trading_config,
+        snapshot=snapshot,
+    )
     latest_signals = build_latest_signal_rows(
         symbols=trading_config.symbols,
         signals=snapshot.signals,
+        now=reference_time,
     )
     latest_features = build_feature_snapshot_rows(
         symbols=trading_config.symbols,
         features=snapshot.database.latest_features,
+        now=reference_time,
     )
     reliability_rows = build_reliability_status_rows(
         api_health=snapshot.api_health,
         system_reliability=snapshot.system_reliability,
         reliability_states=snapshot.database.reliability_states,
         latest_recovery_event=snapshot.database.latest_recovery_event,
+        now=reference_time,
     )
-    service_health_rows = build_service_health_rows(snapshot.system_reliability)
-    lag_rows = build_feature_lag_rows(snapshot.system_reliability)
-    freshness_rows = build_symbol_freshness_rows(snapshot.freshness)
-
-    with overview_tab:
-        _render_overview(
-            trading_config=trading_config,
-            snapshot=snapshot,
-            latest_signals=latest_signals,
-            reliability_rows=reliability_rows,
-            service_health_rows=service_health_rows,
-            lag_rows=lag_rows,
-            freshness_rows=freshness_rows,
-        )
-
-    with signals_tab:
-        _render_signals_and_features(
-            snapshot=snapshot,
-            latest_signals=latest_signals,
-            latest_features=latest_features,
-        )
-
-    with trading_tab:
-        _render_trading(
-            settings=settings,
-            trading_config=trading_config,
-            snapshot=snapshot,
-        )
-
-# pylint: disable=too-many-locals
-def _render_overview(  # pylint: disable=too-many-arguments
-    *,
-    trading_config,
-    snapshot,
-    latest_signals,
-    reliability_rows,
-    service_health_rows,
-    lag_rows,
-    freshness_rows,
-) -> None:
-    health_columns = st.columns(4)
-    api_health = snapshot.api_health
-    db_health = snapshot.database
-    trader_freshness = build_trader_freshness(snapshot.database.engine_states)
-    overview_metrics = build_overview_metrics(
-        snapshot=snapshot,
+    service_health_rows = build_service_health_rows(
+        snapshot.system_reliability,
+        now=reference_time,
+    )
+    lag_rows = build_feature_lag_rows(
+        snapshot.system_reliability,
+        now=reference_time,
+    )
+    freshness_rows = build_symbol_freshness_rows(
+        snapshot.freshness,
+        now=reference_time,
+    )
+    live_status_rows = build_live_status_rows(
         trading_config=trading_config,
+        live_safety_state=snapshot.database.live_safety_state,
+        now=reference_time,
     )
-
-    with health_columns[0]:
-        render_health_card(
-            title="Inference API",
-            state=api_health.status,
-            detail=(
-                api_health.error
-                if api_health.error is not None
-                else f"Checked {age_text(api_health.checked_at)} ago"
-            ),
-            healthy=api_health.available,
-        )
-    with health_columns[1]:
-        render_health_card(
-            title="PostgreSQL",
-            state="healthy" if db_health.available else "unavailable",
-            detail=(
-                db_health.error
-                if db_health.error is not None
-                else f"Checked {age_text(db_health.checked_at)} ago"
-            ),
-            healthy=db_health.available,
-        )
-    with health_columns[2]:
-        model_loaded = api_health.model_loaded and api_health.model_name is not None
-        render_health_card(
-            title="Model",
-            state=api_health.model_name or "not loaded",
-            detail=api_health.model_artifact_path or "Model artifact unavailable",
-            healthy=model_loaded,
-        )
-    with health_columns[3]:
-        render_health_card(
-            title="Paper Trader",
-            state=trader_freshness.state,
-            detail=trader_freshness.message,
-            healthy=trader_freshness.state == "healthy",
-        )
-
-    if snapshot.system_reliability is None or not snapshot.system_reliability.available:
-        st.warning(
-            "Canonical reliability summary is unavailable. "
-            "The dashboard is showing fallback degraded state where possible."
-        )
-
-    if overview_metrics is None:
-        st.error("Trading KPIs are unavailable because PostgreSQL could not be read.")
-    else:
-        kpi_columns = st.columns(5)
-        kpi_columns[0].metric("Realized PnL", f"{overview_metrics.realized_pnl:,.2f}")
-        kpi_columns[1].metric("Unrealized PnL", f"{overview_metrics.unrealized_pnl:,.2f}")
-        kpi_columns[2].metric("Total PnL", f"{overview_metrics.total_pnl:,.2f}")
-        kpi_columns[3].metric("Max Drawdown", f"{overview_metrics.max_drawdown:.2%}")
-        kpi_columns[4].metric("Open Positions", str(overview_metrics.open_position_count))
-
-        secondary_columns = st.columns(4)
-        secondary_columns[0].metric("Cash Balance", f"{overview_metrics.cash_balance:,.2f}")
-        secondary_columns[1].metric("Win Rate", f"{overview_metrics.win_rate:.2%}")
-        secondary_columns[2].metric("Turnover", f"{overview_metrics.turnover:.2f}")
-        secondary_columns[3].metric("Sharpe-Like", f"{overview_metrics.sharpe_like:.2f}")
-
-    render_table("Latest Signals", latest_signals)
-    render_table("Reliability Status", reliability_rows)
-    render_table("Per-Service Health", service_health_rows)
-    render_table("Feature Consumer Lag", lag_rows)
-    render_table("Per-Symbol Freshness", freshness_rows)
-    if api_health.regime_loaded:
-        st.caption(
-            "Regime runtime: "
-            f"`{api_health.regime_run_id}` from `{api_health.regime_artifact_path}`"
-        )
-
-    if snapshot.database.available:
-        chart_rows = build_equity_curve_rows(
-            positions=snapshot.database.positions,
-            initial_cash=trading_config.risk.initial_cash,
-            latest_prices=snapshot.database.latest_prices,
-            fee_bps=trading_config.risk.fee_bps,
-            as_of_time=latest_feature_as_of(snapshot.database.latest_features),
-        )
-        drawdown_rows = build_drawdown_curve_rows(chart_rows)
-        chart_columns = st.columns(2)
-        with chart_columns[0]:
-            st.subheader("Equity and PnL")
-            st.line_chart(
-                chart_rows,
-                x="timestamp",
-                y=["equity", "cumulative_pnl"],
-                width="stretch",
-            )
-        with chart_columns[1]:
-            st.subheader("Drawdown")
-            st.line_chart(
-                drawdown_rows,
-                x="timestamp",
-                y="drawdown",
-                width="stretch",
-            )
-
-        st.caption(
-            "Latest canonical feature age: "
-            f"{age_text(latest_feature_as_of(snapshot.database.latest_features))}"
-        )
-
-    st.caption(
-        "Dashboard reads only from the accepted M4 inference API and M5 PostgreSQL tables."
+    recent_decision_trace_rows = build_recent_decision_trace_rows(
+        snapshot.database.recent_decision_traces,
+        now=reference_time,
     )
-# pylint: enable=too-many-locals
-
-
-def _render_signals_and_features(*, snapshot, latest_signals, latest_features) -> None:
-    if not snapshot.api_health.available:
-        st.warning(
-            "Inference API is degraded. Signal rows below show unavailable states where applicable."
-        )
-    if not snapshot.database.available:
-        st.error(
-            "PostgreSQL is unavailable. "
-            "Feature snapshots cannot be loaded until the database recovers."
-        )
-
-    render_table("Latest Signals By Asset", latest_signals)
-    render_table("Latest Canonical Feature Snapshot", latest_features)
-
-# pylint: disable=too-many-locals
-def _render_trading(
-    *,
-    settings: Settings,
-    trading_config,
-    snapshot,
-) -> None:
-    if not snapshot.database.available:
-        st.error("PostgreSQL is unavailable. Trading state cannot be rendered.")
-        return
-
-    freshness = build_trader_freshness(snapshot.database.engine_states)
-    freshness_columns = st.columns(4)
-    freshness_columns[0].metric("Tracked Symbols", str(freshness.symbols_tracked))
-    freshness_columns[1].metric("Pending Signals", str(freshness.pending_signal_count))
-    freshness_columns[2].metric(
-        "Latest Processed",
-        "-"
-        if freshness.latest_processed_interval_begin is None
-        else freshness.latest_processed_interval_begin.isoformat(),
+    latest_blocked_trade_rows = build_latest_blocked_trade_rows(
+        snapshot.database.latest_blocked_trade,
+        now=reference_time,
     )
-    freshness_columns[3].metric(
-        "Slowest Processed",
-        "-"
-        if freshness.slowest_processed_interval_begin is None
-        else freshness.slowest_processed_interval_begin.isoformat(),
+    recent_order_audit_rows = build_recent_order_audit_rows(
+        snapshot.database.recent_order_events,
+        now=reference_time,
     )
-
+    recent_ledger_rows = build_recent_ledger_rows(
+        snapshot.database.recent_ledger_entries,
+        now=reference_time,
+    )
+    recent_closed_rows = build_recent_closed_trade_rows(
+        snapshot.database.recent_closed_positions,
+        now=reference_time,
+    )
     open_position_rows = build_open_position_rows(
         positions=snapshot.database.positions,
         latest_prices=snapshot.database.latest_prices,
         fee_bps=trading_config.risk.fee_bps,
     )
-    recent_closed_rows = build_recent_closed_trade_rows(
-        snapshot.database.recent_closed_positions
-    )
-    recent_ledger_rows = build_recent_ledger_rows(snapshot.database.recent_ledger_entries)
-    recent_order_audit_rows = build_recent_order_audit_rows(
-        snapshot.database.recent_order_events
-    )
-    recent_decision_trace_rows = build_recent_decision_trace_rows(
-        snapshot.database.recent_decision_traces
-    )
-    latest_blocked_trade_rows = build_latest_blocked_trade_rows(
-        snapshot.database.latest_blocked_trade
-    )
-    live_status_rows = build_live_status_rows(
-        trading_config=trading_config,
-        live_safety_state=snapshot.database.live_safety_state,
-    )
-    by_regime_rows = build_performance_by_regime_rows(
+    performance_by_regime_rows = build_performance_by_regime_rows(
         snapshot=snapshot,
         trading_config=trading_config,
     )
+    model_reference_rows = build_model_reference_rows(
+        snapshot=snapshot,
+        now=reference_time,
+    )
+    latest_recovery_rows = build_latest_recovery_rows(
+        snapshot.database.latest_recovery_event,
+        now=reference_time,
+    )
+    overview_metrics = build_overview_metrics(
+        snapshot=snapshot,
+        trading_config=trading_config,
+    )
+    trader_freshness = build_trader_freshness(snapshot.database.engine_states)
 
-    st.caption(f"Execution mode: `{trading_config.execution.mode}`")
+    render_operator_banner(banner)
+    render_summary_cards(
+        title="Venue and Environment",
+        items=_venue_summary_cards(venue_rows[0]),
+    )
+
+    tab_labels = [
+        "Market",
+        "Signals",
+        "Trades",
+        "Risk",
+        "Health",
+        "Models",
+        "Incidents",
+    ]
+    (
+        market_view,
+        signals_view,
+        trades_view,
+        risk_view,
+        health_view,
+        models_view,
+        incidents_view,
+    ) = st.tabs(tab_labels)
+
+    with market_view:
+        _render_market_view(
+            trading_config=trading_config,
+            snapshot=snapshot,
+            latest_features=latest_features,
+            freshness_rows=freshness_rows,
+            lag_rows=lag_rows,
+            reference_time=reference_time,
+        )
+
+    with signals_view:
+        _render_signals_view(
+            latest_signals=latest_signals,
+            recent_decision_trace_rows=recent_decision_trace_rows,
+            snapshot=snapshot,
+        )
+
+    with trades_view:
+        _render_trades_view(
+            snapshot=snapshot,
+            trading_config=trading_config,
+            overview_metrics=overview_metrics,
+            open_position_rows=open_position_rows,
+            recent_closed_rows=recent_closed_rows,
+            recent_ledger_rows=recent_ledger_rows,
+            recent_order_audit_rows=recent_order_audit_rows,
+            reference_time=reference_time,
+        )
+
+    with risk_view:
+        _render_risk_view(
+            snapshot=snapshot,
+            performance_by_regime_rows=performance_by_regime_rows,
+            latest_blocked_trade_rows=latest_blocked_trade_rows,
+            reference_time=reference_time,
+        )
+
+    with health_view:
+        _render_health_view(
+            snapshot=snapshot,
+            trading_config=trading_config,
+            reliability_rows=reliability_rows,
+            service_health_rows=service_health_rows,
+            lag_rows=lag_rows,
+            freshness_rows=freshness_rows,
+            live_status_rows=live_status_rows,
+            latest_recovery_rows=latest_recovery_rows,
+            trader_freshness=trader_freshness,
+        )
+
+    with models_view:
+        _render_models_view(
+            snapshot=snapshot,
+            model_reference_rows=model_reference_rows,
+            config_summary_rows=config_summary_rows,
+            recent_decision_trace_rows=recent_decision_trace_rows,
+        )
+
+    with incidents_view:
+        _render_incidents_view(
+            incidents=incidents,
+            latest_recovery_rows=latest_recovery_rows,
+            latest_blocked_trade_rows=latest_blocked_trade_rows,
+        )
+
+
+def _render_sidebar(*, settings: Settings, trading_config: PaperTradingConfig) -> None:
+    st.header("Runtime")
+    st.write(f"Inference API: `{settings.dashboard.inference_api_base_url}`")
+    st.write(f"Feature source table: `{settings.tables.feature_ohlc}`")
+    st.write(f"Paper trader service: `{trading_config.service_name}`")
+    st.write(f"Execution mode: `{trading_config.execution.mode}`")
+    st.write(f"Refresh target: `{settings.dashboard.refresh_seconds}s`")
     if trading_config.execution.mode == "live":
-        render_table("Live Status", live_status_rows)
+        st.write("Broker: `alpaca`")
+        st.write(
+            "Expected environment: "
+            f"`{trading_config.execution.live.expected_environment}`"
+        )
+    if st.button("Refresh now", width="stretch"):
+        st.rerun()
+
+
+def _render_market_view(
+    *,
+    trading_config: PaperTradingConfig,
+    snapshot,
+    latest_features,
+    freshness_rows,
+    lag_rows,
+    reference_time: datetime,
+) -> None:
+    latest_feature_time = latest_feature_as_of(snapshot.database.latest_features)
+    fresh_symbol_count = sum(
+        int(row["freshness_status"] == "FRESH") for row in freshness_rows
+    )
+    lag_breach_count = sum(int(row["lag_breach"]) for row in lag_rows)
+    render_summary_cards(
+        title="Market Summary",
+        items=[
+            {"label": "Configured symbols", "value": str(len(trading_config.symbols))},
+            {
+                "label": "Latest feature time",
+                "value": (
+                    "-"
+                    if latest_feature_time is None
+                    else latest_feature_time.isoformat()
+                ),
+                "detail": age_text(latest_feature_time, reference_time) or "unavailable",
+            },
+            {
+                "label": "Fresh symbols",
+                "value": (
+                    f"{fresh_symbol_count}/"
+                    f"{len(freshness_rows) or len(trading_config.symbols)}"
+                ),
+                "detail": "Per-symbol exact-row freshness",
+            },
+            {
+                "label": "Lag breaches",
+                "value": str(lag_breach_count),
+                "detail": "Feature consumer lag threshold breaches",
+            },
+        ],
+    )
+    render_table("Per-Symbol Freshness", freshness_rows)
+    render_table("Latest Canonical Feature Snapshot", latest_features)
+    render_table("Feature Consumer Lag", lag_rows)
+    st.caption(
+        "Market view is sourced from canonical feature rows, exact-row "
+        "freshness, and M13 lag state."
+    )
+
+
+def _render_signals_view(
+    *,
+    latest_signals,
+    recent_decision_trace_rows,
+    snapshot,
+) -> None:
+    buy_count = sum(int(row["signal"] == "BUY") for row in latest_signals)
+    hold_count = sum(int(row["signal"] == "HOLD") for row in latest_signals)
+    unavailable_count = sum(int(row["signal"] == "UNAVAILABLE") for row in latest_signals)
+    render_summary_cards(
+        title="Signal Summary",
+        items=[
+            {"label": "BUY signals", "value": str(buy_count)},
+            {"label": "HOLD signals", "value": str(hold_count)},
+            {"label": "Unavailable", "value": str(unavailable_count)},
+            {
+                "label": "Regime runtime",
+                "value": snapshot.api_health.regime_run_id or "-",
+                "detail": snapshot.api_health.regime_artifact_path or "not loaded",
+            },
+        ],
+    )
+    render_table("Latest Signals By Asset", latest_signals)
+    render_table("Recent Decision Traces", recent_decision_trace_rows)
+
+
+def _render_trades_view(
+    *,
+    snapshot,
+    trading_config: PaperTradingConfig,
+    overview_metrics,
+    open_position_rows,
+    recent_closed_rows,
+    recent_ledger_rows,
+    recent_order_audit_rows,
+    reference_time: datetime,
+) -> None:
+    render_summary_cards(
+        title="Trade Summary",
+        items=[
+            {
+                "label": "Open positions",
+                "value": str(len(open_position_rows)),
+            },
+            {
+                "label": "Closed trades loaded",
+                "value": str(len(recent_closed_rows)),
+            },
+            {
+                "label": "Recent order events",
+                "value": str(len(recent_order_audit_rows)),
+            },
+            {
+                "label": "Total PnL",
+                "value": "-"
+                if overview_metrics is None
+                else f"{overview_metrics.total_pnl:,.2f}",
+                "detail": "Unavailable if PostgreSQL trading state could not be read",
+            },
+        ],
+    )
+
+    filtered_traces = _filter_trade_journal(
+        traces=snapshot.database.recent_decision_traces,
+        reference_time=reference_time,
+    )
+    trade_journal_rows = build_trade_journal_rows(
+        filtered_traces,
+        now=reference_time,
+    )
+    render_table("Trade Journal", trade_journal_rows)
     render_table("Open Positions", open_position_rows)
     render_table("Recent Closed Trades", recent_closed_rows)
     render_table("Recent Ledger Activity", recent_ledger_rows)
@@ -336,31 +415,299 @@ def _render_trading(
         else "Recent Order Audit",
         recent_order_audit_rows,
     )
-    render_table("Recent Decision Traces", recent_decision_trace_rows)
-    render_table("Latest Blocked Trade Rationale", latest_blocked_trade_rows)
     _render_rationale_report_downloads(snapshot.database.recent_decision_traces)
-    render_table("Performance By Regime", by_regime_rows)
 
-    st.caption(
-        "Recent closed trades limit: "
-        f"{settings.dashboard.recent_trades_limit}; "
-        f"recent ledger limit: {settings.dashboard.recent_ledger_limit}"
+
+def _render_risk_view(
+    *,
+    snapshot,
+    performance_by_regime_rows,
+    latest_blocked_trade_rows,
+    reference_time: datetime,
+) -> None:
+    traces = snapshot.database.recent_decision_traces
+    blocked_count = sum(int(trace.risk_outcome == "BLOCKED") for trace in traces)
+    modified_count = sum(int(trace.risk_outcome == "MODIFIED") for trace in traces)
+    latest_blocked_reason = (
+        "-"
+        if snapshot.database.latest_blocked_trade is None
+        else snapshot.database.latest_blocked_trade.primary_reason_code or "-"
     )
-# pylint: enable=too-many-locals
+    risk_rows = build_trade_journal_rows(
+        traces,
+        now=reference_time,
+    )
+    render_summary_cards(
+        title="Risk Summary",
+        items=[
+            {"label": "Blocked decisions", "value": str(blocked_count)},
+            {"label": "Modified decisions", "value": str(modified_count)},
+            {"label": "Latest blocked reason", "value": latest_blocked_reason},
+            {
+                "label": "Latest risk trace",
+                "value": "-"
+                if not traces
+                else traces[0].signal_as_of_time.isoformat(),
+            },
+        ],
+    )
+    render_table("Latest Blocked Trade Rationale", latest_blocked_trade_rows)
+    render_table("Recent Risk Decisions", risk_rows)
+    render_table("Performance By Regime", performance_by_regime_rows)
 
 
-def _render_mode_banner(*, trading_config, snapshot) -> None:
-    if trading_config.execution.mode == "live":
-        live_state = snapshot.database.live_safety_state
-        status_suffix = (
-            "startup checks passed"
-            if live_state is not None and live_state.startup_checks_passed
-            else "startup checks not passed"
+def _render_health_view(
+    *,
+    snapshot,
+    trading_config: PaperTradingConfig,
+    reliability_rows,
+    service_health_rows,
+    lag_rows,
+    freshness_rows,
+    live_status_rows,
+    latest_recovery_rows,
+    trader_freshness,
+) -> None:
+    system_health = (
+        "UNAVAILABLE"
+        if snapshot.system_reliability is None
+        else snapshot.system_reliability.health_overall_status or "UNKNOWN"
+    )
+    live_gate = live_status_rows[0].get("health_gate_status")
+    render_summary_cards(
+        title="Health Summary",
+        items=[
+            {"label": "System health", "value": system_health},
+            {
+                "label": "Lag breach active",
+                "value": str(
+                    False
+                    if snapshot.system_reliability is None
+                    else bool(snapshot.system_reliability.lag_breach_active)
+                ),
+            },
+            {
+                "label": "Trader freshness",
+                "value": trader_freshness.state,
+                "detail": trader_freshness.message,
+            },
+            {
+                "label": "Live submit gate",
+                "value": "-" if trading_config.execution.mode != "live" else str(live_gate),
+            },
+        ],
+    )
+
+    health_columns = st.columns(4)
+    with health_columns[0]:
+        render_health_card(
+            title="Inference API",
+            state=snapshot.api_health.status,
+            detail=(
+                snapshot.api_health.error
+                if snapshot.api_health.error is not None
+                else f"Checked {age_text(snapshot.api_health.checked_at)} ago"
+            ),
+            healthy=snapshot.api_health.available,
         )
-        st.error(f"LIVE MODE ENABLED: {status_suffix}")
-        return
+    with health_columns[1]:
+        render_health_card(
+            title="PostgreSQL",
+            state="healthy" if snapshot.database.available else "unavailable",
+            detail=(
+                snapshot.database.error
+                if snapshot.database.error is not None
+                else f"Checked {age_text(snapshot.database.checked_at)} ago"
+            ),
+            healthy=snapshot.database.available,
+        )
+    with health_columns[2]:
+        render_health_card(
+            title="Model",
+            state=snapshot.api_health.model_name or "not loaded",
+            detail=snapshot.api_health.model_artifact_path or "Model artifact unavailable",
+            healthy=snapshot.api_health.model_loaded,
+        )
+    with health_columns[3]:
+        render_health_card(
+            title="Trader",
+            state=trader_freshness.state,
+            detail=trader_freshness.message,
+            healthy=trader_freshness.state == "healthy",
+        )
 
-    st.info(f"Execution mode: {trading_config.execution.mode}")
+    render_table("Reliability Summary", reliability_rows)
+    render_table("Live Safety State", live_status_rows)
+    render_table("Per-Service Health", service_health_rows)
+    render_table("Per-Symbol Freshness", freshness_rows)
+    render_table("Feature Consumer Lag", lag_rows)
+    render_table("Latest Recovery Event", latest_recovery_rows)
+
+
+def _render_models_view(
+    *,
+    snapshot,
+    model_reference_rows,
+    config_summary_rows,
+    recent_decision_trace_rows,
+) -> None:
+    latest_trace_count = len(snapshot.database.recent_decision_traces)
+    latest_model_version = (
+        "-"
+        if not snapshot.database.recent_decision_traces
+        else snapshot.database.recent_decision_traces[0].model_version
+    )
+    render_summary_cards(
+        title="Model Summary",
+        items=[
+            {
+                "label": "Model name",
+                "value": snapshot.api_health.model_name or "-",
+            },
+            {
+                "label": "Latest model version",
+                "value": latest_model_version,
+            },
+            {
+                "label": "Regime run",
+                "value": snapshot.api_health.regime_run_id or "-",
+            },
+            {
+                "label": "Decision traces loaded",
+                "value": str(latest_trace_count),
+            },
+        ],
+    )
+    render_table("Model and Regime References", model_reference_rows)
+    render_table("Operator Config Summary", config_summary_rows)
+    render_table("Recent Decision Traces", recent_decision_trace_rows)
+
+
+def _render_incidents_view(
+    *,
+    incidents,
+    latest_recovery_rows,
+    latest_blocked_trade_rows,
+) -> None:
+    render_incidents_panel(incidents)
+    render_table("Latest Recovery Event", latest_recovery_rows)
+    render_table("Latest Blocked Trade Rationale", latest_blocked_trade_rows)
+
+
+def _venue_summary_cards(row: dict[str, object]) -> list[dict[str, str]]:
+    mismatch_detail = "venues differ" if bool(row["venue_mismatch"]) else "venues aligned"
+    return [
+        {
+            "label": "Market data venue",
+            "value": str(row["market_data_venue"]),
+        },
+        {
+            "label": "Execution venue",
+            "value": str(row["execution_venue"]),
+            "detail": mismatch_detail,
+        },
+        {
+            "label": "Environment",
+            "value": str(row["environment"]),
+        },
+        {
+            "label": "Truth source",
+            "value": str(row["portfolio_truth_source"]),
+            "detail": (
+                "account "
+                + (
+                    "-"
+                    if row["validated_account_id"] in {None, ""}
+                    else str(row["validated_account_id"])
+                )
+            ),
+        },
+    ]
+
+
+def _filter_trade_journal(
+    *,
+    traces: tuple[DecisionTraceSnapshot, ...],
+    reference_time: datetime,
+) -> tuple[DecisionTraceSnapshot, ...]:
+    if not traces:
+        return tuple()
+
+    timestamps = sorted(trace.signal_as_of_time for trace in traces)
+    min_timestamp = timestamps[0]
+    max_timestamp = timestamps[-1]
+    filter_columns = st.columns(4)
+    selected_symbol = filter_columns[0].selectbox(
+        "Symbol",
+        options=["All"] + sorted({trace.symbol for trace in traces}),
+        index=0,
+    )
+    selected_mode = filter_columns[1].selectbox(
+        "Mode",
+        options=["All"] + sorted({trace.execution_mode for trace in traces}),
+        index=0,
+    )
+    selected_regime = filter_columns[2].selectbox(
+        "Regime",
+        options=["All"]
+        + sorted({trace.regime_label or "UNKNOWN" for trace in traces}),
+        index=0,
+    )
+    selected_reason_code = filter_columns[3].selectbox(
+        "Reason code",
+        options=["All"]
+        + sorted(
+            {
+                trace.primary_reason_code or trace.signal_reason_code
+                for trace in traces
+                if (trace.primary_reason_code or trace.signal_reason_code) is not None
+            }
+        ),
+        index=0,
+    )
+
+    range_columns = st.columns(4)
+    selected_outcome = range_columns[0].selectbox(
+        "Outcome category",
+        options=["All"]
+        + sorted({trace.risk_outcome or "SIGNAL_ONLY" for trace in traces}),
+        index=0,
+    )
+    only_blocked = range_columns[1].checkbox("Only blocked", value=False)
+    start_date = range_columns[2].date_input(
+        "Start date",
+        value=min_timestamp.date(),
+    )
+    start_clock = range_columns[3].time_input(
+        "Start time (UTC)",
+        value=time(min_timestamp.hour, min_timestamp.minute),
+    )
+
+    end_columns = st.columns(4)
+    end_date = end_columns[0].date_input(
+        "End date",
+        value=max_timestamp.date(),
+    )
+    end_clock = end_columns[1].time_input(
+        "End time (UTC)",
+        value=time(max_timestamp.hour, max_timestamp.minute),
+    )
+    end_columns[2].metric("Newest trace age", age_text(max_timestamp, reference_time) or "-")
+    end_columns[3].metric("Journal rows loaded", str(len(traces)))
+
+    start_time = datetime.combine(start_date, start_clock, tzinfo=timezone.utc)
+    end_time = datetime.combine(end_date, end_clock, tzinfo=timezone.utc)
+    return filter_trade_journal_traces(
+        traces,
+        symbol=selected_symbol,
+        mode=selected_mode,
+        start_time=start_time,
+        end_time=end_time,
+        regime=selected_regime,
+        reason_code=selected_reason_code,
+        outcome_category=selected_outcome,
+        only_blocked=only_blocked,
+    )
 
 
 def _maybe_enable_auto_refresh(refresh_seconds: int) -> None:
