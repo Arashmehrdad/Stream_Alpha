@@ -236,6 +236,15 @@ class _FakeRepo:
     async def save_adaptive_promotion_decision(self, decision):
         self._promotion_decisions.insert(0, decision)
 
+    def add_profile(self, profile) -> None:
+        self._profiles[profile.profile_id] = profile
+
+    def profile_status(self, profile_id: str) -> str:
+        return self._profiles[profile_id].status
+
+    def latest_promotion_decision(self):
+        return self._promotion_decisions[0]
+
 
 def test_adaptation_service_freezes_when_reliability_is_degraded() -> None:
     applied = _resolve_adaptation_with_degraded_health()
@@ -464,7 +473,7 @@ def test_adaptation_service_rolls_back_to_target_profile_and_persists_decision()
         drift=drift,
         performance=performance,
     )
-    repository._profiles[rollback_target.profile_id] = rollback_target
+    repository.add_profile(rollback_target)
     with TemporaryDirectory() as temp_dir:
         config = replace(
             load_adaptation_config(default_adaptation_config_path()),
@@ -494,7 +503,7 @@ def test_adaptation_service_rolls_back_to_target_profile_and_persists_decision()
         )
 
         assert decision.decision == "ROLLBACK"
-        assert repository._profiles["profile-current"].status == "ROLLED_BACK"
-        assert repository._profiles["profile-rollback"].status == "ACTIVE"
-        assert repository._promotion_decisions[0].decision == "ROLLBACK"
+        assert repository.profile_status("profile-current") == "ROLLED_BACK"
+        assert repository.profile_status("profile-rollback") == "ACTIVE"
+        assert repository.latest_promotion_decision().decision == "ROLLBACK"
         assert Path(config.artifacts.current_profile_path).exists()

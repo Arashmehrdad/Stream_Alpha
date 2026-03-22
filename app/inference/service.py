@@ -563,6 +563,19 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
             top_feature_count=0,
         )
 
+    def _resolve_top_level_model_identity(
+        self,
+        *,
+        ensemble_result: EnsembleResult,
+    ) -> tuple[str, str]:
+        """Return the truthful top-level model identity for API and trace surfaces."""
+        if ensemble_result.active and ensemble_result.ensemble_profile_id is not None:
+            return (
+                "dynamic_ensemble",
+                f"ensemble_profile:{ensemble_result.ensemble_profile_id}",
+            )
+        return self.model_artifact.model_name, self.model_artifact.model_version
+
     def record_request(self, *, path: str, status_code: int, latency_ms: float) -> None:
         """Record one completed HTTP request."""
         self.metrics.record(path=path, status_code=status_code, latency_ms=latency_ms)
@@ -744,13 +757,16 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
             ),
             freshness_status=(None if freshness is None else freshness.freshness_status),
         )
+        top_level_model_name, top_level_model_version = self._resolve_top_level_model_identity(
+            ensemble_result=ensemble_result,
+        )
         return PredictionContext(
             prediction=PredictionResponse(
                 symbol=str(row["symbol"]),
-                model_name=self.model_artifact.model_name,
+                model_name=top_level_model_name,
                 model_trained_at=self.model_artifact.trained_at,
                 model_artifact_path=self.model_artifact.model_artifact_path,
-                model_version=self.model_artifact.model_version,
+                model_version=top_level_model_version,
                 row_id=f"{row['symbol']}|{to_rfc3339(row['interval_begin'])}",
                 interval_begin=to_rfc3339(row["interval_begin"]),
                 as_of_time=to_rfc3339(row["as_of_time"]),

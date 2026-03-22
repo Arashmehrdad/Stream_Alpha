@@ -111,6 +111,8 @@ def test_initial_trace_includes_active_ensemble_context() -> None:
     """The canonical M14 trace should preserve active ensemble context from M4."""
     signal = replace(
         _signal(),
+        model_name="dynamic_ensemble",
+        model_version="ensemble_profile:ens-profile-1",
         ensemble=EnsembleResult(
             active=True,
             ensemble_profile_id="ens-profile-1",
@@ -139,6 +141,10 @@ def test_initial_trace_includes_active_ensemble_context() -> None:
     assert trace.payload.ensemble.ensemble_profile_id == "ens-profile-1"
     assert trace.payload.ensemble.effective_confidence == 0.62
     assert trace.payload.ensemble.candidate_count == 2
+    assert trace.payload.model_name == "dynamic_ensemble"
+    assert trace.payload.model_version == "ensemble_profile:ens-profile-1"
+    assert trace.payload.prediction.model_name == "dynamic_ensemble"
+    assert trace.payload.prediction.model_version == "ensemble_profile:ens-profile-1"
 
 
 def test_initial_trace_includes_explicit_ensemble_fallback_context() -> None:

@@ -1621,6 +1621,8 @@ def test_predict_returns_ensemble_backed_output_when_active(
     assert payload["ensemble_active"] is True
     assert payload["ensemble_profile_id"] == "ens-profile-active-1"
     assert payload["ensemble_candidate_count"] == 2
+    assert payload["model_name"] == "dynamic_ensemble"
+    assert payload["model_version"] == "ensemble_profile:ens-profile-active-1"
     assert payload["prob_up"] == pytest.approx(0.675)
     assert payload["prob_down"] == pytest.approx(0.325)
     assert payload["confidence"] == pytest.approx(0.675)
@@ -1661,6 +1663,8 @@ def test_signal_uses_ensemble_effective_confidence_when_active(
     assert payload["ensemble_active"] is True
     assert payload["ensemble_profile_id"] == "ens-profile-active-1"
     assert payload["ensemble_candidate_count"] == 2
+    assert payload["model_name"] == "dynamic_ensemble"
+    assert payload["model_version"] == "ensemble_profile:ens-profile-active-1"
     assert payload["ensemble_effective_confidence"] == pytest.approx(0.675)
     assert adaptation_service.last_kwargs is not None
     assert adaptation_service.last_kwargs["confidence"] == pytest.approx(0.675)

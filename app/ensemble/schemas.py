@@ -21,6 +21,16 @@ EnsembleProfileStatus = Literal[
 ]
 EnsembleApprovalStage = Literal["PENDING", "APPROVED", "ACTIVATED", "SUPERSEDED"]
 CandidateParticipationStatus = Literal["ELIGIBLE", "EXCLUDED_SCOPE", "SCORE_FAILED"]
+EnsembleModelFamily = Literal[
+    "AUTOGLUON",
+    "NEURALFORECAST_NHITS",
+    "NEURALFORECAST_NBEATSX",
+    "NEURALFORECAST_TFT",
+    "NEURALFORECAST_PATCHTST",
+    "RIVER",
+    "REGISTRY_CHAMPION_BASELINE",
+]
+EnsembleResearchSlice = Literal["ALL", "TREND_COMBINED", "RANGE", "HIGH_VOL"]
 
 
 class EnsembleCandidateRosterEntry(BaseModel):
@@ -113,6 +123,51 @@ class EnsembleContextPayload(BaseModel):
     agreement_multiplier: float | None = None
     candidate_count: int = 0
     participating_candidates: list[ParticipatingCandidate] = Field(default_factory=list)
+
+
+class EnsembleResearchCandidate(BaseModel):
+    """One registry-backed candidate considered during Packet 2 research."""
+
+    model_version: str
+    model_name: str
+    model_family: EnsembleModelFamily
+    candidate_role: str
+    artifact_path: str
+    trained_at: str
+    scope_regimes: list[str] = Field(default_factory=list)
+    entry_metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class EnsembleEvaluationSliceMetrics(BaseModel):
+    """One evaluation slice used for honest Packet 2 candidate comparison."""
+
+    slice_label: EnsembleResearchSlice
+    net_pnl_after_fees_slippage: float
+    max_drawdown: float
+    calmar_ratio: float | None = None
+    profit_factor: float | None = None
+    signal_precision: float = 0.0
+    trade_count: int = 0
+    blocked_trade_rate: float = 0.0
+    shadow_divergence: float | None = None
+
+
+class EnsembleResearchResult(BaseModel):
+    """Evaluated candidate plus its regime-conditioned Packet 2 evidence."""
+
+    candidate: EnsembleResearchCandidate
+    metrics_by_slice: dict[EnsembleResearchSlice, EnsembleEvaluationSliceMetrics]
+    primary_slice: EnsembleResearchSlice
+    primary_metric_value: float
+
+
+class EnsembleRosterSelection(BaseModel):
+    """Selected canonical 3-role runtime roster for Packet 2."""
+
+    generalist: EnsembleResearchResult
+    trend_specialist: EnsembleResearchResult
+    range_specialist: EnsembleResearchResult
+    evidence_summary_json: dict[str, Any] = Field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

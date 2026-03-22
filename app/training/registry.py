@@ -235,6 +235,79 @@ def load_registry_entry(
     return read_json(entry_path)
 
 
+def list_registry_entries(
+    *,
+    registry_root: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Load all immutable promoted-model registry entries sorted by model_version."""
+    models_root = registry_models_root(registry_root)
+    if not models_root.is_dir():
+        return []
+    entries: list[dict[str, Any]] = []
+    for model_dir in sorted(path for path in models_root.iterdir() if path.is_dir()):
+        entry_path = model_dir / "registry_entry.json"
+        if not entry_path.is_file():
+            continue
+        entries.append(read_json(entry_path))
+    return entries
+
+
+def export_external_model_to_registry(
+    *,
+    model_artifact_path: Path,
+    model_version: str,
+    registry_root: Path | None = None,
+    comparison_payload: dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Copy one standalone local model artifact into the immutable registry."""
+    resolved_model_version = str(model_version).strip()
+    if not resolved_model_version:
+        raise ValueError("model_version cannot be empty")
+
+    source_path = Path(model_artifact_path).resolve()
+    if not source_path.is_file():
+        raise ValueError(f"Model artifact path does not exist: {source_path}")
+
+    payload = _load_model_payload(source_path)
+    model_dir = registry_models_root(registry_root) / resolved_model_version
+    if model_dir.exists():
+        raise ValueError(f"Promoted model version already exists: {resolved_model_version}")
+
+    model_dir.mkdir(parents=True, exist_ok=False)
+    target_artifact_path = model_dir / "model.joblib"
+    shutil.copy2(source_path, target_artifact_path)
+
+    metadata_payload = {}
+    if metadata is not None:
+        metadata_payload = make_json_safe(dict(metadata))
+        write_json_atomic(model_dir / "external_metadata.json", metadata_payload)
+
+    comparison_path = None
+    if comparison_payload is not None:
+        comparison_path = model_dir / "comparison_vs_champion.json"
+        write_json_atomic(comparison_path, comparison_payload)
+
+    entry = {
+        "model_version": resolved_model_version,
+        "model_name": payload["model_name"],
+        "trained_at": payload["trained_at"],
+        "winner_metrics": None,
+        "model_artifact_path": str(target_artifact_path.resolve()),
+        "summary_path": None,
+        "feature_columns_path": None,
+        "run_manifest_path": None,
+        "comparison_path": None if comparison_path is None else str(comparison_path.resolve()),
+        "source_run_dir": None,
+        "source_run_id": None,
+        "source_run_kind": "external",
+        "promoted_at": to_rfc3339(utc_now()),
+        "metadata": metadata_payload,
+    }
+    write_json_atomic(model_dir / "registry_entry.json", entry)
+    return entry
+
+
 def copy_run_snapshot_to_registry(
     *,
     source_run_dir: Path,

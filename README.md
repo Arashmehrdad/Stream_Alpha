@@ -103,6 +103,31 @@ M19 rollback limitations:
 - adaptive PostgreSQL rows and tables are not removed by git rollback and must be cleaned separately if you want a full datastore rollback
 - `artifacts/adaptation/` is local evidence and can be deleted separately when a local-only cleanup is intended
 
+## M20 Scope
+
+M20 Packet 1 adds the runtime ensemble chassis only:
+- scoped active profile loading from PostgreSQL
+- registry-backed candidate scoring
+- regime-aware weighting and agreement-adjusted confidence
+- explicit fallback and truthful Packet 1 explainability placeholder
+- additive M14 decision-trace propagation
+
+M20 Packet 2 adds the first real dynamic ensemble workflow on top of that chassis:
+- offline candidate research and honest regime-conditioned evaluation under `app/ensemble/research.py`
+- explicit internal profile drafting and activation under `app/ensemble/promote.py`
+- explicit internal rollback support under `app/ensemble/rollback.py`
+- registry-backed runtime candidates for one canonical 3-role roster:
+  - one `GENERALIST`
+  - one `TREND_SPECIALIST`
+  - one `RANGE_SPECIALIST`
+- truthful top-level ensemble identity on `/predict`, `/signal`, and canonical decision traces when the ensemble is active
+
+M20 Packet 2 does not do:
+- change M4, M10, M11, M12, M13, M14, M18, or M19 authority boundaries
+- add public write APIs, external orchestration, or automatic live profile mutation
+- add RL, sentiment/news, continual learning, or uncontrolled self-retraining
+- expand runtime beyond the canonical 3-role roster
+
 ## Repository Tree
 
 ```text

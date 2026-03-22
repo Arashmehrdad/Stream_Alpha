@@ -10,9 +10,6 @@ import os
 from datetime import datetime, timezone
 from uuid import uuid4
 
-import asyncpg
-import pytest
-
 from app.adaptation.schemas import (
     AdaptiveChallengerRunRecord,
     AdaptiveDriftRecord,
@@ -41,7 +38,7 @@ def test_adaptation_repository_round_trip_supports_profile_drift_and_promotion()
     asyncio.run(_run_round_trip())
 
 
-async def _run_round_trip() -> None:
+async def _run_round_trip() -> None:  # pylint: disable=too-many-statements
     suffix = uuid4().hex[:10]
     profile_id = f"profile-{suffix}"
     rollback_profile_id = f"profile-rollback-{suffix}"
