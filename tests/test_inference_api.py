@@ -452,6 +452,43 @@ class NullAdaptationService:
         return AdaptationPromotionsResponse()
 
 
+class NullEnsembleService:
+    """No-op ensemble stub for tests that are not exercising M20 behavior."""
+
+    async def startup(self) -> None:
+        return None
+
+    async def shutdown(self) -> None:
+        return None
+
+    async def resolve_ensemble(self, **_kwargs):
+        from app.ensemble.schemas import EnsembleResult
+        return EnsembleResult(
+            active=False,
+            fallback_reason="ENSEMBLE_FALLBACK_SINGLE_MODEL",
+            weighting_reason_codes=("ENSEMBLE_FALLBACK_SINGLE_MODEL",),
+        )
+
+    @property
+    def config(self):
+        from app.ensemble.config import AgreementPolicyConfig, EnsembleConfig
+        return EnsembleConfig(
+            enabled=False,
+            candidate_roles=("GENERALIST",),
+            regime_weight_matrix={"TREND_UP": {"GENERALIST": 1.00}},
+            agreement_policy=AgreementPolicyConfig(
+                high_ratio_min=0.80,
+                high_spread_max=0.12,
+                medium_ratio_min=0.67,
+                medium_spread_max=0.20,
+                high_multiplier=1.00,
+                medium_multiplier=0.93,
+                low_multiplier=0.85,
+            ),
+            artifact_root="artifacts/ensemble",
+        )
+
+
 def _build_settings(model_path: str) -> Settings:
     return Settings(
         app_name="streamalpha",
@@ -818,6 +855,7 @@ def _build_client(  # pylint: disable=too-many-arguments
     alert_repository: FakeAlertRepository | None = None,
     artifact_path: Path | None = None,
     adaptation_service: FakeAdaptationService | NullAdaptationService | None = None,
+    ensemble_service: NullEnsembleService | None = None,
 ) -> TestClient:
     resolved_artifact_path = (
         _write_artifact(tmp_path, prob_up=prob_up)
@@ -834,6 +872,7 @@ def _build_client(  # pylint: disable=too-many-arguments
         alerting_config=_build_alerting_config(tmp_path),
         alert_repository=alert_repository or FakeAlertRepository(),
         adaptation_service=adaptation_service or NullAdaptationService(),
+        ensemble_service=ensemble_service or NullEnsembleService(),
     )
     return TestClient(create_app(service))
 
@@ -1399,3 +1438,43 @@ def test_freshness_endpoint_reports_missing_exact_row(tmp_path: Path) -> None:
     assert payload["freshness_status"] == "STALE"
     assert payload["reason_code"] == "FEATURE_ROW_MISSING"
     assert payload["row_id"] == "BTC/USD|2026-03-21T12:00:00Z"
+
+
+# ---------------------------------------------------------------------------
+# M20 ensemble fields on API endpoints
+# ---------------------------------------------------------------------------
+
+
+def test_health_includes_ensemble_fields(tmp_path: Path) -> None:
+    """/health should include M20 ensemble status fields."""
+    client = _build_client(tmp_path, prob_up=0.7, database=FakeDatabase(row=_feature_row()))
+    response = client.get("/health")
+    assert response.status_code == 200
+    payload = response.json()
+    assert "ensemble_status" in payload
+    assert "ensemble_candidate_count" in payload
+    assert payload["ensemble_candidate_count"] == 0
+
+
+def test_predict_includes_ensemble_fields(tmp_path: Path) -> None:
+    """/predict should include M20 ensemble fields in fallback mode."""
+    client = _build_client(tmp_path, prob_up=0.7, database=FakeDatabase(row=_feature_row()))
+    response = client.get("/predict", params={"symbol": "BTC/USD"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ensemble_active"] is False
+    assert payload["ensemble_candidate_count"] == 0
+    assert payload["ensemble_fallback_reason"] == "ENSEMBLE_FALLBACK_SINGLE_MODEL"
+    assert payload["ensemble_profile_id"] is None
+
+
+def test_signal_includes_ensemble_fields(tmp_path: Path) -> None:
+    """/signal should include M20 ensemble fields in fallback mode."""
+    client = _build_client(tmp_path, prob_up=0.7, database=FakeDatabase(row=_feature_row()))
+    response = client.get("/signal", params={"symbol": "BTC/USD"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ensemble_active"] is False
+    assert payload["ensemble_candidate_count"] == 0
+    assert payload["ensemble_fallback_reason"] == "ENSEMBLE_FALLBACK_SINGLE_MODEL"
+    assert payload["ensemble_profile_id"] is None

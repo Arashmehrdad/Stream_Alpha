@@ -23,6 +23,12 @@ from app.alerting.config import (
 from app.alerting.repository import OperationalAlertRepository
 from app.common.config import Settings
 from app.common.time import parse_rfc3339, to_rfc3339, utc_now
+from app.ensemble.config import default_ensemble_config_path, load_ensemble_config
+from app.ensemble.schemas import EnsembleResult
+from app.ensemble.service import (
+    ENSEMBLE_FALLBACK_SINGLE_MODEL,
+    EnsembleService,
+)
 from app.explainability.config import (
     default_explainability_config_path,
     load_explainability_config,
@@ -105,6 +111,7 @@ class PredictionContext:
 
     prediction: PredictionResponse
     resolved_regime: ResolvedRegime
+    ensemble_result: EnsembleResult = field(default_factory=EnsembleResult)
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,6 +235,7 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
         alerting_config: AlertingConfig | None = None,
         alert_repository: OperationalAlertRepository | Any | None = None,
         adaptation_service: AdaptationService | None = None,
+        ensemble_service: EnsembleService | None = None,
     ) -> None:
         self.settings = settings
         self.started_at = utc_now()
@@ -262,6 +270,9 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
             repository=TradingRepository(settings.postgres.dsn, settings.tables.feature_ohlc),
             config=load_adaptation_config(default_adaptation_config_path()),
         )
+        self.ensemble_service = ensemble_service or EnsembleService(
+            config=load_ensemble_config(default_ensemble_config_path()),
+        )
         self._symbols = set(settings.kraken.symbols)
         self._last_heartbeat_at: datetime | None = None
         self._validate_thresholds()
@@ -291,6 +302,10 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
             await self.adaptation_service.startup()
         except Exception:  # pylint: disable=broad-exception-caught
             return
+        try:
+            await self.ensemble_service.startup()
+        except Exception:  # pylint: disable=broad-exception-caught
+            return
 
     async def shutdown(self) -> None:
         """Close the database pool."""
@@ -305,6 +320,10 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
             return
         try:
             await self.adaptation_service.shutdown()
+        except Exception:  # pylint: disable=broad-exception-caught
+            return
+        try:
+            await self.ensemble_service.shutdown()
         except Exception:  # pylint: disable=broad-exception-caught
             return
 
@@ -391,6 +410,9 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
                 startup_safety_reason_code=alert_health["startup_safety_reason_code"],
                 active_adaptation_count=adaptation_summary.active_profile_count,
                 adaptation_status=adaptation_summary.adaptation_status,
+                ensemble_profile_id=None,
+                ensemble_status="FALLBACK" if not self.ensemble_service.config.enabled else "ENABLED",
+                ensemble_candidate_count=0,
             ),
         )
 
@@ -450,13 +472,25 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
         base_buy_threshold, base_sell_threshold = self._default_thresholds(
             resolved_regime.regime_label
         )
+        # --- M20 ensemble scoring (Packet 1: no real candidates, graceful fallback) ---
+        ensemble_result = await self.ensemble_service.resolve_ensemble(
+            regime_label=resolved_regime.regime_label,
+            candidate_scores=[],
+            active_profile=None,
+        )
+        # If ensemble is active, pass effective_confidence to adaptation
+        confidence_for_adaptation = (
+            ensemble_result.effective_confidence
+            if ensemble_result.active and ensemble_result.effective_confidence is not None
+            else max(prob_up, prob_down)
+        )
         applied_adaptation = await self.adaptation_service.resolve_applied_adaptation(
             execution_mode=self.trading_config.execution.mode,
             symbol=str(row["symbol"]),
             regime_label=resolved_regime.regime_label,
             base_buy_prob_up=base_buy_threshold,
             base_sell_prob_up=base_sell_threshold,
-            confidence=max(prob_up, prob_down),
+            confidence=confidence_for_adaptation,
             health_overall_status=(
                 None if freshness is None else freshness.health_overall_status
             ),
@@ -489,8 +523,15 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
                 adaptation_profile_id=applied_adaptation.profile_id,
                 calibrated_confidence=applied_adaptation.calibrated_confidence,
                 adaptation_reason_codes=list(applied_adaptation.adaptation_reason_codes),
+                ensemble_profile_id=ensemble_result.ensemble_profile_id,
+                ensemble_active=ensemble_result.active,
+                ensemble_agreement_band=ensemble_result.agreement_band,
+                ensemble_effective_confidence=ensemble_result.effective_confidence,
+                ensemble_candidate_count=ensemble_result.candidate_count,
+                ensemble_fallback_reason=ensemble_result.fallback_reason,
             ),
             resolved_regime=resolved_regime,
+            ensemble_result=ensemble_result,
         )
 
     async def signal_from_prediction(  # pylint: disable=too-many-locals
@@ -499,20 +540,26 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
         *,
         resolved_regime: ResolvedRegime,
         freshness: FreshnessEvaluation | None = None,
+        ensemble_result: EnsembleResult | None = None,
     ) -> SignalResponse:
         """Convert one prediction into BUY, SELL, or HOLD."""
+        if ensemble_result is None:
+            ensemble_result = EnsembleResult()
         policy = self.regime_runtime.policy_for(prediction.regime_label)
+        # When ensemble is active, adaptation receives agreement-adjusted confidence
+        if ensemble_result.active and ensemble_result.effective_confidence is not None:
+            signal_confidence_for_adaptation = ensemble_result.effective_confidence
+        elif prediction.calibrated_confidence is not None:
+            signal_confidence_for_adaptation = prediction.calibrated_confidence
+        else:
+            signal_confidence_for_adaptation = prediction.confidence
         applied_adaptation = await self.adaptation_service.resolve_applied_adaptation(
             execution_mode=self.trading_config.execution.mode,
             symbol=prediction.symbol,
             regime_label=prediction.regime_label,
             base_buy_prob_up=policy.buy_prob_up,
             base_sell_prob_up=policy.sell_prob_up,
-            confidence=(
-                prediction.confidence
-                if prediction.calibrated_confidence is None
-                else prediction.calibrated_confidence
-            ),
+            confidence=signal_confidence_for_adaptation,
             health_overall_status=(
                 None if freshness is None else freshness.health_overall_status
             ),
@@ -618,6 +665,12 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
             drift_status=applied_adaptation.drift_status,
             recent_performance_summary=applied_adaptation.recent_performance_summary,
             frozen_by_health_gate=applied_adaptation.frozen_by_health_gate,
+            ensemble_profile_id=ensemble_result.ensemble_profile_id,
+            ensemble_active=ensemble_result.active,
+            ensemble_agreement_band=ensemble_result.agreement_band,
+            ensemble_effective_confidence=ensemble_result.effective_confidence,
+            ensemble_candidate_count=ensemble_result.candidate_count,
+            ensemble_fallback_reason=ensemble_result.fallback_reason,
         )
 
     async def _build_prediction_explainability(
@@ -1173,6 +1226,7 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
                 prediction_context.prediction,
                 resolved_regime=prediction_context.resolved_regime,
                 freshness=freshness,
+                ensemble_result=prediction_context.ensemble_result,
             )
         except ArtifactSchemaMismatchError as error:
             return self._build_reliability_hold(

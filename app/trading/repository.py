@@ -19,6 +19,11 @@ from app.adaptation.schemas import (
     AdaptivePromotionDecisionRecord,
 )
 from app.common.time import to_rfc3339
+from app.ensemble.schemas import (
+    EnsembleChallengerRunRecord,
+    EnsembleProfileRecord,
+    EnsemblePromotionDecisionRecord,
+)
 from app.explainability.schemas import DecisionTracePayload
 from app.reliability.schemas import RecoveryEvent, ReliabilityState, ServiceHeartbeat
 from app.trading.schemas import (
@@ -53,6 +58,9 @@ ADAPTIVE_PERFORMANCE_WINDOWS_TABLE = "adaptive_performance_windows"
 ADAPTIVE_PROFILES_TABLE = "adaptive_profiles"
 ADAPTIVE_CHALLENGER_RUNS_TABLE = "adaptive_challenger_runs"
 ADAPTIVE_PROMOTION_DECISIONS_TABLE = "adaptive_promotion_decisions"
+ENSEMBLE_PROFILES_TABLE = "ensemble_profiles"
+ENSEMBLE_CHALLENGER_RUNS_TABLE = "ensemble_challenger_runs"
+ENSEMBLE_PROMOTION_DECISIONS_TABLE = "ensemble_promotion_decisions"
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -106,6 +114,13 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
         )
         self._adaptive_promotion_decisions_table = _quote_table_name(
             ADAPTIVE_PROMOTION_DECISIONS_TABLE
+        )
+        self._ensemble_profiles_table = _quote_table_name(ENSEMBLE_PROFILES_TABLE)
+        self._ensemble_challenger_runs_table = _quote_table_name(
+            ENSEMBLE_CHALLENGER_RUNS_TABLE
+        )
+        self._ensemble_promotion_decisions_table = _quote_table_name(
+            ENSEMBLE_PROMOTION_DECISIONS_TABLE
         )
         self._pool: asyncpg.Pool | None = None
 
@@ -1527,6 +1542,175 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
         )
         return [_adaptive_promotion_decision_from_row(row) for row in rows]
 
+    # ------------------------------------------------------------------
+    # M20 ensemble CRUD
+    # ------------------------------------------------------------------
+
+    async def save_ensemble_profile(self, record: EnsembleProfileRecord) -> None:
+        """Upsert one ensemble profile row."""
+        pool = self._require_pool()
+        await pool.execute(
+            f"""
+            INSERT INTO {self._ensemble_profiles_table} (
+                profile_id, status, approval_stage,
+                candidate_roster_json, regime_weight_matrix_json,
+                agreement_policy_json, evidence_summary_json,
+                rollback_target_profile_id,
+                created_at, approved_at, activated_at, superseded_at
+            ) VALUES (
+                $1, $2, $3, $4::jsonb, $5::jsonb, $6::jsonb, $7::jsonb,
+                $8, $9, $10, $11, $12
+            )
+            ON CONFLICT (profile_id)
+            DO UPDATE SET
+                status = EXCLUDED.status,
+                approval_stage = EXCLUDED.approval_stage,
+                candidate_roster_json = EXCLUDED.candidate_roster_json,
+                regime_weight_matrix_json = EXCLUDED.regime_weight_matrix_json,
+                agreement_policy_json = EXCLUDED.agreement_policy_json,
+                evidence_summary_json = EXCLUDED.evidence_summary_json,
+                rollback_target_profile_id = EXCLUDED.rollback_target_profile_id,
+                approved_at = EXCLUDED.approved_at,
+                activated_at = EXCLUDED.activated_at,
+                superseded_at = EXCLUDED.superseded_at
+            """,
+            record.profile_id,
+            record.status,
+            record.approval_stage,
+            json.dumps(record.candidate_roster_json),
+            json.dumps(record.regime_weight_matrix_json),
+            json.dumps(record.agreement_policy_json),
+            json.dumps(record.evidence_summary_json),
+            record.rollback_target_profile_id,
+            record.created_at,
+            record.approved_at,
+            record.activated_at,
+            record.superseded_at,
+        )
+
+    async def load_active_ensemble_profile(self) -> EnsembleProfileRecord | None:
+        """Load the single active ensemble profile, if any."""
+        pool = self._require_pool()
+        row = await pool.fetchrow(
+            f"""
+            SELECT *
+            FROM {self._ensemble_profiles_table}
+            WHERE status = 'ACTIVE'
+            ORDER BY activated_at DESC
+            LIMIT 1
+            """
+        )
+        if row is None:
+            return None
+        return _ensemble_profile_from_row(row)
+
+    async def load_ensemble_profile(
+        self,
+        *,
+        profile_id: str,
+    ) -> EnsembleProfileRecord | None:
+        """Load one ensemble profile by id."""
+        pool = self._require_pool()
+        row = await pool.fetchrow(
+            f"""
+            SELECT *
+            FROM {self._ensemble_profiles_table}
+            WHERE profile_id = $1
+            """,
+            profile_id,
+        )
+        if row is None:
+            return None
+        return _ensemble_profile_from_row(row)
+
+    async def load_ensemble_profiles(
+        self,
+        *,
+        limit: int = 50,
+    ) -> list[EnsembleProfileRecord]:
+        """Load recent ensemble profiles."""
+        pool = self._require_pool()
+        rows = await pool.fetch(
+            f"""
+            SELECT *
+            FROM {self._ensemble_profiles_table}
+            ORDER BY created_at DESC, profile_id DESC
+            LIMIT $1
+            """,
+            limit,
+        )
+        return [_ensemble_profile_from_row(row) for row in rows]
+
+    async def save_ensemble_challenger_run(
+        self,
+        record: EnsembleChallengerRunRecord,
+    ) -> None:
+        """Upsert one ensemble challenger run row."""
+        pool = self._require_pool()
+        await pool.execute(
+            f"""
+            INSERT INTO {self._ensemble_challenger_runs_table} (
+                challenger_run_id, status, config_json, metrics_json,
+                reason_codes, created_at, updated_at
+            ) VALUES (
+                $1, $2, $3::jsonb, $4::jsonb, $5::text[], $6, $7
+            )
+            ON CONFLICT (challenger_run_id)
+            DO UPDATE SET
+                status = EXCLUDED.status,
+                config_json = EXCLUDED.config_json,
+                metrics_json = EXCLUDED.metrics_json,
+                reason_codes = EXCLUDED.reason_codes,
+                updated_at = EXCLUDED.updated_at
+            """,
+            record.challenger_run_id,
+            record.status,
+            json.dumps(record.config_json),
+            json.dumps(record.metrics_json),
+            list(record.reason_codes),
+            record.created_at,
+            record.updated_at,
+        )
+
+    async def save_ensemble_promotion_decision(
+        self,
+        record: EnsemblePromotionDecisionRecord,
+    ) -> None:
+        """Upsert one ensemble promotion decision row."""
+        pool = self._require_pool()
+        await pool.execute(
+            f"""
+            INSERT INTO {self._ensemble_promotion_decisions_table} (
+                decision_id, target_type, target_id, incumbent_id,
+                decision, metrics_delta_json, safety_checks_json,
+                reason_codes, summary_text, decided_at
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::text[], $9, $10
+            )
+            ON CONFLICT (decision_id)
+            DO UPDATE SET
+                target_type = EXCLUDED.target_type,
+                target_id = EXCLUDED.target_id,
+                incumbent_id = EXCLUDED.incumbent_id,
+                decision = EXCLUDED.decision,
+                metrics_delta_json = EXCLUDED.metrics_delta_json,
+                safety_checks_json = EXCLUDED.safety_checks_json,
+                reason_codes = EXCLUDED.reason_codes,
+                summary_text = EXCLUDED.summary_text,
+                decided_at = EXCLUDED.decided_at
+            """,
+            record.decision_id,
+            record.target_type,
+            record.target_id,
+            record.incumbent_id,
+            record.decision,
+            json.dumps(record.metrics_delta_json),
+            json.dumps(record.safety_checks_json),
+            list(record.reason_codes),
+            record.summary_text,
+            record.decided_at,
+        )
+
     async def fetch_new_feature_rows(
         self,
         *,
@@ -1996,6 +2180,18 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
         )
         adaptive_promotions_index = _build_index_name(
             _table_basename(ADAPTIVE_PROMOTION_DECISIONS_TABLE),
+            "decided_idx",
+        )
+        ensemble_profiles_status_index = _build_index_name(
+            _table_basename(ENSEMBLE_PROFILES_TABLE),
+            "status_activated_idx",
+        )
+        ensemble_challengers_index = _build_index_name(
+            _table_basename(ENSEMBLE_CHALLENGER_RUNS_TABLE),
+            "updated_idx",
+        )
+        ensemble_promotions_index = _build_index_name(
+            _table_basename(ENSEMBLE_PROMOTION_DECISIONS_TABLE),
             "decided_idx",
         )
         live_safety_primary_key = _quote_identifier(
@@ -3016,6 +3212,74 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                 ON {self._adaptive_promotion_decisions_table} (decided_at DESC, decision_id DESC)
                 """
             )
+            await connection.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {self._ensemble_profiles_table} (
+                    profile_id TEXT PRIMARY KEY,
+                    status TEXT NOT NULL,
+                    approval_stage TEXT NOT NULL,
+                    candidate_roster_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    regime_weight_matrix_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    agreement_policy_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    evidence_summary_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    rollback_target_profile_id TEXT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    approved_at TIMESTAMPTZ NULL,
+                    activated_at TIMESTAMPTZ NULL,
+                    superseded_at TIMESTAMPTZ NULL
+                )
+                """
+            )
+            await connection.execute(
+                f"""
+                CREATE INDEX IF NOT EXISTS {ensemble_profiles_status_index}
+                ON {self._ensemble_profiles_table} (
+                    status,
+                    activated_at DESC
+                )
+                """
+            )
+            await connection.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {self._ensemble_challenger_runs_table} (
+                    challenger_run_id TEXT PRIMARY KEY,
+                    status TEXT NOT NULL,
+                    config_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    metrics_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    reason_codes TEXT[] NOT NULL DEFAULT '{{}}',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            await connection.execute(
+                f"""
+                CREATE INDEX IF NOT EXISTS {ensemble_challengers_index}
+                ON {self._ensemble_challenger_runs_table} (updated_at DESC)
+                """
+            )
+            await connection.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {self._ensemble_promotion_decisions_table} (
+                    decision_id TEXT PRIMARY KEY,
+                    target_type TEXT NOT NULL,
+                    target_id TEXT NOT NULL,
+                    incumbent_id TEXT NULL,
+                    decision TEXT NOT NULL,
+                    metrics_delta_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    safety_checks_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    reason_codes TEXT[] NOT NULL DEFAULT '{{}}',
+                    summary_text TEXT NOT NULL,
+                    decided_at TIMESTAMPTZ NOT NULL
+                )
+                """
+            )
+            await connection.execute(
+                f"""
+                CREATE INDEX IF NOT EXISTS {ensemble_promotions_index}
+                ON {self._ensemble_promotion_decisions_table} (decided_at DESC, decision_id DESC)
+                """
+            )
 
     def _require_pool(self) -> asyncpg.Pool:
         if self._pool is None:
@@ -3487,6 +3751,28 @@ def _adaptive_promotion_decision_from_row(
             "reason_codes": list(_text_array_to_tuple(row["reason_codes"])),
             "summary_text": str(row["summary_text"]),
             "decided_at": row["decided_at"],
+        }
+    )
+
+
+def _ensemble_profile_from_row(row: asyncpg.Record) -> EnsembleProfileRecord:
+    roster_raw = row["candidate_roster_json"]
+    if isinstance(roster_raw, str):
+        roster_raw = json.loads(roster_raw)
+    return EnsembleProfileRecord.model_validate(
+        {
+            "profile_id": str(row["profile_id"]),
+            "status": str(row["status"]),
+            "approval_stage": str(row["approval_stage"]),
+            "candidate_roster_json": roster_raw if isinstance(roster_raw, list) else [],
+            "regime_weight_matrix_json": _jsonb_to_object(row["regime_weight_matrix_json"]),
+            "agreement_policy_json": _jsonb_to_object(row["agreement_policy_json"]),
+            "evidence_summary_json": _jsonb_to_object(row["evidence_summary_json"]),
+            "rollback_target_profile_id": row["rollback_target_profile_id"],
+            "created_at": row["created_at"],
+            "approved_at": row["approved_at"],
+            "activated_at": row["activated_at"],
+            "superseded_at": row["superseded_at"],
         }
     )
 

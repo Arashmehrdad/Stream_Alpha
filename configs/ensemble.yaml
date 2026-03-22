@@ -1,0 +1,35 @@
+enabled: true
+
+candidate_roles:
+  - GENERALIST
+  - TREND_SPECIALIST
+  - RANGE_SPECIALIST
+
+regime_weight_matrix:
+  TREND_UP:
+    GENERALIST: 0.25
+    TREND_SPECIALIST: 0.75
+    RANGE_SPECIALIST: 0.00
+  TREND_DOWN:
+    GENERALIST: 0.25
+    TREND_SPECIALIST: 0.75
+    RANGE_SPECIALIST: 0.00
+  RANGE:
+    GENERALIST: 0.30
+    TREND_SPECIALIST: 0.10
+    RANGE_SPECIALIST: 0.60
+  HIGH_VOL:
+    GENERALIST: 1.00
+    TREND_SPECIALIST: 0.00
+    RANGE_SPECIALIST: 0.00
+
+agreement_policy:
+  high_ratio_min: 0.80
+  high_spread_max: 0.12
+  medium_ratio_min: 0.67
+  medium_spread_max: 0.20
+  high_multiplier: 1.00
+  medium_multiplier: 0.93
+  low_multiplier: 0.85
+
+artifact_root: artifacts/ensemble

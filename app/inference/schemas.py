@@ -44,6 +44,9 @@ class HealthResponse(BaseModel):
     startup_safety_reason_code: str | None = None
     active_adaptation_count: int | None = None
     adaptation_status: str | None = None
+    ensemble_profile_id: str | None = None
+    ensemble_status: str | None = None
+    ensemble_candidate_count: int | None = None
 
 
 class FeatureRowResponse(BaseModel):  # pylint: disable=too-many-instance-attributes
@@ -112,6 +115,12 @@ class PredictionResponse(BaseModel):
     adaptation_profile_id: str | None = None
     calibrated_confidence: float | None = None
     adaptation_reason_codes: list[str] = Field(default_factory=list)
+    ensemble_profile_id: str | None = None
+    ensemble_active: bool = False
+    ensemble_agreement_band: str | None = None
+    ensemble_effective_confidence: float | None = None
+    ensemble_candidate_count: int | None = None
+    ensemble_fallback_reason: str | None = None
 
 
 class ThresholdsResponse(BaseModel):
@@ -157,6 +166,12 @@ class SignalResponse(BaseModel):
     drift_status: str | None = None
     recent_performance_summary: AdaptiveRecentPerformanceSummary | None = None
     frozen_by_health_gate: bool = False
+    ensemble_profile_id: str | None = None
+    ensemble_active: bool = False
+    ensemble_agreement_band: str | None = None
+    ensemble_effective_confidence: float | None = None
+    ensemble_candidate_count: int | None = None
+    ensemble_fallback_reason: str | None = None
 
 
 class RegimeResponse(BaseModel):
