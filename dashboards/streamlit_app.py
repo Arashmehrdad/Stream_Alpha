@@ -67,7 +67,7 @@ def main() -> None:
     _maybe_enable_auto_refresh(settings.dashboard.refresh_seconds)
 
     st.title("Stream Alpha")
-    st.caption("Milestone M15 operator console foundation")
+    st.caption("Operator console with accepted M15-M21 foundations")
 
     snapshot = asyncio.run(
         DashboardDataSources(

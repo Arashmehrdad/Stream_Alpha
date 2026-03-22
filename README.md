@@ -303,6 +303,18 @@ The accepted final M21 workflow remains local-first and auditable:
 - active-profile changes stay scoped and reversible
 - production model artifacts are not retrained in place
 
+### Second Foundation v2 Closeout
+
+Second Foundation v2 is complete through accepted M21.
+
+- continual learning is manual and guarded
+- continual-learning changes remain measurable and reversible
+- there is no uncontrolled live self-retraining
+
+### Baseline CI Note
+
+Local-first validation remains primary. GitHub Actions is used here as a baseline validation layer only: it runs a fast lint and test slice on push and pull request, while deeper repository-backed checks remain part of local validation.
+
 ## Repository Tree
 
 ```text

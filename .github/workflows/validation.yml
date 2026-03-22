@@ -1,0 +1,54 @@
+name: Validation
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  baseline-validation:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      # Repository-backed PostgreSQL checks remain part of local validation.
+      - name: Run baseline pylint slice
+        run: |
+          python -m pylint \
+            app/continual_learning/schemas.py \
+            app/continual_learning/service.py \
+            app/inference/main.py \
+            app/inference/service.py \
+            dashboards/data_sources.py \
+            dashboards/streamlit_app.py \
+            app/adaptation/service.py \
+            app/ensemble/service.py \
+            tests/test_continual_learning_service.py \
+            tests/test_inference_service.py \
+            tests/test_inference_api.py \
+            tests/test_dashboard_data_sources.py \
+            tests/test_dashboard_streamlit_app.py \
+            tests/test_adaptation_service.py \
+            tests/test_ensemble_service.py
+
+      - name: Run baseline pytest slice
+        run: |
+          python -m pytest -q \
+            tests/test_continual_learning_service.py \
+            tests/test_inference_service.py \
+            tests/test_inference_api.py \
+            tests/test_dashboard_data_sources.py \
+            tests/test_dashboard_streamlit_app.py \
+            tests/test_adaptation_service.py \
+            tests/test_ensemble_service.py
