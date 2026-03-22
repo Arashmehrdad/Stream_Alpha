@@ -18,6 +18,7 @@ from app.continual_learning.schemas import (
     ContinualLearningProfileRecord,
     ContinualLearningPromotionDecisionRecord,
 )
+from app.continual_learning.service import _worst_drift_cap_status
 from app.trading.repository import TradingRepository
 
 
@@ -332,3 +333,86 @@ def test_continual_learning_experiment_rejects_reversed_windows() -> None:
         assert "reference_window_start" in str(error)
     else:
         raise AssertionError("Expected reversed reference windows to be rejected")
+
+
+def test_continual_learning_repository_load_all_drift_caps_supports_aggregate_reads() -> None:
+    asyncio.run(_run_aggregate_drift_caps_round_trip())
+
+
+async def _run_aggregate_drift_caps_round_trip() -> None:
+    suffix = uuid4().hex[:10]
+    cap_healthy_id = f"cap-healthy-{suffix}"
+    cap_watch_id = f"cap-watch-{suffix}"
+    cap_breached_id = f"cap-breached-{suffix}"
+    repository = TradingRepository(_postgres_dsn(), "feature_ohlc")
+    await repository.connect()
+
+    healthy_cap = ContinualLearningDriftCapRecord(
+        cap_id=cap_healthy_id,
+        execution_mode_scope="paper",
+        symbol_scope="BTC/USD",
+        regime_scope="TREND_UP",
+        candidate_type="CALIBRATION_OVERLAY",
+        status="HEALTHY",
+        observed_drift_score=0.03,
+        warning_threshold=0.10,
+        breach_threshold=0.20,
+        reason_code="DRIFT_HEALTHY",
+        created_at=datetime(2026, 4, 2, 1, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 4, 2, 1, tzinfo=timezone.utc),
+    )
+    watch_cap = ContinualLearningDriftCapRecord(
+        cap_id=cap_watch_id,
+        execution_mode_scope="paper",
+        symbol_scope="ETH/USD",
+        regime_scope="RANGE",
+        candidate_type="CALIBRATION_OVERLAY",
+        status="WATCH",
+        observed_drift_score=0.13,
+        warning_threshold=0.10,
+        breach_threshold=0.20,
+        reason_code="DRIFT_WATCH",
+        created_at=datetime(2026, 4, 2, 2, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 4, 2, 2, tzinfo=timezone.utc),
+    )
+    breached_cap = ContinualLearningDriftCapRecord(
+        cap_id=cap_breached_id,
+        execution_mode_scope="shadow",
+        symbol_scope="BTC/USD",
+        regime_scope="ALL",
+        candidate_type="CALIBRATION_OVERLAY",
+        status="BREACHED",
+        observed_drift_score=0.25,
+        warning_threshold=0.10,
+        breach_threshold=0.20,
+        reason_code="DRIFT_BREACHED",
+        created_at=datetime(2026, 4, 2, 3, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 4, 2, 3, tzinfo=timezone.utc),
+    )
+
+    try:
+        await repository.save_continual_learning_drift_cap(healthy_cap)
+        await repository.save_continual_learning_drift_cap(watch_cap)
+        await repository.save_continual_learning_drift_cap(breached_cap)
+
+        loaded_caps = await repository.load_all_continual_learning_drift_caps(limit=10)
+        matching_caps = [
+            item
+            for item in loaded_caps
+            if item.cap_id in {cap_healthy_id, cap_watch_id, cap_breached_id}
+        ]
+
+        assert [item.cap_id for item in matching_caps] == [
+            cap_breached_id,
+            cap_watch_id,
+            cap_healthy_id,
+        ]
+        assert _worst_drift_cap_status(matching_caps) == "BREACHED"
+    finally:
+        pool = repository._require_pool()  # pylint: disable=protected-access
+        for cap_id in (cap_healthy_id, cap_watch_id, cap_breached_id):
+            await pool.execute(
+                "DELETE FROM continual_learning_drift_caps WHERE cap_id = $1",
+                cap_id,
+            )
+        await repository.close()

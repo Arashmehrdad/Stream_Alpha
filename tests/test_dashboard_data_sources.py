@@ -472,6 +472,7 @@ class _HealthyHttpClient:
                             "source_experiment_id": "cl-exp-1",
                             "promotion_stage": "LIVE_ELIGIBLE",
                             "live_eligible": True,
+                            "rollback_target_profile_id": "cl-profile-prev-1",
                             "activated_at": "2026-03-20T12:00:00Z",
                         }
                     ]
@@ -554,14 +555,17 @@ class _HealthyHttpClient:
                 "health_overall_status": "HEALTHY",
                 "continual_learning_status": "ACTIVE",
                 "continual_learning_profile_id": "cl-profile-1",
-                "continual_learning_frozen": False,
+                "continual_learning_frozen": True,
                 "continual_learning": {
                     "candidate_type": "CALIBRATION_OVERLAY",
                     "promotion_stage": "LIVE_ELIGIBLE",
                     "baseline_target_type": "MODEL_VERSION",
                     "baseline_target_id": "m20-live",
                     "drift_cap_status": "WATCH",
-                    "reason_codes": ["ACTIVE_PROFILE_PRESENT"],
+                    "reason_codes": [
+                        "ACTIVE_PROFILE_PRESENT",
+                        "CONTINUAL_LEARNING_FROZEN_BY_HEALTH_GATE",
+                    ],
                 },
             },
         )
@@ -628,6 +632,10 @@ def test_dashboard_snapshot_loads_adaptation_surfaces() -> None:
     assert snapshot.continual_learning.summary.active_profile_id == "cl-profile-1"
     assert snapshot.continual_learning.summary.aggregated_scope is True
     assert snapshot.continual_learning.profiles[0].status == "ACTIVE"
+    assert (
+        snapshot.continual_learning.profiles[0].rollback_target_profile_id
+        == "cl-profile-prev-1"
+    )
     assert snapshot.continual_learning.drift_caps[0].status == "WATCH"
     assert snapshot.continual_learning.promotions[0].decision == "HOLD"
     assert snapshot.continual_learning.events[0].event_type == "PROFILE_ACTIVE"
@@ -638,6 +646,11 @@ def test_dashboard_snapshot_loads_adaptation_surfaces() -> None:
     assert snapshot.signals[0].continual_learning_status == "ACTIVE"
     assert snapshot.signals[0].continual_learning_profile_id == "cl-profile-1"
     assert snapshot.signals[0].continual_learning_candidate_type == "CALIBRATION_OVERLAY"
+    assert snapshot.signals[0].continual_learning_frozen is True
+    assert (
+        "CONTINUAL_LEARNING_FROZEN_BY_HEALTH_GATE"
+        in snapshot.signals[0].continual_learning_reason_codes
+    )
     assert snapshot.api_health.active_alert_count == 1
     assert snapshot.api_health.max_alert_severity == "WARNING"
     assert snapshot.system_reliability is not None

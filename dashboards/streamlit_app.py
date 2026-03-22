@@ -292,6 +292,7 @@ def main() -> None:
 
     with incidents_view:
         _render_incidents_view(
+            snapshot=snapshot,
             incidents=incidents,
             latest_recovery_rows=latest_recovery_rows,
             latest_blocked_trade_rows=latest_blocked_trade_rows,
@@ -456,6 +457,10 @@ def _render_signals_view(
         ],
     )
     render_table("Latest Signals By Asset", latest_signals)
+    render_table(
+        "Continual Learning Signal Context",
+        _build_continual_learning_signal_rows(snapshot=snapshot),
+    )
     render_table("Recent Decision Traces", recent_decision_trace_rows)
 
 
@@ -694,6 +699,7 @@ def _render_models_view(
     render_table("Operator Config Summary", config_summary_rows)
     render_table("Recent Decision Traces", recent_decision_trace_rows)
     _render_adaptation_section(snapshot=snapshot)
+    _render_continual_learning_section(snapshot=snapshot)
 
 
 def _render_adaptation_section(*, snapshot) -> None:
@@ -810,6 +816,7 @@ def _render_adaptation_section(*, snapshot) -> None:
 
 def _render_incidents_view(
     *,
+    snapshot,
     incidents,
     latest_recovery_rows,
     latest_blocked_trade_rows,
@@ -817,8 +824,181 @@ def _render_incidents_view(
 ) -> None:
     render_incidents_panel(incidents)
     render_table("Incident Timeline", incident_timeline_rows)
+    render_table(
+        "Continual Learning Events",
+        _build_continual_learning_event_rows(snapshot=snapshot),
+    )
+    render_table(
+        "Continual Learning Drift Alerts",
+        _build_continual_learning_breached_drift_rows(snapshot=snapshot),
+    )
+    render_table(
+        "Continual Learning Freeze Signals",
+        _build_continual_learning_freeze_rows(snapshot=snapshot),
+    )
     render_table("Latest Recovery Event", latest_recovery_rows)
     render_table("Latest Blocked Trade Rationale", latest_blocked_trade_rows)
+
+
+def _render_continual_learning_section(*, snapshot) -> None:
+    continual_learning = snapshot.continual_learning
+    summary = continual_learning.summary
+    active_profiles = [item for item in continual_learning.profiles if item.status == "ACTIVE"]
+    rollback_target = None
+    if len(active_profiles) == 1:
+        rollback_target = active_profiles[0].rollback_target_profile_id
+    render_summary_cards(
+        title="Continual Learning Summary",
+        items=[
+            {
+                "label": "Status",
+                "value": summary.continual_learning_status or "-",
+                "detail": (
+                    "Aggregated ALL-scope operator view"
+                    if summary.aggregated_scope
+                    else "Scope-specific operator view"
+                ),
+            },
+            {"label": "Active profile", "value": summary.active_profile_id or "-"},
+            {
+                "label": "Drift-cap status",
+                "value": summary.latest_drift_cap_status or "-",
+            },
+            {
+                "label": "Rollback target",
+                "value": rollback_target or "-",
+                "detail": "Shown only when exactly one active profile is visible",
+            },
+        ],
+    )
+    render_table(
+        "Continual Learning Status",
+        [
+            {
+                "aggregated_scope": summary.aggregated_scope,
+                "enabled": summary.enabled,
+                "active_profile_count": summary.active_profile_count,
+                "active_profile_id": summary.active_profile_id,
+                "latest_promotion_decision": summary.latest_promotion_decision,
+                "latest_event_type": summary.latest_event_type,
+                "reason_codes": ", ".join(summary.reason_codes),
+            }
+        ]
+        if summary.available
+        else [{"status": "UNAVAILABLE", "detail": summary.error or "unavailable"}],
+    )
+    render_table(
+        "Continual Learning Profiles",
+        [
+            {
+                "profile_id": item.profile_id,
+                "status": item.status,
+                "candidate_type": item.candidate_type,
+                "execution_mode_scope": item.execution_mode_scope,
+                "symbol_scope": item.symbol_scope,
+                "regime_scope": item.regime_scope,
+                "promotion_stage": item.promotion_stage,
+                "baseline_target_id": item.baseline_target_id,
+                "rollback_target_profile_id": item.rollback_target_profile_id,
+            }
+            for item in continual_learning.profiles
+        ]
+        or [{"status": "NONE"}],
+    )
+    render_table(
+        "Continual Learning Promotions",
+        [
+            {
+                "decision_id": item.decision_id,
+                "target_id": item.target_id,
+                "decision": item.decision,
+                "summary_text": item.summary_text,
+                "decided_at": item.decided_at.isoformat(),
+                "reason_codes": ", ".join(item.reason_codes),
+            }
+            for item in continual_learning.promotions
+        ]
+        or [{"status": "NONE"}],
+    )
+
+
+def _build_continual_learning_signal_rows(*, snapshot) -> list[dict[str, object]]:
+    rows = [
+        {
+            "symbol": signal.symbol,
+            "continual_learning_status": signal.continual_learning_status,
+            "continual_learning_profile_id": signal.continual_learning_profile_id,
+            "continual_learning_frozen": signal.continual_learning_frozen,
+            "candidate_type": signal.continual_learning_candidate_type,
+            "promotion_stage": signal.continual_learning_promotion_stage,
+            "baseline_target_type": signal.continual_learning_baseline_target_type,
+            "baseline_target_id": signal.continual_learning_baseline_target_id,
+            "drift_cap_status": signal.continual_learning_drift_cap_status,
+            "reason_codes": ", ".join(signal.continual_learning_reason_codes),
+        }
+        for signal in snapshot.signals
+    ]
+    return rows or [{"status": "NONE"}]
+
+
+def _build_continual_learning_event_rows(*, snapshot) -> list[dict[str, object]]:
+    rows = [
+        {
+            "event_id": item.event_id,
+            "event_type": item.event_type,
+            "profile_id": item.profile_id,
+            "experiment_id": item.experiment_id,
+            "decision_id": item.decision_id,
+            "reason_code": item.reason_code,
+            "created_at": (
+                None if item.created_at is None else item.created_at.isoformat()
+            ),
+            "highlight": (
+                "ROLLBACK_APPLIED"
+                if item.event_type == "ROLLBACK_APPLIED"
+                else ""
+            ),
+        }
+        for item in snapshot.continual_learning.events
+    ]
+    return rows or [{"status": "NONE"}]
+
+
+def _build_continual_learning_breached_drift_rows(*, snapshot) -> list[dict[str, object]]:
+    rows = [
+        {
+            "cap_id": item.cap_id,
+            "execution_mode_scope": item.execution_mode_scope,
+            "symbol_scope": item.symbol_scope,
+            "regime_scope": item.regime_scope,
+            "candidate_type": item.candidate_type,
+            "status": item.status,
+            "observed_drift_score": item.observed_drift_score,
+            "reason_code": item.reason_code,
+            "highlight": "DRIFT_BREACHED",
+        }
+        for item in snapshot.continual_learning.drift_caps
+        if item.status == "BREACHED"
+    ]
+    return rows or [{"status": "NONE"}]
+
+
+def _build_continual_learning_freeze_rows(*, snapshot) -> list[dict[str, object]]:
+    rows = [
+        {
+            "symbol": signal.symbol,
+            "continual_learning_profile_id": signal.continual_learning_profile_id,
+            "continual_learning_status": signal.continual_learning_status,
+            "continual_learning_frozen": signal.continual_learning_frozen,
+            "reason_codes": ", ".join(signal.continual_learning_reason_codes),
+            "highlight": "FROZEN_BY_HEALTH_GATE",
+        }
+        for signal in snapshot.signals
+        if signal.continual_learning_frozen
+        or "CONTINUAL_LEARNING_FROZEN_BY_HEALTH_GATE"
+        in signal.continual_learning_reason_codes
+    ]
+    return rows or [{"status": "NONE"}]
 
 
 def _build_active_alert_rows(*, snapshot, now: datetime) -> list[dict[str, object]]:
