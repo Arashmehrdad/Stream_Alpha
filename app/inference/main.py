@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 import logging
 from time import perf_counter
@@ -40,16 +41,17 @@ def create_app(
         service = InferenceService(settings)
 
     logger = logging.getLogger(f"{service.settings.app_name}.inference")
-    app = FastAPI(title="Stream Alpha Inference API", version="m14")
-    app.state.service = service
 
-    @app.on_event("startup")
-    async def _startup() -> None:
+    @asynccontextmanager
+    async def _lifespan(_app: FastAPI):
         await service.startup()
+        try:
+            yield
+        finally:
+            await service.shutdown()
 
-    @app.on_event("shutdown")
-    async def _shutdown() -> None:
-        await service.shutdown()
+    app = FastAPI(title="Stream Alpha Inference API", version="m14", lifespan=_lifespan)
+    app.state.service = service
 
     @app.middleware("http")
     async def _logging_middleware(request: Request, call_next):
