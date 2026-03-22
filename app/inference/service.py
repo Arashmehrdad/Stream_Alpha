@@ -1266,18 +1266,34 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
     async def continual_learning_experiments(
         self,
         *,
+        execution_mode: str,
+        symbol: str,
+        regime_label: str,
         limit: int,
     ) -> ContinualLearningExperimentsResponse:
         """Return M21 read-only continual-learning experiments."""
-        return await self.continual_learning_service.experiments(limit=limit)
+        return await self.continual_learning_service.experiments(
+            execution_mode=execution_mode,
+            symbol=symbol,
+            regime_label=regime_label,
+            limit=limit,
+        )
 
     async def continual_learning_profiles(
         self,
         *,
+        execution_mode: str,
+        symbol: str,
+        regime_label: str,
         limit: int,
     ) -> ContinualLearningProfilesResponse:
         """Return M21 read-only continual-learning profiles."""
-        return await self.continual_learning_service.profiles(limit=limit)
+        return await self.continual_learning_service.profiles(
+            execution_mode=execution_mode,
+            symbol=symbol,
+            regime_label=regime_label,
+            limit=limit,
+        )
 
     async def continual_learning_drift_caps(
         self,

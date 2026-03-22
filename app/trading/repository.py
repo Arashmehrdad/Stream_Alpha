@@ -2189,6 +2189,24 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
         )
         return None if not rows else rows[0]
 
+    async def load_all_continual_learning_drift_caps(
+        self,
+        *,
+        limit: int,
+    ) -> list[ContinualLearningDriftCapRecord]:
+        """Load recent continual-learning drift-cap rows without scope filtering."""
+        pool = self._require_pool()
+        rows = await pool.fetch(
+            f"""
+            SELECT *
+            FROM {self._continual_learning_drift_caps_table}
+            ORDER BY updated_at DESC, created_at DESC, cap_id DESC
+            LIMIT $1
+            """,
+            limit,
+        )
+        return [_continual_learning_drift_cap_from_row(row) for row in rows]
+
     async def save_continual_learning_promotion_decision(
         self,
         record: ContinualLearningPromotionDecisionRecord,

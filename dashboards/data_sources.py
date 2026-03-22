@@ -73,6 +73,9 @@ class ApiHealthSnapshot:
     startup_safety_reason_code: str | None = None
     active_adaptation_count: int | None = None
     adaptation_status: str | None = None
+    active_continual_learning_profile_id: str | None = None
+    continual_learning_status: str | None = None
+    continual_learning_drift_cap_status: str | None = None
     error: str | None = None
 
 
@@ -107,6 +110,15 @@ class SignalSnapshot:
     adaptive_size_multiplier: float | None = None
     drift_status: str | None = None
     frozen_by_health_gate: bool = False
+    continual_learning_status: str | None = None
+    continual_learning_profile_id: str | None = None
+    continual_learning_frozen: bool = False
+    continual_learning_candidate_type: str | None = None
+    continual_learning_promotion_stage: str | None = None
+    continual_learning_baseline_target_type: str | None = None
+    continual_learning_baseline_target_id: str | None = None
+    continual_learning_drift_cap_status: str | None = None
+    continual_learning_reason_codes: tuple[str, ...] = field(default_factory=tuple)
     error: str | None = None
 
 
@@ -511,6 +523,95 @@ class AdaptationSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class ContinualLearningSummarySnapshot:
+    """Read-only M21 continual-learning summary snapshot from the API."""
+
+    available: bool
+    checked_at: datetime
+    enabled: bool = False
+    active_profile_count: int = 0
+    active_profile_id: str | None = None
+    continual_learning_status: str | None = None
+    latest_drift_cap_status: str | None = None
+    latest_promotion_decision: str | None = None
+    latest_event_type: str | None = None
+    reason_codes: tuple[str, ...] = field(default_factory=tuple)
+    aggregated_scope: bool = False
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ContinualLearningProfileItemSnapshot:
+    """Read-only M21 profile row for operator visibility."""
+
+    profile_id: str
+    status: str
+    candidate_type: str
+    execution_mode_scope: str
+    symbol_scope: str
+    regime_scope: str
+    baseline_target_type: str
+    baseline_target_id: str
+    source_experiment_id: str | None = None
+    promotion_stage: str | None = None
+    live_eligible: bool = False
+    rollback_target_profile_id: str | None = None
+    activated_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ContinualLearningDriftCapItemSnapshot:
+    """Read-only M21 drift-cap row for operator visibility."""
+
+    cap_id: str
+    execution_mode_scope: str
+    symbol_scope: str
+    regime_scope: str
+    candidate_type: str
+    status: str
+    observed_drift_score: float
+    reason_code: str
+    updated_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ContinualLearningPromotionItemSnapshot:
+    """Read-only M21 promotion decision row for operator visibility."""
+
+    decision_id: str
+    target_type: str
+    target_id: str
+    decision: str
+    summary_text: str
+    decided_at: datetime
+    reason_codes: tuple[str, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True, slots=True)
+class ContinualLearningEventItemSnapshot:
+    """Read-only M21 event row for operator visibility."""
+
+    event_id: str
+    event_type: str
+    profile_id: str | None
+    experiment_id: str | None
+    decision_id: str | None
+    reason_code: str
+    created_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ContinualLearningSnapshot:
+    """Combined read-only M21 continual-learning snapshot from the API."""
+
+    summary: ContinualLearningSummarySnapshot
+    profiles: tuple[ContinualLearningProfileItemSnapshot, ...] = field(default_factory=tuple)
+    drift_caps: tuple[ContinualLearningDriftCapItemSnapshot, ...] = field(default_factory=tuple)
+    promotions: tuple[ContinualLearningPromotionItemSnapshot, ...] = field(default_factory=tuple)
+    events: tuple[ContinualLearningEventItemSnapshot, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True, slots=True)
 class EngineStateSnapshot:
     """Persisted per-symbol paper-trading engine state."""
 
@@ -624,6 +725,16 @@ def _default_adaptation_snapshot() -> AdaptationSnapshot:
     )
 
 
+def _default_continual_learning_snapshot() -> ContinualLearningSnapshot:
+    return ContinualLearningSnapshot(
+        summary=ContinualLearningSummarySnapshot(
+            available=False,
+            checked_at=utc_now(),
+            error="M21 continual-learning snapshot unavailable",
+        )
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class DashboardSnapshot:
     """Combined API and database state used by the Streamlit app."""
@@ -640,6 +751,9 @@ class DashboardSnapshot:
         default_factory=_default_daily_operations_summary_snapshot
     )
     adaptation: AdaptationSnapshot = field(default_factory=_default_adaptation_snapshot)
+    continual_learning: ContinualLearningSnapshot = field(
+        default_factory=_default_continual_learning_snapshot
+    )
 
 
 class DashboardDataSources:
@@ -685,6 +799,7 @@ class DashboardDataSources:
         startup_safety = await self._load_startup_safety(http_client)
         daily_operations_summary = await self._load_daily_operations_summary(http_client)
         adaptation = await self._load_adaptation(http_client)
+        continual_learning = await self._load_continual_learning(http_client)
         signals = await self._load_signals(http_client)
         freshness = await self._load_freshness(http_client)
         database = await self._load_database_snapshot()
@@ -699,6 +814,7 @@ class DashboardDataSources:
             startup_safety=startup_safety,
             daily_operations_summary=daily_operations_summary,
             adaptation=adaptation,
+            continual_learning=continual_learning,
         )
 
     async def _load_api_health(self, http_client: Any) -> ApiHealthSnapshot:
@@ -792,6 +908,21 @@ class DashboardDataSources:
                 if payload.get("adaptation_status") is None
                 else str(payload["adaptation_status"])
             ),
+            active_continual_learning_profile_id=(
+                None
+                if payload.get("active_continual_learning_profile_id") is None
+                else str(payload["active_continual_learning_profile_id"])
+            ),
+            continual_learning_status=(
+                None
+                if payload.get("continual_learning_status") is None
+                else str(payload["continual_learning_status"])
+            ),
+            continual_learning_drift_cap_status=(
+                None
+                if payload.get("continual_learning_drift_cap_status") is None
+                else str(payload["continual_learning_drift_cap_status"])
+            ),
             error=None if response.status_code == 200 else f"HTTP {response.status_code}",
         )
 
@@ -841,6 +972,86 @@ class DashboardDataSources:
             promotions=tuple(
                 _adaptation_promotion_item_from_payload(item)
                 for item in promotions_payload.get("items", [])
+                if isinstance(item, Mapping)
+            ),
+        )
+
+    async def _load_continual_learning(self, http_client: Any) -> ContinualLearningSnapshot:
+        checked_at = utc_now()
+        scope_params = {
+            "execution_mode": self._trading_config.execution.mode,
+            "symbol": "ALL",
+            "regime_label": "ALL",
+        }
+        try:
+            summary_response = await http_client.get(
+                "/continual-learning/summary",
+                params=scope_params,
+            )
+            profiles_response = await http_client.get(
+                "/continual-learning/profiles",
+                params={**scope_params, "limit": 50},
+            )
+            drift_caps_response = await http_client.get(
+                "/continual-learning/drift-caps",
+                params={**scope_params, "limit": 50},
+            )
+            promotions_response = await http_client.get(
+                "/continual-learning/promotions",
+                params={"limit": 50},
+            )
+            events_response = await http_client.get(
+                "/continual-learning/events",
+                params={"limit": 50},
+            )
+            if any(
+                response.status_code != 200
+                for response in (
+                    summary_response,
+                    profiles_response,
+                    drift_caps_response,
+                    promotions_response,
+                    events_response,
+                )
+            ):
+                raise RuntimeError(
+                    "M21 continual-learning endpoints returned non-200 status"
+                )
+            summary_payload = summary_response.json()
+            profiles_payload = profiles_response.json()
+            drift_caps_payload = drift_caps_response.json()
+            promotions_payload = promotions_response.json()
+            events_payload = events_response.json()
+        except Exception as error:  # pylint: disable=broad-exception-caught
+            return _default_continual_learning_snapshot_with_error(
+                checked_at=checked_at,
+                error=str(error),
+            )
+
+        return ContinualLearningSnapshot(
+            summary=_continual_learning_summary_from_payload(
+                summary_payload,
+                checked_at=checked_at,
+                aggregated_scope=True,
+            ),
+            profiles=tuple(
+                _continual_learning_profile_item_from_payload(item)
+                for item in profiles_payload.get("items", [])
+                if isinstance(item, Mapping)
+            ),
+            drift_caps=tuple(
+                _continual_learning_drift_cap_item_from_payload(item)
+                for item in drift_caps_payload.get("items", [])
+                if isinstance(item, Mapping)
+            ),
+            promotions=tuple(
+                _continual_learning_promotion_item_from_payload(item)
+                for item in promotions_payload.get("items", [])
+                if isinstance(item, Mapping)
+            ),
+            events=tuple(
+                _continual_learning_event_item_from_payload(item)
+                for item in events_payload.get("items", [])
                 if isinstance(item, Mapping)
             ),
         )
@@ -1275,6 +1486,13 @@ def _signal_from_payload(
     as_of_time = None
     if isinstance(payload.get("as_of_time"), str):
         as_of_time = parse_rfc3339(str(payload["as_of_time"]))
+    continual_learning_payload = payload.get("continual_learning")
+    continual_learning_reason_codes: tuple[str, ...] = ()
+    if isinstance(continual_learning_payload, Mapping):
+        continual_learning_reason_codes = tuple(
+            str(item)
+            for item in continual_learning_payload.get("reason_codes", [])
+        )
     return SignalSnapshot(
         symbol=symbol,
         checked_at=checked_at,
@@ -1343,6 +1561,48 @@ def _signal_from_payload(
             else str(payload["drift_status"])
         ),
         frozen_by_health_gate=bool(payload.get("frozen_by_health_gate", False)),
+        continual_learning_status=(
+            None
+            if payload.get("continual_learning_status") is None
+            else str(payload["continual_learning_status"])
+        ),
+        continual_learning_profile_id=(
+            None
+            if payload.get("continual_learning_profile_id") is None
+            else str(payload["continual_learning_profile_id"])
+        ),
+        continual_learning_frozen=bool(payload.get("continual_learning_frozen", False)),
+        continual_learning_candidate_type=(
+            None
+            if not isinstance(continual_learning_payload, Mapping)
+            or continual_learning_payload.get("candidate_type") is None
+            else str(continual_learning_payload.get("candidate_type"))
+        ),
+        continual_learning_promotion_stage=(
+            None
+            if not isinstance(continual_learning_payload, Mapping)
+            or continual_learning_payload.get("promotion_stage") is None
+            else str(continual_learning_payload.get("promotion_stage"))
+        ),
+        continual_learning_baseline_target_type=(
+            None
+            if not isinstance(continual_learning_payload, Mapping)
+            or continual_learning_payload.get("baseline_target_type") is None
+            else str(continual_learning_payload.get("baseline_target_type"))
+        ),
+        continual_learning_baseline_target_id=(
+            None
+            if not isinstance(continual_learning_payload, Mapping)
+            or continual_learning_payload.get("baseline_target_id") is None
+            else str(continual_learning_payload.get("baseline_target_id"))
+        ),
+        continual_learning_drift_cap_status=(
+            None
+            if not isinstance(continual_learning_payload, Mapping)
+            or continual_learning_payload.get("drift_cap_status") is None
+            else str(continual_learning_payload.get("drift_cap_status"))
+        ),
+        continual_learning_reason_codes=continual_learning_reason_codes,
     )
 
 
@@ -1353,6 +1613,20 @@ def _default_adaptation_snapshot_with_error(
 ) -> AdaptationSnapshot:
     return AdaptationSnapshot(
         summary=AdaptationSummarySnapshot(
+            available=False,
+            checked_at=checked_at,
+            error=error,
+        )
+    )
+
+
+def _default_continual_learning_snapshot_with_error(
+    *,
+    checked_at: datetime,
+    error: str,
+) -> ContinualLearningSnapshot:
+    return ContinualLearningSnapshot(
+        summary=ContinualLearningSummarySnapshot(
             available=False,
             checked_at=checked_at,
             error=error,
@@ -1464,6 +1738,142 @@ def _adaptation_promotion_item_from_payload(
         summary_text=str(payload["summary_text"]),
         decided_at=parse_rfc3339(str(payload["decided_at"])),
         reason_codes=tuple(str(item) for item in payload.get("reason_codes", [])),
+    )
+
+
+def _continual_learning_summary_from_payload(
+    payload: Mapping[str, Any],
+    *,
+    checked_at: datetime,
+    aggregated_scope: bool,
+) -> ContinualLearningSummarySnapshot:
+    return ContinualLearningSummarySnapshot(
+        available=True,
+        checked_at=checked_at,
+        enabled=bool(payload.get("enabled", False)),
+        active_profile_count=int(payload.get("active_profile_count", 0)),
+        active_profile_id=(
+            None
+            if payload.get("active_profile_id") is None
+            else str(payload["active_profile_id"])
+        ),
+        continual_learning_status=(
+            None
+            if payload.get("continual_learning_status") is None
+            else str(payload["continual_learning_status"])
+        ),
+        latest_drift_cap_status=(
+            None
+            if payload.get("latest_drift_cap_status") is None
+            else str(payload["latest_drift_cap_status"])
+        ),
+        latest_promotion_decision=(
+            None
+            if payload.get("latest_promotion_decision") is None
+            else str(payload["latest_promotion_decision"])
+        ),
+        latest_event_type=(
+            None
+            if payload.get("latest_event_type") is None
+            else str(payload["latest_event_type"])
+        ),
+        reason_codes=tuple(str(item) for item in payload.get("reason_codes", [])),
+        aggregated_scope=aggregated_scope,
+    )
+
+
+def _continual_learning_profile_item_from_payload(
+    payload: Mapping[str, Any],
+) -> ContinualLearningProfileItemSnapshot:
+    activated_at = None
+    if isinstance(payload.get("activated_at"), str):
+        activated_at = parse_rfc3339(str(payload["activated_at"]))
+    return ContinualLearningProfileItemSnapshot(
+        profile_id=str(payload["profile_id"]),
+        status=str(payload["status"]),
+        candidate_type=str(payload["candidate_type"]),
+        execution_mode_scope=str(payload["execution_mode_scope"]),
+        symbol_scope=str(payload["symbol_scope"]),
+        regime_scope=str(payload["regime_scope"]),
+        baseline_target_type=str(payload["baseline_target_type"]),
+        baseline_target_id=str(payload["baseline_target_id"]),
+        source_experiment_id=(
+            None
+            if payload.get("source_experiment_id") is None
+            else str(payload["source_experiment_id"])
+        ),
+        promotion_stage=(
+            None
+            if payload.get("promotion_stage") is None
+            else str(payload["promotion_stage"])
+        ),
+        live_eligible=bool(payload.get("live_eligible", False)),
+        rollback_target_profile_id=(
+            None
+            if payload.get("rollback_target_profile_id") is None
+            else str(payload["rollback_target_profile_id"])
+        ),
+        activated_at=activated_at,
+    )
+
+
+def _continual_learning_drift_cap_item_from_payload(
+    payload: Mapping[str, Any],
+) -> ContinualLearningDriftCapItemSnapshot:
+    updated_at = None
+    if isinstance(payload.get("updated_at"), str):
+        updated_at = parse_rfc3339(str(payload["updated_at"]))
+    return ContinualLearningDriftCapItemSnapshot(
+        cap_id=str(payload["cap_id"]),
+        execution_mode_scope=str(payload["execution_mode_scope"]),
+        symbol_scope=str(payload["symbol_scope"]),
+        regime_scope=str(payload["regime_scope"]),
+        candidate_type=str(payload["candidate_type"]),
+        status=str(payload["status"]),
+        observed_drift_score=float(payload["observed_drift_score"]),
+        reason_code=str(payload["reason_code"]),
+        updated_at=updated_at,
+    )
+
+
+def _continual_learning_promotion_item_from_payload(
+    payload: Mapping[str, Any],
+) -> ContinualLearningPromotionItemSnapshot:
+    return ContinualLearningPromotionItemSnapshot(
+        decision_id=str(payload["decision_id"]),
+        target_type=str(payload["target_type"]),
+        target_id=str(payload["target_id"]),
+        decision=str(payload["decision"]),
+        summary_text=str(payload["summary_text"]),
+        decided_at=parse_rfc3339(str(payload["decided_at"])),
+        reason_codes=tuple(str(item) for item in payload.get("reason_codes", [])),
+    )
+
+
+def _continual_learning_event_item_from_payload(
+    payload: Mapping[str, Any],
+) -> ContinualLearningEventItemSnapshot:
+    created_at = None
+    if isinstance(payload.get("created_at"), str):
+        created_at = parse_rfc3339(str(payload["created_at"]))
+    return ContinualLearningEventItemSnapshot(
+        event_id=str(payload["event_id"]),
+        event_type=str(payload["event_type"]),
+        profile_id=(
+            None if payload.get("profile_id") is None else str(payload["profile_id"])
+        ),
+        experiment_id=(
+            None
+            if payload.get("experiment_id") is None
+            else str(payload["experiment_id"])
+        ),
+        decision_id=(
+            None
+            if payload.get("decision_id") is None
+            else str(payload["decision_id"])
+        ),
+        reason_code=str(payload["reason_code"]),
+        created_at=created_at,
     )
 
 

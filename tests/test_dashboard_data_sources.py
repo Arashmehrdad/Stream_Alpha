@@ -122,6 +122,7 @@ class _Response:
 
 class _HealthyHttpClient:
     async def get(  # pylint: disable=too-many-return-statements
+        # pylint: disable=too-many-branches
         self,
         path: str,
         *_args,
@@ -149,6 +150,9 @@ class _HealthyHttpClient:
                     "health_overall_status": "HEALTHY",
                     "reason_code": "HEALTH_HEALTHY",
                     "freshness_status": "FRESH",
+                    "active_continual_learning_profile_id": "cl-profile-1",
+                    "continual_learning_status": "ACTIVE",
+                    "continual_learning_drift_cap_status": "WATCH",
                 },
             )
         if path == "/freshness":
@@ -433,6 +437,99 @@ class _HealthyHttpClient:
                     ]
                 },
             )
+        if path == "/continual-learning/summary":
+            return _Response(
+                200,
+                {
+                    "enabled": True,
+                    "active_profile_count": 1,
+                    "active_profile_id": "cl-profile-1",
+                    "continual_learning_status": "ACTIVE",
+                    "active_candidate_type": "CALIBRATION_OVERLAY",
+                    "latest_drift_cap_status": "WATCH",
+                    "latest_promotion_decision": "HOLD",
+                    "latest_event_type": "PROFILE_ACTIVE",
+                    "reason_codes": [
+                        "AGGREGATED_SCOPE_SUMMARY",
+                        "ACTIVE_PROFILE_PRESENT",
+                    ],
+                },
+            )
+        if path == "/continual-learning/profiles":
+            return _Response(
+                200,
+                {
+                    "items": [
+                        {
+                            "profile_id": "cl-profile-1",
+                            "candidate_type": "CALIBRATION_OVERLAY",
+                            "status": "ACTIVE",
+                            "execution_mode_scope": "paper",
+                            "symbol_scope": "BTC/USD",
+                            "regime_scope": "TREND_UP",
+                            "baseline_target_type": "MODEL_VERSION",
+                            "baseline_target_id": "m20-live",
+                            "source_experiment_id": "cl-exp-1",
+                            "promotion_stage": "LIVE_ELIGIBLE",
+                            "live_eligible": True,
+                            "activated_at": "2026-03-20T12:00:00Z",
+                        }
+                    ]
+                },
+            )
+        if path == "/continual-learning/drift-caps":
+            return _Response(
+                200,
+                {
+                    "items": [
+                        {
+                            "cap_id": "cl-cap-1",
+                            "execution_mode_scope": "paper",
+                            "symbol_scope": "BTC/USD",
+                            "regime_scope": "TREND_UP",
+                            "candidate_type": "CALIBRATION_OVERLAY",
+                            "status": "WATCH",
+                            "observed_drift_score": 0.12,
+                            "reason_code": "DRIFT_WATCH",
+                            "updated_at": "2026-03-20T12:00:00Z",
+                        }
+                    ]
+                },
+            )
+        if path == "/continual-learning/promotions":
+            return _Response(
+                200,
+                {
+                    "items": [
+                        {
+                            "decision_id": "cl-decision-1",
+                            "target_type": "PROFILE",
+                            "target_id": "cl-profile-1",
+                            "decision": "HOLD",
+                            "summary_text": "hold",
+                            "decided_at": "2026-03-20T12:00:00Z",
+                            "reason_codes": ["ACTIVE_PROFILE_PRESENT"],
+                        }
+                    ]
+                },
+            )
+        if path == "/continual-learning/events":
+            return _Response(
+                200,
+                {
+                    "items": [
+                        {
+                            "event_id": "cl-event-1",
+                            "event_type": "PROFILE_ACTIVE",
+                            "profile_id": "cl-profile-1",
+                            "experiment_id": "cl-exp-1",
+                            "decision_id": "cl-decision-1",
+                            "reason_code": "ACTIVE_PROFILE_PRESENT",
+                            "created_at": "2026-03-20T12:00:00Z",
+                        }
+                    ]
+                },
+            )
         return _Response(
             200,
             {
@@ -455,6 +552,17 @@ class _HealthyHttpClient:
                 "reason_code": "HEALTH_HEALTHY",
                 "freshness_status": "FRESH",
                 "health_overall_status": "HEALTHY",
+                "continual_learning_status": "ACTIVE",
+                "continual_learning_profile_id": "cl-profile-1",
+                "continual_learning_frozen": False,
+                "continual_learning": {
+                    "candidate_type": "CALIBRATION_OVERLAY",
+                    "promotion_stage": "LIVE_ELIGIBLE",
+                    "baseline_target_type": "MODEL_VERSION",
+                    "baseline_target_id": "m20-live",
+                    "drift_cap_status": "WATCH",
+                    "reason_codes": ["ACTIVE_PROFILE_PRESENT"],
+                },
             },
         )
 
@@ -516,8 +624,20 @@ def test_dashboard_snapshot_loads_adaptation_surfaces() -> None:
     assert snapshot.adaptation.performance[0].window_id == "last_20_trades"
     assert snapshot.adaptation.profiles[0].status == "ACTIVE"
     assert snapshot.adaptation.promotions[0].decision == "HOLD"
+    assert snapshot.continual_learning.summary.available is True
+    assert snapshot.continual_learning.summary.active_profile_id == "cl-profile-1"
+    assert snapshot.continual_learning.summary.aggregated_scope is True
+    assert snapshot.continual_learning.profiles[0].status == "ACTIVE"
+    assert snapshot.continual_learning.drift_caps[0].status == "WATCH"
+    assert snapshot.continual_learning.promotions[0].decision == "HOLD"
+    assert snapshot.continual_learning.events[0].event_type == "PROFILE_ACTIVE"
     assert snapshot.api_health.regime_run_id == "20260320T120000Z"
     assert snapshot.api_health.health_overall_status == "HEALTHY"
+    assert snapshot.api_health.active_continual_learning_profile_id == "cl-profile-1"
+    assert snapshot.api_health.continual_learning_status == "ACTIVE"
+    assert snapshot.signals[0].continual_learning_status == "ACTIVE"
+    assert snapshot.signals[0].continual_learning_profile_id == "cl-profile-1"
+    assert snapshot.signals[0].continual_learning_candidate_type == "CALIBRATION_OVERLAY"
     assert snapshot.api_health.active_alert_count == 1
     assert snapshot.api_health.max_alert_severity == "WARNING"
     assert snapshot.system_reliability is not None

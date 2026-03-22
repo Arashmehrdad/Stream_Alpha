@@ -20,9 +20,11 @@ from app.continual_learning.config import (
 )
 from app.continual_learning.schemas import (
     ContinualLearningContextPayload,
+    ContinualLearningDriftCapRecord,
     ContinualLearningDriftCapsResponse,
     ContinualLearningEventRecord,
     ContinualLearningEventsResponse,
+    ContinualLearningExperimentRecord,
     ContinualLearningExperimentsResponse,
     ContinualLearningProfileRecord,
     ContinualLearningProfilesResponse,
@@ -138,6 +140,7 @@ class ContinualLearningService:
             frozen_by_health_gate=frozen_by_health_gate,
         )
 
+    # pylint: disable=too-many-locals
     async def summary(
         self,
         *,
@@ -153,55 +156,121 @@ class ContinualLearningService:
                 continual_learning_status="UNAVAILABLE",
                 reason_codes=["CONTINUAL_LEARNING_REPOSITORY_UNAVAILABLE"],
             )
-        profiles = await self.repository.load_continual_learning_profiles(limit=50)
+        aggregate_scope = _is_aggregate_scope(
+            execution_mode=execution_mode,
+            symbol=symbol,
+            regime_label=regime_label,
+        )
+        profiles = await self.repository.load_continual_learning_profiles(limit=500)
+        matching_profiles = _filter_profiles_for_scope(
+            profiles,
+            execution_mode=execution_mode,
+            symbol=symbol,
+            regime_label=regime_label,
+        )
+        active_profiles = [item for item in matching_profiles if item.status == "ACTIVE"]
         promotions = await self.repository.load_continual_learning_promotion_decisions(limit=1)
         events = await self.repository.load_continual_learning_events(limit=1)
-        drift_cap = await self.repository.load_latest_continual_learning_drift_cap(
-            execution_mode=execution_mode,
-            symbol=symbol,
-            regime_label=regime_label,
+        drift_status = None
+        active_profile_id = None
+        active_candidate_type = None
+
+        if aggregate_scope:
+            drift_caps = await self.repository.load_all_continual_learning_drift_caps(limit=500)
+            matching_drift_caps = _filter_drift_caps_for_scope(
+                drift_caps,
+                execution_mode=execution_mode,
+                symbol=symbol,
+                regime_label=regime_label,
+            )
+            drift_status = _worst_drift_cap_status(matching_drift_caps)
+            if len(active_profiles) == 1:
+                active_profile_id = active_profiles[0].profile_id
+                active_candidate_type = active_profiles[0].candidate_type
+        else:
+            active_profile = await self.repository.load_active_continual_learning_profile(
+                execution_mode=execution_mode,
+                symbol=symbol,
+                regime_label=regime_label,
+            )
+            if active_profile is not None:
+                active_profile_id = active_profile.profile_id
+                active_candidate_type = active_profile.candidate_type
+            drift_cap = await self.repository.load_latest_continual_learning_drift_cap(
+                execution_mode=execution_mode,
+                symbol=symbol,
+                regime_label=regime_label,
+            )
+            drift_status = None if drift_cap is None else drift_cap.status
+
+        reason_codes: list[str] = []
+        if aggregate_scope:
+            reason_codes.append("AGGREGATED_SCOPE_SUMMARY")
+        reason_codes.append(
+            "ACTIVE_PROFILE_PRESENT"
+            if active_profiles
+            else "NO_ACTIVE_CONTINUAL_LEARNING_PROFILE"
         )
-        active_profile = await self.repository.load_active_continual_learning_profile(
-            execution_mode=execution_mode,
-            symbol=symbol,
-            regime_label=regime_label,
-        )
+
         summary = ContinualLearningSummaryResponse(
             enabled=self.config.enabled,
-            active_profile_count=sum(1 for item in profiles if item.status == "ACTIVE"),
-            active_profile_id=(None if active_profile is None else active_profile.profile_id),
-            continual_learning_status=("ACTIVE" if active_profile is not None else "IDLE"),
-            active_candidate_type=(
-                None if active_profile is None else active_profile.candidate_type
-            ),
-            latest_drift_cap_status=(None if drift_cap is None else drift_cap.status),
+            active_profile_count=len(active_profiles),
+            active_profile_id=active_profile_id,
+            continual_learning_status=("ACTIVE" if active_profiles else "IDLE"),
+            active_candidate_type=active_candidate_type,
+            latest_drift_cap_status=drift_status,
             latest_promotion_decision=(
                 None if not promotions else promotions[0].decision
             ),
             latest_event_type=(None if not events else events[0].event_type),
-            reason_codes=(
-                ["ACTIVE_PROFILE_PRESENT"]
-                if active_profile is not None
-                else ["NO_ACTIVE_CONTINUAL_LEARNING_PROFILE"]
-            ),
+            reason_codes=reason_codes,
         )
         self._write_summary_artifact(summary)
         return summary
+    # pylint: enable=too-many-locals
 
-    async def experiments(self, *, limit: int = 50) -> ContinualLearningExperimentsResponse:
+    async def experiments(
+        self,
+        *,
+        execution_mode: str,
+        symbol: str,
+        regime_label: str,
+        limit: int = 50,
+    ) -> ContinualLearningExperimentsResponse:
         """Return the read-only continual-learning experiments payload."""
         if not await self._ensure_repository_ready():
             return ContinualLearningExperimentsResponse()
+        items = await self.repository.load_continual_learning_experiments(limit=500)
+        matching_items = _filter_experiments_for_scope(
+            items,
+            execution_mode=execution_mode,
+            symbol=symbol,
+            regime_label=regime_label,
+        )
         return ContinualLearningExperimentsResponse(
-            items=await self.repository.load_continual_learning_experiments(limit=limit)
+            items=matching_items[:limit]
         )
 
-    async def profiles(self, *, limit: int = 50) -> ContinualLearningProfilesResponse:
+    async def profiles(
+        self,
+        *,
+        execution_mode: str,
+        symbol: str,
+        regime_label: str,
+        limit: int = 50,
+    ) -> ContinualLearningProfilesResponse:
         """Return the read-only continual-learning profiles payload."""
         if not await self._ensure_repository_ready():
             return ContinualLearningProfilesResponse()
+        items = await self.repository.load_continual_learning_profiles(limit=500)
+        matching_items = _filter_profiles_for_scope(
+            items,
+            execution_mode=execution_mode,
+            symbol=symbol,
+            regime_label=regime_label,
+        )
         return ContinualLearningProfilesResponse(
-            items=await self.repository.load_continual_learning_profiles(limit=limit)
+            items=matching_items[:limit]
         )
 
     async def drift_caps(
@@ -215,12 +284,27 @@ class ContinualLearningService:
         """Return the read-only continual-learning drift-cap payload."""
         if not await self._ensure_repository_ready():
             return ContinualLearningDriftCapsResponse()
-        items = await self.repository.load_continual_learning_drift_caps(
+        if _is_aggregate_scope(
             execution_mode=execution_mode,
             symbol=symbol,
             regime_label=regime_label,
-            limit=limit,
-        )
+        ):
+            unscoped_items = await self.repository.load_all_continual_learning_drift_caps(
+                limit=500
+            )
+            items = _filter_drift_caps_for_scope(
+                unscoped_items,
+                execution_mode=execution_mode,
+                symbol=symbol,
+                regime_label=regime_label,
+            )[:limit]
+        else:
+            items = await self.repository.load_continual_learning_drift_caps(
+                execution_mode=execution_mode,
+                symbol=symbol,
+                regime_label=regime_label,
+                limit=limit,
+            )
         self._write_drift_caps_summary_artifact(
             execution_mode=execution_mode,
             symbol=symbol,
@@ -445,3 +529,74 @@ def _runtime_context_from_profile(
         frozen_by_health_gate=frozen_by_health_gate,
         reason_codes=reason_codes,
     )
+
+
+def _is_aggregate_scope(*, execution_mode: str, symbol: str, regime_label: str) -> bool:
+    return execution_mode == "ALL" or symbol == "ALL" or regime_label == "ALL"
+
+
+def _scope_matches(query_value: str, stored_value: str) -> bool:
+    if query_value == "ALL":
+        return True
+    return stored_value in {query_value, "ALL"}
+
+
+def _filter_profiles_for_scope(
+    profiles: list[ContinualLearningProfileRecord],
+    *,
+    execution_mode: str,
+    symbol: str,
+    regime_label: str,
+) -> list[ContinualLearningProfileRecord]:
+    return [
+        item
+        for item in profiles
+        if _scope_matches(execution_mode, item.execution_mode_scope)
+        and _scope_matches(symbol, item.symbol_scope)
+        and _scope_matches(regime_label, item.regime_scope)
+    ]
+
+
+def _filter_drift_caps_for_scope(
+    drift_caps: list[ContinualLearningDriftCapRecord],
+    *,
+    execution_mode: str,
+    symbol: str,
+    regime_label: str,
+) -> list[ContinualLearningDriftCapRecord]:
+    return [
+        item
+        for item in drift_caps
+        if _scope_matches(execution_mode, item.execution_mode_scope)
+        and _scope_matches(symbol, item.symbol_scope)
+        and _scope_matches(regime_label, item.regime_scope)
+    ]
+
+
+def _filter_experiments_for_scope(
+    experiments: list[ContinualLearningExperimentRecord],
+    *,
+    execution_mode: str,
+    symbol: str,
+    regime_label: str,
+) -> list[ContinualLearningExperimentRecord]:
+    return [
+        item
+        for item in experiments
+        if _scope_matches(execution_mode, item.execution_mode_scope)
+        and _scope_matches(symbol, item.symbol_scope)
+        and _scope_matches(regime_label, item.regime_scope)
+    ]
+
+
+def _worst_drift_cap_status(
+    drift_caps: list[ContinualLearningDriftCapRecord],
+) -> str | None:
+    if not drift_caps:
+        return None
+    severity = {
+        "HEALTHY": 0,
+        "WATCH": 1,
+        "BREACHED": 2,
+    }
+    return max(drift_caps, key=lambda item: severity.get(item.status, -1)).status

@@ -277,18 +277,34 @@ def create_app(
         response_model=ContinualLearningExperimentsResponse,
     )
     async def continual_learning_experiments(
+        execution_mode: str = Query(default="ALL"),
+        symbol: str = Query(default="ALL"),
+        regime_label: str = Query(default="ALL"),
         limit: int = Query(default=50, ge=1, le=500),
     ) -> ContinualLearningExperimentsResponse:
-        return await service.continual_learning_experiments(limit=limit)
+        return await service.continual_learning_experiments(
+            execution_mode=execution_mode,
+            symbol=symbol,
+            regime_label=regime_label,
+            limit=limit,
+        )
 
     @app.get(
         "/continual-learning/profiles",
         response_model=ContinualLearningProfilesResponse,
     )
     async def continual_learning_profiles(
+        execution_mode: str = Query(default="ALL"),
+        symbol: str = Query(default="ALL"),
+        regime_label: str = Query(default="ALL"),
         limit: int = Query(default=50, ge=1, le=500),
     ) -> ContinualLearningProfilesResponse:
-        return await service.continual_learning_profiles(limit=limit)
+        return await service.continual_learning_profiles(
+            execution_mode=execution_mode,
+            symbol=symbol,
+            regime_label=regime_label,
+            limit=limit,
+        )
 
     @app.get(
         "/continual-learning/drift-caps",

@@ -1,6 +1,6 @@
 """Focused tests for the Stream Alpha M21 continual-learning layer."""
 
-# pylint: disable=missing-function-docstring
+# pylint: disable=missing-function-docstring,too-many-arguments
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from app.continual_learning.schemas import (
     CalibrationOverlayProfile,
     ContinualLearningDecisionType,
     ContinualLearningDriftCapRecord,
+    ContinualLearningExperimentRecord,
     ContinualLearningProfileRecord,
     ContinualLearningPromotionDecisionRecord,
 )
@@ -28,15 +29,23 @@ class _FakeRepo:
         active_profile,
         fallback_profile,
         drift_cap,
+        experiments: list | None = None,
+        extra_profiles: list | None = None,
+        all_drift_caps: list | None = None,
         latest_decision: ContinualLearningDecisionType | None = None,
     ) -> None:
         self._active_profile = active_profile
         self._drift_cap = drift_cap
+        self._all_drift_caps = [drift_cap] if all_drift_caps is None else list(all_drift_caps)
         self._profiles = {}
         if active_profile is not None:
             self._profiles[active_profile.profile_id] = active_profile
         if fallback_profile is not None:
             self._profiles[fallback_profile.profile_id] = fallback_profile
+        if extra_profiles is not None:
+            for profile in extra_profiles:
+                self._profiles[profile.profile_id] = profile
+        self._experiments = [] if experiments is None else list(experiments)
         self._promotion_decisions = []
         if latest_decision is not None:
             self._promotion_decisions.append(
@@ -81,11 +90,13 @@ class _FakeRepo:
         return list(self._events)
 
     async def load_continual_learning_experiments(self, *, limit: int):
-        del limit
-        return []
+        return list(self._experiments)[:limit]
 
     async def load_continual_learning_drift_caps(self, **_kwargs):
         return [self._drift_cap]
+
+    async def load_all_continual_learning_drift_caps(self, *, limit: int):
+        return list(self._all_drift_caps)[:limit]
 
     async def load_continual_learning_profile(self, *, profile_id: str):
         return self._profiles.get(profile_id)
@@ -449,3 +460,132 @@ def test_resolve_runtime_context_marks_repository_unavailable() -> None:
     assert context.active_profile_id is None
     assert context.frozen_by_health_gate is False
     assert context.reason_codes == ["CONTINUAL_LEARNING_REPOSITORY_UNAVAILABLE"]
+
+
+def test_summary_all_scope_aggregates_active_profiles_and_worst_drift() -> None:
+    active, fallback = _build_profiles()
+    second_active = fallback.model_copy(
+        update={
+            "profile_id": "profile-active-2",
+            "status": "ACTIVE",
+            "symbol_scope": "ETH/USD",
+            "regime_scope": "RANGE",
+            "activated_at": datetime(2026, 4, 2, 2, 30, tzinfo=timezone.utc),
+            "superseded_at": None,
+        }
+    )
+    drift_watch = ContinualLearningDriftCapRecord(
+        cap_id="cap-watch",
+        execution_mode_scope="paper",
+        symbol_scope="BTC/USD",
+        regime_scope="TREND_UP",
+        candidate_type="CALIBRATION_OVERLAY",
+        status="WATCH",
+        observed_drift_score=0.12,
+        warning_threshold=0.10,
+        breach_threshold=0.20,
+        reason_code="DRIFT_WATCH",
+    )
+    drift_breached = ContinualLearningDriftCapRecord(
+        cap_id="cap-breached",
+        execution_mode_scope="paper",
+        symbol_scope="ETH/USD",
+        regime_scope="RANGE",
+        candidate_type="CALIBRATION_OVERLAY",
+        status="BREACHED",
+        observed_drift_score=0.24,
+        warning_threshold=0.10,
+        breach_threshold=0.20,
+        reason_code="DRIFT_BREACHED",
+    )
+    service = ContinualLearningService(
+        repository=_FakeRepo(
+            active_profile=active,
+            fallback_profile=fallback,
+            drift_cap=drift_watch,
+            extra_profiles=[second_active],
+            all_drift_caps=[drift_watch, drift_breached],
+        ),
+        config=_build_config("artifacts/tmp/m21-summary-all"),
+    )
+
+    summary = asyncio.run(
+        service.summary(
+            execution_mode="ALL",
+            symbol="ALL",
+            regime_label="ALL",
+        )
+    )
+
+    assert summary.active_profile_count == 2
+    assert summary.active_profile_id is None
+    assert summary.active_candidate_type is None
+    assert summary.latest_drift_cap_status == "BREACHED"
+    assert "AGGREGATED_SCOPE_SUMMARY" in summary.reason_codes
+
+
+def test_profiles_and_experiments_apply_scope_filtering() -> None:
+    active, fallback = _build_profiles()
+    experiment_all = ContinualLearningExperimentRecord(
+        experiment_id="exp-all",
+        candidate_type="CALIBRATION_OVERLAY",
+        status="EVALUATED",
+        execution_mode_scope="ALL",
+        symbol_scope="ALL",
+        regime_scope="ALL",
+        baseline_target_type="MODEL_VERSION",
+        baseline_target_id="m20-live",
+    )
+    experiment_other_symbol = ContinualLearningExperimentRecord(
+        experiment_id="exp-eth",
+        candidate_type="CALIBRATION_OVERLAY",
+        status="EVALUATED",
+        execution_mode_scope="paper",
+        symbol_scope="ETH/USD",
+        regime_scope="TREND_UP",
+        baseline_target_type="MODEL_VERSION",
+        baseline_target_id="m20-live",
+    )
+    service = ContinualLearningService(
+        repository=_FakeRepo(
+            active_profile=active,
+            fallback_profile=fallback,
+            drift_cap=ContinualLearningDriftCapRecord(
+                cap_id="cap-1",
+                execution_mode_scope="paper",
+                symbol_scope="BTC/USD",
+                regime_scope="TREND_UP",
+                candidate_type="CALIBRATION_OVERLAY",
+                status="HEALTHY",
+                observed_drift_score=0.03,
+                warning_threshold=0.10,
+                breach_threshold=0.20,
+                reason_code="DRIFT_HEALTHY",
+            ),
+            experiments=[
+                experiment_all,
+                experiment_other_symbol,
+            ],
+        ),
+        config=_build_config("artifacts/tmp/m21-scope-filter"),
+    )
+
+    profiles = asyncio.run(
+        service.profiles(
+            execution_mode="paper",
+            symbol="BTC/USD",
+            regime_label="TREND_UP",
+            limit=50,
+        )
+    )
+    experiments = asyncio.run(
+        service.experiments(
+            execution_mode="paper",
+            symbol="BTC/USD",
+            regime_label="TREND_UP",
+            limit=50,
+        )
+    )
+
+    assert all(item.symbol_scope in {"BTC/USD", "ALL"} for item in profiles.items)
+    assert [item.experiment_id for item in experiments.items] == ["exp-all"]
