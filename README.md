@@ -105,28 +105,107 @@ M19 rollback limitations:
 
 ## M20 Scope
 
-M20 Packet 1 adds the runtime ensemble chassis only:
-- scoped active profile loading from PostgreSQL
-- registry-backed candidate scoring
-- regime-aware weighting and agreement-adjusted confidence
-- explicit fallback and truthful Packet 1 explainability placeholder
-- additive M14 decision-trace propagation
+Milestone `M20` is complete and accepted.
 
-M20 Packet 2 adds the first real dynamic ensemble workflow on top of that chassis:
-- offline candidate research and honest regime-conditioned evaluation under `app/ensemble/research.py`
-- explicit internal profile drafting and activation under `app/ensemble/promote.py`
-- explicit internal rollback support under `app/ensemble/rollback.py`
-- registry-backed runtime candidates for one canonical 3-role roster:
-  - one `GENERALIST`
-  - one `TREND_SPECIALIST`
-  - one `RANGE_SPECIALIST`
-- truthful top-level ensemble identity on `/predict`, `/signal`, and canonical decision traces when the ensemble is active
+M20 adds the Dynamic Ensemble Foundation. Its purpose is to make prediction quality depend on market context instead of one static brain, while keeping the accepted local-first architecture inspectable and bounded.
 
-M20 Packet 2 does not do:
-- change M4, M10, M11, M12, M13, M14, M18, or M19 authority boundaries
-- add public write APIs, external orchestration, or automatic live profile mutation
-- add RL, sentiment/news, continual learning, or uncontrolled self-retraining
-- expand runtime beyond the canonical 3-role roster
+M20 scope includes:
+- multiple specialized candidate models instead of one always-on voting peer set
+- regime-aware ensemble weighting so trend and range conditions can prefer different specialists
+- explicit trend-versus-range comparison during offline ensemble research
+- ensemble agreement as a first-class confidence input through agreement-adjusted effective confidence
+- champion/challenger ensemble experiments with explicit evidence, activation, and rollback paths
+
+### Canonical Runtime Design
+
+The accepted M20 runtime path uses one canonical 3-role ensemble roster:
+- `GENERALIST`
+- `TREND_SPECIALIST`
+- `RANGE_SPECIALIST`
+
+The accepted runtime behavior is:
+- scoped active ensemble profile loading from PostgreSQL
+- registry-backed candidate scoring against the exact canonical M4 feature row
+- regime-aware weight selection from the active ensemble profile
+- agreement-adjusted effective confidence for downstream signal and adaptation use
+- explicit fallback to the prior single-model path when the ensemble cannot run honestly
+- truthful top-level active-ensemble identity:
+  - `model_name = dynamic_ensemble`
+  - `model_version = ensemble_profile:<profile_id>`
+
+Nested ensemble payloads remain additive and explicit. They continue to show the actual participating candidate models, weights, and fallback context rather than hiding that detail behind the top-level ensemble identity.
+
+### Model-Family Guidance
+
+The accepted Packet 2 model-family direction in M20 is:
+- AutoGluon for the `GENERALIST` role and for the champion/challenger baseline comparison path
+- NeuralForecast specialist research pool for:
+  - `NHITS`
+  - `NBEATSx`
+  - `TFT`
+  - `PatchTST`
+- River is not the primary production ensemble voter in M20
+
+### Promotion And Rollback
+
+The accepted M20 profile lifecycle is explicit and local-first:
+- draft profile creation from one selected 3-role roster
+- explicit promotion or activation evidence before a profile becomes active
+- explicit rollback target behavior for returning to a known prior profile
+- no automatic live mutation of the active runtime profile
+- no uncontrolled runtime switching
+
+### Evaluation And Evidence
+
+Packet 2 ensemble research evaluates candidates honestly across these slices:
+- `ALL`
+- `TREND_COMBINED`
+- `RANGE`
+- `HIGH_VOL` as diagnostic-only context
+
+The main evidence metrics are:
+- net PnL after fees and slippage
+- max drawdown
+- Calmar ratio
+- profit factor
+- signal precision
+- trade count
+- blocked-trade rate
+
+M20 keeps this evidence local-first and inspectable. Research outputs, draft profiles, promotion decisions, and rollback decisions are written as local artifacts and PostgreSQL records rather than hidden behind a remote control plane.
+
+### Explainability Note
+
+Active ensemble explainability remains in truthful placeholder mode in the accepted M20 runtime. Weighted aggregate ensemble explainability is still deferred, so the README does not claim that aggregated active-ensemble explainability is already implemented.
+
+### Architecture Boundaries
+
+M20 does not change the accepted authority boundaries:
+- M4 remains authoritative for prediction and signal generation
+- M10 remains authoritative for risk approval and sizing boundaries
+- M11 remains authoritative for order lifecycle truth
+- M12 remains authoritative for guarded live controls
+- M13 remains authoritative for freshness and reliability HOLD behavior
+- M14 remains authoritative for decision traces
+- M18 remains authoritative for honest evaluation truth
+- M19 remains authoritative for bounded adaptation
+
+### Deferred Beyond M20
+
+Intentionally deferred beyond the accepted M20 scope:
+- weighted aggregate ensemble explainability
+- M21 continual learning
+- RL
+- news and sentiment integration
+- live self-retraining
+- dashboard redesign beyond additive surfaces
+
+### Validation And Quality
+
+The accepted M20 implementation is documented as:
+- validated with `pytest`
+- held to a `pylint` target of `10.00/10` on touched files
+- local-first and inspectable by design
 
 ## Repository Tree
 
