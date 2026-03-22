@@ -86,6 +86,11 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
         self._reliability_events_table = _quote_table_name(RELIABILITY_EVENTS_TABLE)
         self._pool: asyncpg.Pool | None = None
 
+    @property
+    def dsn(self) -> str:
+        """Expose the configured DSN for additive helper repositories."""
+        return self._dsn
+
     async def connect(self) -> None:
         """Open the repository pool and ensure trading tables exist."""
         if self._pool is not None:
@@ -934,6 +939,54 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
             limit,
         )
         return [_order_event_from_row(row) for row in rows]
+
+    async def load_order_events_since(
+        self,
+        *,
+        service_name: str,
+        execution_mode: str,
+        since: datetime,
+    ) -> list[OrderLifecycleEvent]:
+        """Load order lifecycle rows since one explicit timestamp."""
+        pool = self._require_pool()
+        rows = await pool.fetch(
+            f"""
+            SELECT *
+            FROM {self._order_events_table}
+            WHERE service_name = $1
+              AND execution_mode = $2
+              AND event_time >= $3
+            ORDER BY event_time ASC, id ASC
+            """,
+            service_name,
+            execution_mode,
+            since,
+        )
+        return [_order_event_from_row(row) for row in rows]
+
+    async def load_decision_traces_since(
+        self,
+        *,
+        service_name: str,
+        execution_mode: str,
+        since: datetime,
+    ) -> list[DecisionTraceRecord]:
+        """Load canonical decision traces since one explicit timestamp."""
+        pool = self._require_pool()
+        rows = await pool.fetch(
+            f"""
+            SELECT *
+            FROM {self._decision_traces_table}
+            WHERE service_name = $1
+              AND execution_mode = $2
+              AND signal_as_of_time >= $3
+            ORDER BY signal_as_of_time ASC, id ASC
+            """,
+            service_name,
+            execution_mode,
+            since,
+        )
+        return [_decision_trace_from_row(row) for row in rows]
 
     async def fetch_new_feature_rows(
         self,

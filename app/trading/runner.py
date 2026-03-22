@@ -16,6 +16,9 @@ from typing import Any
 
 import httpx
 
+from app.alerting.config import default_alerting_config_path, load_alerting_config
+from app.alerting.repository import OperationalAlertRepository
+from app.alerting.service import OperationalAlertService
 from app.common.serialization import make_json_safe
 from app.common.time import to_rfc3339, utc_now
 from app.reliability.artifacts import append_jsonl_artifact
@@ -36,6 +39,7 @@ from app.reliability.service import (
     evaluate_pending_signal_expiry,
     transition_circuit_breaker,
 )
+from app.runtime.config import build_runtime_metadata
 from app.trading.config import PaperTradingConfig
 from app.trading.decision_trace import (
     build_initial_decision_trace,
@@ -81,13 +85,14 @@ from app.trading.signal_client import SignalClient, SignalClientError
 class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
     """Poll canonical feature rows, fetch M4 signals, and persist M5 paper trades."""
 
-    def __init__(
+    def __init__(  # pylint: disable=too-many-arguments
         self,
         *,
         config: PaperTradingConfig,
         repository: TradingRepository,
         signal_client: SignalClient,
         broker_client=None,
+        alert_repository: OperationalAlertRepository | None = None,
     ) -> None:
         self.config = config
         self.repository = repository
@@ -99,11 +104,23 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
         self.reliability_config = load_reliability_config(
             default_reliability_config_path()
         )
+        self.alerting_config = load_alerting_config(default_alerting_config_path())
+        resolved_alert_repository = alert_repository
+        if resolved_alert_repository is None and hasattr(repository, "dsn"):
+            repository_dsn = getattr(repository, "dsn")
+            if isinstance(repository_dsn, str) and repository_dsn:
+                resolved_alert_repository = OperationalAlertRepository(repository_dsn)
+        self.alert_repository = resolved_alert_repository
+        self.alerting_service = OperationalAlertService(
+            config=self.alerting_config,
+            repository=self.alert_repository,
+        )
         self.live_safety_state = None
         self._signal_client_component = "signal_client"
         self._runner_component = "trading_runner"
         self._live_health_component = "live_health_gate"
         self._live_reconciliation_component = "live_reconciliation"
+        self._startup_safety_report = None
         self._last_system_reliability_snapshot = None
         self._last_heartbeat_at = None
         self.logger = logging.getLogger(f"{config.service_name}.runner")
@@ -111,6 +128,8 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
     async def startup(self) -> None:
         """Connect the repository before polling."""
         await self.repository.connect()
+        if self.alert_repository is not None:
+            await self.alert_repository.connect()
         await self._expire_stale_pending_signals()
         await self._write_runner_heartbeat(
             health_overall_status="HEALTHY",
@@ -118,6 +137,7 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
             detail="Trading runner startup completed",
         )
         if self.config.execution.mode != "live":
+            self._startup_safety_report = await self._write_startup_safety_report()
             return
 
         existing_live_state = await self.repository.load_live_safety_state(
@@ -166,6 +186,8 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
             config=self.config,
             system_reliability=self._last_system_reliability_snapshot,
         )
+        self._startup_safety_report = await self._write_startup_safety_report()
+        await self._record_live_mode_activation()
         assert_live_startup_passed(checklist)
         assert_live_reconciliation_clear(self.live_safety_state)
         assert_live_health_gate_clear(self.live_safety_state)
@@ -174,6 +196,8 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
         """Close the signal client and repository."""
         await self.execution_adapter.close()
         await self.signal_client.close()
+        if self.alert_repository is not None:
+            await self.alert_repository.close()
         await self.repository.close()
 
     async def run_forever(self) -> None:
@@ -479,6 +503,7 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
             )
 
         await self._write_summaries(available_cash)
+        await self._evaluate_alerting_cycle(service_risk_state=service_risk_state)
         await self._write_runner_heartbeat(
             health_overall_status=(
                 "DEGRADED"
@@ -723,6 +748,91 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
         _write_csv(
             artifact_dir / "closed_positions.csv",
             _positions_to_rows([row for row in positions if row.status == "CLOSED"]),
+        )
+
+    async def _write_startup_safety_report(self):
+        runtime_metadata = build_runtime_metadata(
+            execution_mode=self.config.execution.mode,
+        )
+        report, _events = await self.alerting_service.write_startup_safety_artifact(
+            service_name=self.config.service_name,
+            execution_mode=self.config.execution.mode,
+            runtime_profile=runtime_metadata.runtime_profile,
+            startup_validation_passed=runtime_metadata.startup_validation_passed,
+            startup_report_path=runtime_metadata.startup_report_path,
+            live_safety_state=self.live_safety_state,
+            live_startup_checklist_path=(
+                self.config.execution.live.startup_checklist_path
+                if self.config.execution.mode == "live"
+                else None
+            ),
+        )
+        return report
+
+    async def _record_live_mode_activation(self) -> None:
+        if self.config.execution.mode != "live" or self.live_safety_state is None:
+            return
+        runtime_metadata = build_runtime_metadata(
+            execution_mode=self.config.execution.mode,
+        )
+        await self.alerting_service.record_live_mode_activation(
+            service_name=self.config.service_name,
+            execution_mode=self.config.execution.mode,
+            runtime_profile=runtime_metadata.runtime_profile,
+            live_safety_state=self.live_safety_state,
+            event_time=utc_now(),
+        )
+
+    async def _evaluate_alerting_cycle(
+        self,
+        *,
+        service_risk_state,
+    ) -> None:
+        if not hasattr(self.repository, "load_order_events_since"):
+            return
+        if not hasattr(self.repository, "load_decision_traces_since"):
+            return
+        evaluated_at = utc_now()
+        runtime_metadata = build_runtime_metadata(
+            execution_mode=self.config.execution.mode,
+        )
+        if self._startup_safety_report is None:
+            self._startup_safety_report = await self._write_startup_safety_report()
+        lookback_start = self.alerting_service.required_lookback_start(
+            evaluated_at=evaluated_at,
+            interval_minutes=self.config.interval_minutes,
+        )
+        order_events = await self.repository.load_order_events_since(
+            service_name=self.config.service_name,
+            execution_mode=self.config.execution.mode,
+            since=lookback_start,
+        )
+        decision_traces = await self.repository.load_decision_traces_since(
+            service_name=self.config.service_name,
+            execution_mode=self.config.execution.mode,
+            since=lookback_start,
+        )
+        await self.alerting_service.evaluate_cycle(
+            service_name=self.config.service_name,
+            execution_mode=self.config.execution.mode,
+            interval_minutes=self.config.interval_minutes,
+            evaluated_at=evaluated_at,
+            system_reliability=self._last_system_reliability_snapshot,
+            service_risk_state=service_risk_state,
+            order_events=order_events,
+            decision_traces=decision_traces,
+            max_drawdown_pct=self.config.risk.max_drawdown_pct,
+        )
+        await self.alerting_service.write_daily_summary(
+            service_name=self.config.service_name,
+            execution_mode=self.config.execution.mode,
+            runtime_profile=runtime_metadata.runtime_profile,
+            evaluated_at=evaluated_at,
+            service_risk_state=service_risk_state,
+            max_drawdown_pct=self.config.risk.max_drawdown_pct,
+            order_events=order_events,
+            decision_traces=decision_traces,
+            startup_safety_report=self._startup_safety_report,
         )
 
     async def _refresh_live_reconciliation(

@@ -1,0 +1,13 @@
+schema_version: m17_alerting_v1
+order_failure_spike:
+  window_minutes: 60
+  warning_count: 2
+  critical_count: 4
+signals:
+  silence_window_intervals: 3
+  flood_window_intervals: 6
+  flood_warning_count: 4
+  flood_critical_count: 8
+artifacts:
+  daily_summary_dir: artifacts/operations/daily
+  startup_safety_path: artifacts/operations/startup_safety.json

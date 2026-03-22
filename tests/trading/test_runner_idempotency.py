@@ -7,10 +7,18 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from app.alerting.config import (
+    AlertingArtifactConfig,
+    AlertingConfig,
+    OrderFailureSpikeConfig,
+    SignalAlertConfig,
+)
+from app.alerting.service import OperationalAlertService
 from app.reliability.schemas import RecoveryEvent, ReliabilityState, ServiceHeartbeat
 from app.trading.config import PaperTradingConfig, RiskConfig
 from app.trading.runner import PaperTradingRunner
@@ -227,6 +235,40 @@ class FakeRepository:  # pylint: disable=too-many-instance-attributes
         self.order_events.setdefault(key, event)
         return self.order_events[key]
 
+    async def load_order_events_since(
+        self,
+        *,
+        service_name: str,
+        execution_mode: str,
+        since,
+    ):
+        del service_name, execution_mode
+        return [
+            event
+            for event in sorted(
+                self.order_events.values(),
+                key=lambda item: (item.event_time, item.event_id or 0),
+            )
+            if event.event_time >= since
+        ]
+
+    async def load_decision_traces_since(
+        self,
+        *,
+        service_name: str,
+        execution_mode: str,
+        since,
+    ):
+        del service_name, execution_mode
+        return [
+            trace
+            for trace in sorted(
+                self.decision_traces.values(),
+                key=lambda item: (item.signal_as_of_time, item.decision_trace_id or 0),
+            )
+            if trace.signal_as_of_time >= since
+        ]
+
     async def load_latest_prices(self, *, source_exchange: str, interval_minutes: int, symbols: tuple[str, ...]):
         del source_exchange, interval_minutes, symbols
         return {"BTC/USD": self.candles[-1].close_price}
@@ -296,6 +338,57 @@ class StaticSignalClient:
             signal_status=self.signal_status,
             reason_code=self.reason_code,
         )
+
+
+class FakeAlertRepository:
+    def __init__(self) -> None:
+        self.events = []
+        self.states = {}
+
+    async def connect(self) -> None:
+        return None
+
+    async def close(self) -> None:
+        return None
+
+    async def load_state(self, *, fingerprint: str):
+        return self.states.get(fingerprint)
+
+    async def save_state(self, state) -> None:
+        self.states[state.fingerprint] = state
+
+    async def insert_event(self, event):
+        stored = replace(
+            event,
+            event_id=len(self.events) + 1,
+            created_at=event.event_time,
+        )
+        self.events.append(stored)
+        return stored
+
+    async def load_active_states(self, *, service_name: str, execution_mode: str):
+        return [
+            state
+            for state in self.states.values()
+            if state.service_name == service_name
+            and state.execution_mode == execution_mode
+            and state.is_active
+        ]
+
+    async def load_events_for_day(
+        self,
+        *,
+        service_name: str,
+        execution_mode: str,
+        summary_date,
+    ):
+        return [
+            event
+            for event in self.events
+            if event.service_name == service_name
+            and event.execution_mode == execution_mode
+            and event.event_time.date() == summary_date
+        ]
 
 
 def test_runner_does_not_duplicate_processed_candles(tmp_path: Path) -> None:
@@ -549,3 +642,71 @@ def test_runner_reliability_hold_path_stays_non_actionable(tmp_path: Path) -> No
     assert trace.payload.signal.decision_source == "reliability"
     assert trace.payload.risk is not None
     assert trace.payload.risk.outcome == "APPROVED"
+
+
+def test_runner_alerting_smoke_writes_daily_summary_and_alert_events(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    startup_report_path = tmp_path / "startup_report.json"
+    startup_report_path.write_text(
+        '{"startup_validation_passed": true, "errors": []}',
+        encoding="utf-8",
+    )
+    evaluated_at = _candle(1).as_of_time
+    monkeypatch.setenv("STREAMALPHA_RUNTIME_PROFILE", "paper")
+    monkeypatch.setenv("STREAMALPHA_STARTUP_REPORT_PATH", str(startup_report_path))
+    monkeypatch.setattr("app.trading.runner.utc_now", lambda: evaluated_at)
+    monkeypatch.setattr("app.alerting.service.utc_now", lambda: evaluated_at)
+
+    repository = FakeRepository([_candle(0), _candle(1)])
+    alert_repository = FakeAlertRepository()
+    runner = PaperTradingRunner(
+        config=_config(tmp_path),
+        repository=repository,
+        signal_client=FakeSignalClient(),
+        alert_repository=alert_repository,
+    )
+    alerting_config = AlertingConfig(
+        schema_version="m17_alerting_v1",
+        order_failure_spike=OrderFailureSpikeConfig(
+            window_minutes=60,
+            warning_count=2,
+            critical_count=4,
+        ),
+        signals=SignalAlertConfig(
+            silence_window_intervals=3,
+            flood_window_intervals=6,
+            flood_warning_count=1,
+            flood_critical_count=2,
+        ),
+        artifacts=AlertingArtifactConfig(
+            daily_summary_dir=str(tmp_path / "operations" / "daily"),
+            startup_safety_path=str(tmp_path / "operations" / "startup_safety.json"),
+        ),
+    )
+    runner.alerting_config = alerting_config
+    runner.alerting_service = OperationalAlertService(
+        config=alerting_config,
+        repository=alert_repository,
+    )
+
+    asyncio.run(runner.startup())
+    asyncio.run(runner.run_once())
+    asyncio.run(runner.shutdown())
+
+    categories = [event.category for event in alert_repository.events]
+    summary_path = (
+        Path(alerting_config.artifacts.daily_summary_dir)
+        / f"{evaluated_at.date().isoformat()}.json"
+    )
+
+    assert "STARTUP_SAFETY" in categories
+    assert any(
+        event.category == "SIGNAL_FLOOD" and event.event_state == "OPEN"
+        for event in alert_repository.events
+    )
+    assert summary_path.is_file()
+    summary_payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary_payload["counts_by_category"]["SIGNAL_FLOOD"] == 1
+    assert summary_payload["startup_safety_status"]["startup_safety_passed"] is True
