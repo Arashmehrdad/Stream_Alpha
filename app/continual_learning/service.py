@@ -1,6 +1,6 @@
 """Read and manage the additive M21 continual learning data layer."""
 
-# pylint: disable=too-many-arguments
+# pylint: disable=too-many-arguments,too-many-lines
 
 from __future__ import annotations
 
@@ -28,15 +28,46 @@ from app.continual_learning.schemas import (
     ContinualLearningExperimentsResponse,
     ContinualLearningProfileRecord,
     ContinualLearningProfilesResponse,
+    ContinualLearningPromoteProfileRequest,
     ContinualLearningPromotionDecisionRecord,
+    ContinualLearningRollbackRequest,
     ContinualLearningPromotionsResponse,
     ContinualLearningSummaryResponse,
+    ContinualLearningWorkflowResponse,
 )
 from app.trading.repository import TradingRepository
 
 
+CONTINUAL_LEARNING_OPERATOR_CONFIRMATION_REQUIRED = (
+    "CONTINUAL_LEARNING_OPERATOR_CONFIRMATION_REQUIRED"
+)
+CONTINUAL_LEARNING_REPOSITORY_UNAVAILABLE = (
+    "CONTINUAL_LEARNING_REPOSITORY_UNAVAILABLE"
+)
+CONTINUAL_LEARNING_PROFILE_NOT_FOUND = "CONTINUAL_LEARNING_PROFILE_NOT_FOUND"
+CONTINUAL_LEARNING_LIVE_ELIGIBILITY_BLOCKED = (
+    "CONTINUAL_LEARNING_LIVE_ELIGIBILITY_BLOCKED"
+)
+CONTINUAL_LEARNING_SHADOW_CHALLENGER_LIVE_BLOCKED = (
+    "CONTINUAL_LEARNING_SHADOW_CHALLENGER_LIVE_BLOCKED"
+)
+CONTINUAL_LEARNING_DRIFT_CAP_BREACHED = "CONTINUAL_LEARNING_DRIFT_CAP_BREACHED"
+CONTINUAL_LEARNING_BLOCKED_BY_HEALTH_STATUS = (
+    "CONTINUAL_LEARNING_BLOCKED_BY_HEALTH_STATUS"
+)
+CONTINUAL_LEARNING_BLOCKED_BY_FRESHNESS_STATUS = (
+    "CONTINUAL_LEARNING_BLOCKED_BY_FRESHNESS_STATUS"
+)
+CONTINUAL_LEARNING_PROMOTION_APPLIED = "CONTINUAL_LEARNING_PROMOTION_APPLIED"
+CONTINUAL_LEARNING_NO_ACTIVE_PROFILE_FOR_ROLLBACK = (
+    "CONTINUAL_LEARNING_NO_ACTIVE_PROFILE_FOR_ROLLBACK"
+)
+CONTINUAL_LEARNING_NO_ROLLBACK_TARGET = "CONTINUAL_LEARNING_NO_ROLLBACK_TARGET"
+CONTINUAL_LEARNING_ROLLBACK_APPLIED = "CONTINUAL_LEARNING_ROLLBACK_APPLIED"
+
+
 class ContinualLearningService:
-    """Read-only M21 continual learning service with explicit rollback support."""
+    """Guarded M21 continual-learning service with read and operator workflow support."""
 
     def __init__(
         self,
@@ -76,6 +107,16 @@ class ContinualLearningService:
             symbol=symbol,
             regime_label=regime_label,
         )
+
+    async def load_profile(
+        self,
+        *,
+        profile_id: str,
+    ) -> ContinualLearningProfileRecord | None:
+        """Load one persisted continual-learning profile by id."""
+        if not await self._ensure_repository_ready():
+            return None
+        return await self.repository.load_continual_learning_profile(profile_id=profile_id)
 
     async def resolve_runtime_context(
         self,
@@ -376,7 +417,7 @@ class ContinualLearningService:
                 "rollback_target_profile_id": rollback_target.profile_id,
                 "source_experiment_id": rollback_target.source_experiment_id,
             },
-            reason_codes=["CONTINUAL_LEARNING_ROLLBACK_TARGET_ACTIVATED"],
+            reason_codes=[CONTINUAL_LEARNING_ROLLBACK_APPLIED],
             summary_text=summary_text,
             decided_at=decided_at,
         )
@@ -391,7 +432,7 @@ class ContinualLearningService:
             event_type="ROLLBACK_APPLIED",
             profile_id=rollback_target.profile_id,
             decision_id=decision_id,
-            reason_code="CONTINUAL_LEARNING_ROLLBACK_TARGET_ACTIVATED",
+            reason_code=CONTINUAL_LEARNING_ROLLBACK_APPLIED,
             payload_json={
                 "execution_mode": execution_mode,
                 "symbol": symbol,
@@ -409,6 +450,328 @@ class ContinualLearningService:
         self.write_profile_artifacts(profile=restored_profile, latest_promotion=decision)
         self._append_event_artifact(event)
         return decision
+
+    async def promote_profile(  # pylint: disable=too-many-locals
+        self,
+        request: ContinualLearningPromoteProfileRequest,
+        health_overall_status: str | None = None,
+        freshness_status: str | None = None,
+    ) -> ContinualLearningWorkflowResponse:
+        """Apply one guarded M21 profile promotion against persisted profile truth only."""
+        if not request.operator_confirmed:
+            return _build_workflow_response(
+                decision_id=request.decision_id,
+                success=False,
+                blocked=True,
+                decision="HOLD",
+                target_profile_id=request.profile_id,
+                reason_codes=[CONTINUAL_LEARNING_OPERATOR_CONFIRMATION_REQUIRED],
+                summary_text=request.summary_text,
+                health_overall_status=health_overall_status,
+                freshness_status=freshness_status,
+            )
+        if not await self._ensure_repository_ready():
+            return _build_workflow_response(
+                decision_id=request.decision_id,
+                success=False,
+                blocked=True,
+                decision="HOLD",
+                target_profile_id=request.profile_id,
+                reason_codes=[CONTINUAL_LEARNING_REPOSITORY_UNAVAILABLE],
+                summary_text=request.summary_text,
+                health_overall_status=health_overall_status,
+                freshness_status=freshness_status,
+            )
+
+        profile = await self.repository.load_continual_learning_profile(
+            profile_id=request.profile_id,
+        )
+        if profile is None:
+            return _build_workflow_response(
+                decision_id=request.decision_id,
+                success=False,
+                blocked=True,
+                decision="HOLD",
+                target_profile_id=request.profile_id,
+                reason_codes=[CONTINUAL_LEARNING_PROFILE_NOT_FOUND],
+                summary_text=request.summary_text,
+                health_overall_status=health_overall_status,
+                freshness_status=freshness_status,
+            )
+
+        incumbent = await self.repository.load_active_continual_learning_profile(
+            execution_mode=profile.execution_mode_scope,
+            symbol=profile.symbol_scope,
+            regime_label=profile.regime_scope,
+        )
+        drift_cap = await self.repository.load_latest_continual_learning_drift_cap(
+            execution_mode=profile.execution_mode_scope,
+            symbol=profile.symbol_scope,
+            regime_label=profile.regime_scope,
+        )
+        drift_status = None if drift_cap is None else drift_cap.status
+
+        block_reasons: list[str] = []
+        if request.requested_promotion_stage == "LIVE_ELIGIBLE":
+            if profile.candidate_type in self.config.shadow_only_candidate_types:
+                block_reasons.append(CONTINUAL_LEARNING_SHADOW_CHALLENGER_LIVE_BLOCKED)
+            if profile.candidate_type not in self.config.live_eligible_candidate_types:
+                block_reasons.append(CONTINUAL_LEARNING_LIVE_ELIGIBILITY_BLOCKED)
+            if not profile.live_eligible:
+                block_reasons.append(CONTINUAL_LEARNING_LIVE_ELIGIBILITY_BLOCKED)
+        if drift_status == "BREACHED":
+            block_reasons.append(CONTINUAL_LEARNING_DRIFT_CAP_BREACHED)
+        if health_overall_status is not None and health_overall_status != "HEALTHY":
+            block_reasons.append(CONTINUAL_LEARNING_BLOCKED_BY_HEALTH_STATUS)
+        if freshness_status is not None and freshness_status != "FRESH":
+            block_reasons.append(CONTINUAL_LEARNING_BLOCKED_BY_FRESHNESS_STATUS)
+
+        if block_reasons:
+            reason_codes = _merge_reason_codes(block_reasons, request.reason_codes)
+            event_id = await self._persist_blocked_workflow(
+                decision_id=request.decision_id,
+                target_id=profile.profile_id,
+                incumbent_id=(None if incumbent is None else incumbent.profile_id),
+                candidate_type=profile.candidate_type,
+                event_type="PROMOTION_BLOCKED",
+                reason_codes=reason_codes,
+                summary_text=request.summary_text,
+                payload_json={
+                    "profile_id": profile.profile_id,
+                    "requested_promotion_stage": request.requested_promotion_stage,
+                    "health_overall_status": health_overall_status,
+                    "freshness_status": freshness_status,
+                    "drift_cap_status": drift_status,
+                },
+                live_eligible_after_decision=profile.live_eligible,
+            )
+            return _build_workflow_response(
+                decision_id=request.decision_id,
+                success=False,
+                blocked=True,
+                decision="HOLD",
+                target_profile_id=profile.profile_id,
+                incumbent_profile_id=(None if incumbent is None else incumbent.profile_id),
+                promotion_stage_after=profile.promotion_stage,
+                live_eligible_after=profile.live_eligible,
+                drift_cap_status=drift_status,
+                health_overall_status=health_overall_status,
+                freshness_status=freshness_status,
+                event_id=event_id,
+                reason_codes=reason_codes,
+                summary_text=request.summary_text,
+            )
+
+        changed_at = utc_now()
+        live_eligible_after = request.requested_promotion_stage == "LIVE_ELIGIBLE"
+        incumbent_profile_id = await self.repository.promote_continual_learning_profile(
+            target_profile_id=profile.profile_id,
+            execution_mode_scope=profile.execution_mode_scope,
+            symbol_scope=profile.symbol_scope,
+            regime_scope=profile.regime_scope,
+            promotion_stage=request.requested_promotion_stage,
+            live_eligible=live_eligible_after,
+            changed_at=changed_at,
+        )
+        updated_profile = await self.repository.load_continual_learning_profile(
+            profile_id=profile.profile_id,
+        )
+        if updated_profile is None:
+            raise RuntimeError("Promoted continual-learning profile could not be reloaded")
+
+        reason_codes = _merge_reason_codes(
+            [CONTINUAL_LEARNING_PROMOTION_APPLIED],
+            request.reason_codes,
+        )
+        decision = ContinualLearningPromotionDecisionRecord(
+            decision_id=request.decision_id,
+            target_type="PROFILE",
+            target_id=updated_profile.profile_id,
+            incumbent_id=incumbent_profile_id,
+            candidate_type=updated_profile.candidate_type,
+            decision="PROMOTE",
+            live_eligible_after_decision=updated_profile.live_eligible,
+            metrics_delta_json={
+                "promotion_stage_after": updated_profile.promotion_stage,
+            },
+            safety_checks_json={
+                "health_overall_status": health_overall_status,
+                "freshness_status": freshness_status,
+                "drift_cap_status": drift_status,
+            },
+            research_integrity_json={
+                "source_experiment_id": updated_profile.source_experiment_id,
+                "baseline_target_id": updated_profile.baseline_target_id,
+            },
+            reason_codes=reason_codes,
+            summary_text=request.summary_text,
+            decided_at=changed_at,
+        )
+        await self.repository.save_continual_learning_promotion_decision(decision)
+        event = ContinualLearningEventRecord(
+            event_id=f"event:{request.decision_id}",
+            event_type="PROMOTION_APPLIED",
+            profile_id=updated_profile.profile_id,
+            experiment_id=updated_profile.source_experiment_id,
+            decision_id=request.decision_id,
+            reason_code=CONTINUAL_LEARNING_PROMOTION_APPLIED,
+            payload_json={
+                "requested_promotion_stage": request.requested_promotion_stage,
+                "incumbent_profile_id": incumbent_profile_id,
+                "health_overall_status": health_overall_status,
+                "freshness_status": freshness_status,
+                "drift_cap_status": drift_status,
+            },
+            created_at=changed_at,
+        )
+        await self.repository.save_continual_learning_event(event)
+        self.write_profile_artifacts(profile=updated_profile, latest_promotion=decision)
+        self._append_event_artifact(event)
+        return _build_workflow_response(
+            decision_id=request.decision_id,
+            success=True,
+            blocked=False,
+            decision="PROMOTE",
+            target_profile_id=updated_profile.profile_id,
+            incumbent_profile_id=incumbent_profile_id,
+            promotion_stage_after=updated_profile.promotion_stage,
+            live_eligible_after=updated_profile.live_eligible,
+            drift_cap_status=drift_status,
+            health_overall_status=health_overall_status,
+            freshness_status=freshness_status,
+            event_id=event.event_id,
+            reason_codes=reason_codes,
+            summary_text=request.summary_text,
+        )
+
+    async def rollback_profile(
+        self,
+        request: ContinualLearningRollbackRequest,
+        health_overall_status: str | None = None,
+        freshness_status: str | None = None,
+    ) -> ContinualLearningWorkflowResponse:
+        """Apply one guarded M21 rollback using the accepted explicit rollback path."""
+        if not request.operator_confirmed:
+            return _build_workflow_response(
+                decision_id=request.decision_id,
+                success=False,
+                blocked=True,
+                decision="HOLD",
+                reason_codes=[CONTINUAL_LEARNING_OPERATOR_CONFIRMATION_REQUIRED],
+                summary_text=request.summary_text,
+                health_overall_status=health_overall_status,
+                freshness_status=freshness_status,
+            )
+        if not await self._ensure_repository_ready():
+            return _build_workflow_response(
+                decision_id=request.decision_id,
+                success=False,
+                blocked=True,
+                decision="HOLD",
+                reason_codes=[CONTINUAL_LEARNING_REPOSITORY_UNAVAILABLE],
+                summary_text=request.summary_text,
+                health_overall_status=health_overall_status,
+                freshness_status=freshness_status,
+            )
+
+        active_profile = await self.repository.load_active_continual_learning_profile(
+            execution_mode=request.execution_mode,
+            symbol=request.symbol,
+            regime_label=request.regime_label,
+        )
+        if active_profile is None:
+            return _build_workflow_response(
+                decision_id=request.decision_id,
+                success=False,
+                blocked=True,
+                decision="HOLD",
+                reason_codes=[CONTINUAL_LEARNING_NO_ACTIVE_PROFILE_FOR_ROLLBACK],
+                summary_text=request.summary_text,
+                health_overall_status=health_overall_status,
+                freshness_status=freshness_status,
+            )
+
+        drift_cap = await self.repository.load_latest_continual_learning_drift_cap(
+            execution_mode=request.execution_mode,
+            symbol=request.symbol,
+            regime_label=request.regime_label,
+        )
+        drift_status = None if drift_cap is None else drift_cap.status
+        block_reasons: list[str] = []
+        if health_overall_status is not None and health_overall_status != "HEALTHY":
+            block_reasons.append(CONTINUAL_LEARNING_BLOCKED_BY_HEALTH_STATUS)
+        if freshness_status is not None and freshness_status != "FRESH":
+            block_reasons.append(CONTINUAL_LEARNING_BLOCKED_BY_FRESHNESS_STATUS)
+        if active_profile.rollback_target_profile_id is None:
+            block_reasons.append(CONTINUAL_LEARNING_NO_ROLLBACK_TARGET)
+
+        if block_reasons:
+            event_id = await self._persist_blocked_workflow(
+                decision_id=request.decision_id,
+                target_id=active_profile.profile_id,
+                incumbent_id=active_profile.profile_id,
+                candidate_type=active_profile.candidate_type,
+                event_type="ROLLBACK_BLOCKED",
+                reason_codes=block_reasons,
+                summary_text=request.summary_text,
+                payload_json={
+                    "execution_mode": request.execution_mode,
+                    "symbol": request.symbol,
+                    "regime_label": request.regime_label,
+                    "rollback_target_profile_id": active_profile.rollback_target_profile_id,
+                    "health_overall_status": health_overall_status,
+                    "freshness_status": freshness_status,
+                    "drift_cap_status": drift_status,
+                },
+                live_eligible_after_decision=active_profile.live_eligible,
+            )
+            return _build_workflow_response(
+                decision_id=request.decision_id,
+                success=False,
+                blocked=True,
+                decision="HOLD",
+                target_profile_id=active_profile.rollback_target_profile_id,
+                incumbent_profile_id=active_profile.profile_id,
+                promotion_stage_after=active_profile.promotion_stage,
+                live_eligible_after=active_profile.live_eligible,
+                drift_cap_status=drift_status,
+                health_overall_status=health_overall_status,
+                freshness_status=freshness_status,
+                event_id=event_id,
+                reason_codes=block_reasons,
+                summary_text=request.summary_text,
+            )
+
+        decision = await self.rollback_active_profile(
+            execution_mode=request.execution_mode,
+            symbol=request.symbol,
+            regime_label=request.regime_label,
+            decision_id=request.decision_id,
+            summary_text=request.summary_text,
+        )
+        restored_profile = await self.repository.load_continual_learning_profile(
+            profile_id=decision.target_id,
+        )
+        return _build_workflow_response(
+            decision_id=request.decision_id,
+            success=True,
+            blocked=False,
+            decision="ROLLBACK",
+            target_profile_id=decision.target_id,
+            incumbent_profile_id=decision.incumbent_id,
+            promotion_stage_after=(
+                None if restored_profile is None else restored_profile.promotion_stage
+            ),
+            live_eligible_after=(
+                None if restored_profile is None else restored_profile.live_eligible
+            ),
+            drift_cap_status=drift_status,
+            health_overall_status=health_overall_status,
+            freshness_status=freshness_status,
+            event_id=f"event:{request.decision_id}",
+            reason_codes=[CONTINUAL_LEARNING_ROLLBACK_APPLIED],
+            summary_text=request.summary_text,
+        )
 
     def write_profile_artifacts(
         self,
@@ -504,6 +867,48 @@ class ContinualLearningService:
             event.model_dump(mode="json"),
         )
 
+    async def _persist_blocked_workflow(
+        self,
+        *,
+        decision_id: str,
+        target_id: str,
+        incumbent_id: str | None,
+        candidate_type: str,
+        event_type: str,
+        reason_codes: list[str],
+        summary_text: str,
+        payload_json: dict[str, object],
+        live_eligible_after_decision: bool,
+    ) -> str:
+        """Persist one blocked workflow decision and audit event when profile truth exists."""
+        decided_at = utc_now()
+        decision = ContinualLearningPromotionDecisionRecord(
+            decision_id=decision_id,
+            target_type="PROFILE",
+            target_id=target_id,
+            incumbent_id=incumbent_id,
+            candidate_type=candidate_type,
+            decision="HOLD",
+            live_eligible_after_decision=live_eligible_after_decision,
+            safety_checks_json=payload_json,
+            reason_codes=reason_codes,
+            summary_text=summary_text,
+            decided_at=decided_at,
+        )
+        await self.repository.save_continual_learning_promotion_decision(decision)
+        event = ContinualLearningEventRecord(
+            event_id=f"event:{decision_id}",
+            event_type=event_type,
+            profile_id=target_id,
+            decision_id=decision_id,
+            reason_code=reason_codes[0],
+            payload_json=payload_json,
+            created_at=decided_at,
+        )
+        await self.repository.save_continual_learning_event(event)
+        self._append_event_artifact(event)
+        return event.event_id
+
 
 def _runtime_context_from_profile(
     *,
@@ -528,6 +933,52 @@ def _runtime_context_from_profile(
         latest_promotion_decision=latest_promotion_decision,
         frozen_by_health_gate=frozen_by_health_gate,
         reason_codes=reason_codes,
+    )
+
+
+def _merge_reason_codes(
+    stable_codes: list[str],
+    operator_codes: list[str],
+) -> list[str]:
+    merged: list[str] = []
+    for code in [*stable_codes, *operator_codes]:
+        if code not in merged:
+            merged.append(code)
+    return merged
+
+
+def _build_workflow_response(
+    *,
+    decision_id: str,
+    success: bool,
+    blocked: bool,
+    summary_text: str,
+    decision: str | None = None,
+    target_profile_id: str | None = None,
+    incumbent_profile_id: str | None = None,
+    promotion_stage_after: str | None = None,
+    live_eligible_after: bool | None = None,
+    drift_cap_status: str | None = None,
+    health_overall_status: str | None = None,
+    freshness_status: str | None = None,
+    event_id: str | None = None,
+    reason_codes: list[str] | None = None,
+) -> ContinualLearningWorkflowResponse:
+    return ContinualLearningWorkflowResponse(
+        success=success,
+        blocked=blocked,
+        decision_id=decision_id,
+        decision=decision,
+        target_profile_id=target_profile_id,
+        incumbent_profile_id=incumbent_profile_id,
+        promotion_stage_after=promotion_stage_after,
+        live_eligible_after=live_eligible_after,
+        drift_cap_status=drift_cap_status,
+        health_overall_status=health_overall_status,
+        freshness_status=freshness_status,
+        event_id=event_id,
+        reason_codes=[] if reason_codes is None else reason_codes,
+        summary_text=summary_text,
     )
 
 

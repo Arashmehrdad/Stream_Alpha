@@ -30,8 +30,11 @@ from app.continual_learning.schemas import (
     ContinualLearningEventsResponse,
     ContinualLearningExperimentsResponse,
     ContinualLearningProfilesResponse,
+    ContinualLearningPromoteProfileRequest,
     ContinualLearningPromotionsResponse,
+    ContinualLearningRollbackRequest,
     ContinualLearningSummaryResponse,
+    ContinualLearningWorkflowResponse,
 )
 from app.ensemble.config import default_ensemble_config_path, load_ensemble_config
 from app.ensemble.schemas import EnsembleResult, ParticipatingCandidate
@@ -50,7 +53,7 @@ from app.explainability.config import (
 )
 from app.explainability.schemas import PredictionExplanation, TopFeatureContribution
 from app.explainability.service import ExplainabilityService, build_regime_reason
-from app.inference.db import InferenceDatabase
+from app.inference.db import DatabaseUnavailableError, InferenceDatabase
 from app.inference.schemas import (
     DailyOperationsSummaryResponse,
     FreshnessResponse,
@@ -1326,6 +1329,55 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
     ) -> ContinualLearningEventsResponse:
         """Return M21 read-only continual-learning events."""
         return await self.continual_learning_service.events(limit=limit)
+
+    async def continual_learning_promote_profile(
+        self,
+        request: ContinualLearningPromoteProfileRequest,
+    ) -> ContinualLearningWorkflowResponse:
+        """Apply one guarded M21 profile promotion from existing operator inputs."""
+        profile = await self.continual_learning_service.load_profile(
+            profile_id=request.profile_id,
+        )
+        health_overall_status = await self._workflow_health_overall_status()
+        freshness_status = await self._workflow_freshness_status(
+            None if profile is None else profile.symbol_scope,
+        )
+        return await self.continual_learning_service.promote_profile(
+            request,
+            health_overall_status=health_overall_status,
+            freshness_status=freshness_status,
+        )
+
+    async def continual_learning_rollback_profile(
+        self,
+        request: ContinualLearningRollbackRequest,
+    ) -> ContinualLearningWorkflowResponse:
+        """Apply one guarded M21 rollback from existing operator inputs."""
+        health_overall_status = await self._workflow_health_overall_status()
+        freshness_status = await self._workflow_freshness_status(request.symbol)
+        return await self.continual_learning_service.rollback_profile(
+            request,
+            health_overall_status=health_overall_status,
+            freshness_status=freshness_status,
+        )
+
+    async def _workflow_health_overall_status(self) -> str | None:
+        """Resolve canonical M13 health for guarded M21 workflow calls when available."""
+        try:
+            _status_code, payload = await self.health()
+        except Exception:  # pylint: disable=broad-exception-caught
+            return None
+        return payload.health_overall_status
+
+    async def _workflow_freshness_status(self, symbol: str | None) -> str | None:
+        """Resolve exact-row freshness for one workflow symbol when it is simply available."""
+        if symbol is None or symbol == "ALL":
+            return None
+        try:
+            freshness = await self.freshness_evaluation(symbol=symbol)
+        except (InvalidSymbolError, DatabaseUnavailableError):
+            return None
+        return freshness.freshness_status
 
     async def system_reliability_snapshot(
         self,

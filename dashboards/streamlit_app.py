@@ -848,7 +848,7 @@ def _render_continual_learning_section(*, snapshot) -> None:
     if len(active_profiles) == 1:
         rollback_target = active_profiles[0].rollback_target_profile_id
     render_summary_cards(
-        title="Continual Learning Summary",
+        title="Continual Learning Workflow",
         items=[
             {
                 "label": "Status",
@@ -861,6 +861,15 @@ def _render_continual_learning_section(*, snapshot) -> None:
             },
             {"label": "Active profile", "value": summary.active_profile_id or "-"},
             {
+                "label": "Latest promotion",
+                "value": summary.latest_promotion_decision or "-",
+            },
+            {
+                "label": "Latest event",
+                "value": summary.latest_event_type or "-",
+                "detail": "Manual and guarded workflow only",
+            },
+            {
                 "label": "Drift-cap status",
                 "value": summary.latest_drift_cap_status or "-",
             },
@@ -872,20 +881,12 @@ def _render_continual_learning_section(*, snapshot) -> None:
         ],
     )
     render_table(
-        "Continual Learning Status",
-        [
-            {
-                "aggregated_scope": summary.aggregated_scope,
-                "enabled": summary.enabled,
-                "active_profile_count": summary.active_profile_count,
-                "active_profile_id": summary.active_profile_id,
-                "latest_promotion_decision": summary.latest_promotion_decision,
-                "latest_event_type": summary.latest_event_type,
-                "reason_codes": ", ".join(summary.reason_codes),
-            }
-        ]
-        if summary.available
-        else [{"status": "UNAVAILABLE", "detail": summary.error or "unavailable"}],
+        "Continual Learning Workflow Status",
+        _build_continual_learning_workflow_rows(snapshot=snapshot),
+    )
+    render_table(
+        "Promotion Guardrail Status",
+        _build_continual_learning_guardrail_rows(snapshot=snapshot),
     )
     render_table(
         "Continual Learning Profiles",
@@ -920,6 +921,138 @@ def _render_continual_learning_section(*, snapshot) -> None:
         ]
         or [{"status": "NONE"}],
     )
+    _render_continual_learning_operator_guidance(snapshot=snapshot)
+
+
+def _build_continual_learning_workflow_rows(*, snapshot) -> list[dict[str, object]]:
+    summary = snapshot.continual_learning.summary
+    active_profiles = [
+        item for item in snapshot.continual_learning.profiles if item.status == "ACTIVE"
+    ]
+    rollback_target = (
+        None if len(active_profiles) != 1 else active_profiles[0].rollback_target_profile_id
+    )
+    if not summary.available:
+        return [{"status": "UNAVAILABLE", "detail": summary.error or "unavailable"}]
+    return [
+        {
+            "aggregated_status": summary.continual_learning_status,
+            "active_profile_id": summary.active_profile_id,
+            "rollback_target_profile_id": rollback_target,
+            "latest_promotion_decision": summary.latest_promotion_decision,
+            "latest_event_type": summary.latest_event_type,
+            "drift_cap_status": summary.latest_drift_cap_status,
+            "operator_note": "MANUAL_AND_GUARDED",
+            "reason_codes": ", ".join(summary.reason_codes),
+        }
+    ]
+
+
+def _build_continual_learning_guardrail_rows(*, snapshot) -> list[dict[str, object]]:
+    drift_status_by_scope = {
+        (
+            item.execution_mode_scope,
+            item.symbol_scope,
+            item.regime_scope,
+        ): item.status
+        for item in snapshot.continual_learning.drift_caps
+    }
+    rows = []
+    for item in snapshot.continual_learning.profiles:
+        drift_status = drift_status_by_scope.get(
+            (item.execution_mode_scope, item.symbol_scope, item.regime_scope)
+        )
+        operator_note = "LIVE_ELIGIBLE_ALLOWED"
+        if drift_status == "BREACHED":
+            operator_note = "BLOCKED_BY_BREACHED_DRIFT"
+        elif item.candidate_type == "INCREMENTAL_SHADOW_CHALLENGER":
+            operator_note = "SHADOW_ONLY_ONLY"
+        rows.append(
+            {
+                "profile_id": item.profile_id,
+                "candidate_type": item.candidate_type,
+                "promotion_stage": item.promotion_stage,
+                "live_eligible": item.live_eligible,
+                "latest_drift_cap_status": drift_status,
+                "rollback_target_profile_id": item.rollback_target_profile_id,
+                "operator_note": operator_note,
+            }
+        )
+    return rows or [{"status": "NONE"}]
+
+
+def _render_continual_learning_operator_guidance(*, snapshot) -> None:
+    active_profile_id = (
+        snapshot.continual_learning.summary.active_profile_id or "cl-profile-id"
+    )
+    rollback_target = next(
+        (
+            item.rollback_target_profile_id
+            for item in snapshot.continual_learning.profiles
+            if item.status == "ACTIVE" and item.rollback_target_profile_id is not None
+        ),
+        None,
+    )
+    symbol = next(
+        (
+            signal.symbol
+            for signal in snapshot.signals
+            if signal.continual_learning_profile_id == active_profile_id
+        ),
+        "BTC/USD",
+    )
+    regime_label = next(
+        (
+            item.regime_scope
+            for item in snapshot.continual_learning.profiles
+            if item.profile_id == active_profile_id
+        ),
+        "ALL",
+    )
+    execution_mode = snapshot.api_health.runtime_profile or "paper"
+    promote_payload = (
+        "@'\n"
+        "{\n"
+        f"  \"decision_id\": \"promote:{active_profile_id}:20260322T120000Z\",\n"
+        f"  \"profile_id\": \"{active_profile_id}\",\n"
+        "  \"requested_promotion_stage\": \"PAPER_APPROVED\",\n"
+        "  \"summary_text\": \"Manual guarded promotion after reviewing M21 evidence.\",\n"
+        "  \"reason_codes\": [\n"
+        "    \"OPERATOR_REVIEWED_EVIDENCE\",\n"
+        "    \"MANUAL_M21_PROMOTION\"\n"
+        "  ],\n"
+        "  \"operator_confirmed\": true\n"
+        "}\n"
+        "'@ | Invoke-RestMethod -Method Post `\n"
+        "  -Uri http://127.0.0.1:8000/continual-learning/promotions/promote-profile `\n"
+        "  -ContentType 'application/json' `\n"
+        "  -Body {$_}"
+    )
+    rollback_profile_id = rollback_target or "rollback-target-profile-id"
+    rollback_payload = (
+        "@'\n"
+        "{\n"
+        f"  \"decision_id\": \"rollback:{rollback_profile_id}:20260322T120500Z\",\n"
+        f"  \"execution_mode\": \"{execution_mode}\",\n"
+        f"  \"symbol\": \"{symbol}\",\n"
+        f"  \"regime_label\": \"{regime_label}\",\n"
+        "  \"summary_text\": \"Manual guarded rollback to the explicit prior M21 profile.\",\n"
+        "  \"operator_confirmed\": true\n"
+        "}\n"
+        "'@ | Invoke-RestMethod -Method Post `\n"
+        "  -Uri http://127.0.0.1:8000/continual-learning/promotions/rollback-active-profile `\n"
+        "  -ContentType 'application/json' `\n"
+        "  -Body {$_}"
+    )
+    with st.expander("Operator Guidance: Continual Learning Workflow"):
+        st.caption(
+            "Workflow remains local-first, manual, measurable, and reversible. "
+            "The dashboard does not trigger writes directly in this packet."
+        )
+        st.markdown("Promotion payload")
+        st.code(promote_payload, language="powershell")
+        st.markdown("Rollback payload")
+        st.code(rollback_payload, language="powershell")
 
 
 def _build_continual_learning_signal_rows(*, snapshot) -> list[dict[str, object]]:
@@ -953,13 +1086,10 @@ def _build_continual_learning_event_rows(*, snapshot) -> list[dict[str, object]]
             "created_at": (
                 None if item.created_at is None else item.created_at.isoformat()
             ),
-            "highlight": (
-                "ROLLBACK_APPLIED"
-                if item.event_type == "ROLLBACK_APPLIED"
-                else ""
-            ),
+            "highlight": item.event_type,
         }
         for item in snapshot.continual_learning.events
+        if item.event_type in {"PROMOTION_APPLIED", "PROMOTION_BLOCKED", "ROLLBACK_APPLIED"}
     ]
     return rows or [{"status": "NONE"}]
 

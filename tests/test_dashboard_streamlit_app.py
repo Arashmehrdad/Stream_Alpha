@@ -22,7 +22,9 @@ from dashboards.streamlit_app import (
     _build_continual_learning_breached_drift_rows,
     _build_continual_learning_event_rows,
     _build_continual_learning_freeze_rows,
+    _build_continual_learning_guardrail_rows,
     _build_continual_learning_signal_rows,
+    _build_continual_learning_workflow_rows,
     resolve_display_runtime_profile,
 )
 
@@ -183,3 +185,82 @@ def test_continual_learning_incident_rows_highlight_rollback_and_breached_drift(
 
     assert event_rows[0]["highlight"] == "ROLLBACK_APPLIED"
     assert breached_rows[0]["highlight"] == "DRIFT_BREACHED"
+
+
+def test_continual_learning_workflow_and_guardrail_rows_are_built_from_snapshot() -> None:
+    snapshot = DashboardSnapshot(
+        api_health=ApiHealthSnapshot(
+            available=True,
+            checked_at=datetime(2026, 3, 22, 12, 0, tzinfo=timezone.utc),
+            status="ok",
+            runtime_profile="paper",
+        ),
+        signals=tuple(),
+        freshness=tuple(),
+        database=DatabaseSnapshot(
+            available=True,
+            checked_at=datetime(2026, 3, 22, 12, 0, tzinfo=timezone.utc),
+        ),
+        continual_learning=ContinualLearningSnapshot(
+            summary=ContinualLearningSummarySnapshot(
+                available=True,
+                checked_at=datetime(2026, 3, 22, 12, 0, tzinfo=timezone.utc),
+                continual_learning_status="ACTIVE",
+                active_profile_count=1,
+                active_profile_id="cl-profile-1",
+                latest_drift_cap_status="BREACHED",
+                latest_promotion_decision="HOLD",
+                latest_event_type="PROMOTION_BLOCKED",
+                aggregated_scope=True,
+                reason_codes=("AGGREGATED_SCOPE_SUMMARY",),
+            ),
+            profiles=(
+                ContinualLearningProfileItemSnapshot(
+                    profile_id="cl-profile-1",
+                    status="ACTIVE",
+                    candidate_type="CALIBRATION_OVERLAY",
+                    execution_mode_scope="paper",
+                    symbol_scope="BTC/USD",
+                    regime_scope="TREND_UP",
+                    baseline_target_type="MODEL_VERSION",
+                    baseline_target_id="m20-live",
+                    promotion_stage="LIVE_ELIGIBLE",
+                    live_eligible=True,
+                    rollback_target_profile_id="cl-profile-prev-1",
+                ),
+                ContinualLearningProfileItemSnapshot(
+                    profile_id="cl-profile-shadow-1",
+                    status="APPROVED",
+                    candidate_type="INCREMENTAL_SHADOW_CHALLENGER",
+                    execution_mode_scope="paper",
+                    symbol_scope="BTC/USD",
+                    regime_scope="TREND_DOWN",
+                    baseline_target_type="MODEL_VERSION",
+                    baseline_target_id="m20-live",
+                    promotion_stage="SHADOW_ONLY",
+                    live_eligible=False,
+                ),
+            ),
+            drift_caps=(
+                ContinualLearningDriftCapItemSnapshot(
+                    cap_id="cl-cap-1",
+                    execution_mode_scope="paper",
+                    symbol_scope="BTC/USD",
+                    regime_scope="TREND_UP",
+                    candidate_type="CALIBRATION_OVERLAY",
+                    status="BREACHED",
+                    observed_drift_score=0.23,
+                    reason_code="DRIFT_BREACHED",
+                ),
+            ),
+        ),
+    )
+
+    workflow_rows = _build_continual_learning_workflow_rows(snapshot=snapshot)
+    guardrail_rows = _build_continual_learning_guardrail_rows(snapshot=snapshot)
+
+    assert workflow_rows[0]["active_profile_id"] == "cl-profile-1"
+    assert workflow_rows[0]["latest_event_type"] == "PROMOTION_BLOCKED"
+    assert workflow_rows[0]["operator_note"] == "MANUAL_AND_GUARDED"
+    assert guardrail_rows[0]["operator_note"] == "BLOCKED_BY_BREACHED_DRIFT"
+    assert guardrail_rows[1]["operator_note"] == "SHADOW_ONLY_ONLY"

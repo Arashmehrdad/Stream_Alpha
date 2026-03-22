@@ -58,9 +58,12 @@ from app.continual_learning.schemas import (
     ContinualLearningExperimentsResponse,
     ContinualLearningProfileRecord,
     ContinualLearningProfilesResponse,
+    ContinualLearningPromoteProfileRequest,
     ContinualLearningPromotionDecisionRecord,
     ContinualLearningPromotionsResponse,
+    ContinualLearningRollbackRequest,
     ContinualLearningSummaryResponse,
+    ContinualLearningWorkflowResponse,
 )
 from app.ensemble.config import AgreementPolicyConfig, EnsembleConfig, load_ensemble_config
 from app.ensemble.schemas import EnsembleProfileRecord, EnsembleResult
@@ -611,6 +614,117 @@ class NullContinualLearningService:
                     reason_code="ACTIVE_PROFILE_PRESENT",
                 )
             ]
+        )
+
+    async def load_profile(self, *, profile_id: str) -> ContinualLearningProfileRecord | None:
+        if profile_id != "cl-profile-1":
+            return None
+        return ContinualLearningProfileRecord(
+            profile_id="cl-profile-1",
+            candidate_type="CALIBRATION_OVERLAY",
+            status="APPROVED",
+            execution_mode_scope="paper",
+            symbol_scope="BTC/USD",
+            regime_scope="TREND_UP",
+            baseline_target_type="MODEL_VERSION",
+            baseline_target_id="m20-live",
+            source_experiment_id="cl-exp-1",
+            promotion_stage="PAPER_APPROVED",
+            live_eligible=False,
+            rollback_target_profile_id="cl-profile-prev-1",
+        )
+
+    async def promote_profile(
+        self,
+        request: ContinualLearningPromoteProfileRequest,
+        health_overall_status: str | None = None,
+        freshness_status: str | None = None,
+    ) -> ContinualLearningWorkflowResponse:
+        return ContinualLearningWorkflowResponse(
+            success=True,
+            blocked=False,
+            decision_id=request.decision_id,
+            decision="PROMOTE",
+            target_profile_id=request.profile_id,
+            incumbent_profile_id="cl-profile-prev-1",
+            promotion_stage_after=request.requested_promotion_stage,
+            live_eligible_after=(request.requested_promotion_stage == "LIVE_ELIGIBLE"),
+            drift_cap_status="WATCH",
+            health_overall_status=health_overall_status,
+            freshness_status=freshness_status,
+            event_id=f"event:{request.decision_id}",
+            reason_codes=["CONTINUAL_LEARNING_PROMOTION_APPLIED"],
+            summary_text=request.summary_text,
+        )
+
+    async def rollback_profile(
+        self,
+        request: ContinualLearningRollbackRequest,
+        health_overall_status: str | None = None,
+        freshness_status: str | None = None,
+    ) -> ContinualLearningWorkflowResponse:
+        return ContinualLearningWorkflowResponse(
+            success=True,
+            blocked=False,
+            decision_id=request.decision_id,
+            decision="ROLLBACK",
+            target_profile_id="cl-profile-prev-1",
+            incumbent_profile_id="cl-profile-1",
+            promotion_stage_after="LIVE_ELIGIBLE",
+            live_eligible_after=True,
+            drift_cap_status="WATCH",
+            health_overall_status=health_overall_status,
+            freshness_status=freshness_status,
+            event_id=f"event:{request.decision_id}",
+            reason_codes=["CONTINUAL_LEARNING_ROLLBACK_APPLIED"],
+            summary_text=request.summary_text,
+        )
+
+
+class WorkflowContinualLearningService(NullContinualLearningService):
+    """Continual-learning stub that records workflow endpoint inputs."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.promote_requests: list[dict] = []
+        self.rollback_requests: list[dict] = []
+
+    async def promote_profile(
+        self,
+        request: ContinualLearningPromoteProfileRequest,
+        health_overall_status: str | None = None,
+        freshness_status: str | None = None,
+    ) -> ContinualLearningWorkflowResponse:
+        self.promote_requests.append(
+            {
+                "request": request,
+                "health_overall_status": health_overall_status,
+                "freshness_status": freshness_status,
+            }
+        )
+        return await super().promote_profile(
+            request,
+            health_overall_status=health_overall_status,
+            freshness_status=freshness_status,
+        )
+
+    async def rollback_profile(
+        self,
+        request: ContinualLearningRollbackRequest,
+        health_overall_status: str | None = None,
+        freshness_status: str | None = None,
+    ) -> ContinualLearningWorkflowResponse:
+        self.rollback_requests.append(
+            {
+                "request": request,
+                "health_overall_status": health_overall_status,
+                "freshness_status": freshness_status,
+            }
+        )
+        return await super().rollback_profile(
+            request,
+            health_overall_status=health_overall_status,
+            freshness_status=freshness_status,
         )
 
 
@@ -1909,3 +2023,49 @@ def test_continual_learning_read_only_endpoints_return_payloads(tmp_path: Path) 
     assert drift_caps.json()["items"][0]["status"] == "WATCH"
     assert promotions.json()["items"][0]["decision"] == "HOLD"
     assert events.json()["items"][0]["event_type"] == "PROFILE_ACTIVE"
+
+
+def test_continual_learning_workflow_post_endpoints_return_guarded_results(
+    tmp_path: Path,
+) -> None:
+    workflow_service = WorkflowContinualLearningService()
+    client = _build_client(
+        tmp_path,
+        prob_up=0.7,
+        database=FakeDatabase(row=_feature_row()),
+        continual_learning_service=workflow_service,
+    )
+
+    promote_response = client.post(
+        "/continual-learning/promotions/promote-profile",
+        json={
+            "decision_id": "decision-promote-1",
+            "profile_id": "cl-profile-1",
+            "requested_promotion_stage": "PAPER_APPROVED",
+            "summary_text": "promote after review",
+            "reason_codes": ["OPERATOR_REVIEWED_EVIDENCE"],
+            "operator_confirmed": True,
+        },
+    )
+    rollback_response = client.post(
+        "/continual-learning/promotions/rollback-active-profile",
+        json={
+            "decision_id": "decision-rollback-1",
+            "execution_mode": "paper",
+            "symbol": "BTC/USD",
+            "regime_label": "TREND_UP",
+            "summary_text": "rollback after review",
+            "operator_confirmed": True,
+        },
+    )
+
+    assert promote_response.status_code == 200
+    assert rollback_response.status_code == 200
+    assert promote_response.json()["decision"] == "PROMOTE"
+    assert promote_response.json()["blocked"] is False
+    assert rollback_response.json()["decision"] == "ROLLBACK"
+    assert rollback_response.json()["blocked"] is False
+    assert workflow_service.promote_requests[0]["health_overall_status"] == "HEALTHY"
+    assert workflow_service.promote_requests[0]["freshness_status"] == "FRESH"
+    assert workflow_service.rollback_requests[0]["health_overall_status"] == "HEALTHY"
+    assert workflow_service.rollback_requests[0]["freshness_status"] == "FRESH"

@@ -37,6 +37,10 @@ def test_continual_learning_repository_round_trip_supports_scope_and_rollback() 
     asyncio.run(_run_round_trip())
 
 
+def test_continual_learning_repository_promote_profile_supersedes_exact_scope_only() -> None:
+    asyncio.run(_run_promote_round_trip())
+
+
 async def _run_round_trip() -> None:
     suffix = uuid4().hex[:10]
     experiment_id = f"experiment-{suffix}"
@@ -311,6 +315,114 @@ async def _run_round_trip() -> None:
         await pool.execute(
             "DELETE FROM continual_learning_experiments WHERE experiment_id = $1",
             experiment_id,
+        )
+        await repository.close()
+
+
+async def _run_promote_round_trip() -> None:
+    suffix = uuid4().hex[:10]
+    incumbent_profile_id = f"profile-incumbent-{suffix}"
+    target_profile_id = f"profile-target-{suffix}"
+    other_scope_profile_id = f"profile-other-scope-{suffix}"
+    repository = TradingRepository(_postgres_dsn(), "feature_ohlc")
+    await repository.connect()
+
+    incumbent = ContinualLearningProfileRecord(
+        profile_id=incumbent_profile_id,
+        candidate_type="CALIBRATION_OVERLAY",
+        status="ACTIVE",
+        execution_mode_scope="paper",
+        symbol_scope="BTC/USD",
+        regime_scope="TREND_UP",
+        baseline_target_type="MODEL_VERSION",
+        baseline_target_id="m20-live",
+        promotion_stage="PAPER_APPROVED",
+        live_eligible=False,
+        created_at=datetime(2026, 4, 2, tzinfo=timezone.utc),
+        approved_at=datetime(2026, 4, 2, 1, tzinfo=timezone.utc),
+        activated_at=datetime(2026, 4, 2, 2, tzinfo=timezone.utc),
+    )
+    target = ContinualLearningProfileRecord(
+        profile_id=target_profile_id,
+        candidate_type="CALIBRATION_OVERLAY",
+        status="APPROVED",
+        execution_mode_scope="paper",
+        symbol_scope="BTC/USD",
+        regime_scope="TREND_UP",
+        baseline_target_type="MODEL_VERSION",
+        baseline_target_id="m20-live",
+        promotion_stage="SHADOW_ONLY",
+        live_eligible=False,
+        rollback_target_profile_id=incumbent_profile_id,
+        created_at=datetime(2026, 4, 2, 3, tzinfo=timezone.utc),
+    )
+    other_scope = ContinualLearningProfileRecord(
+        profile_id=other_scope_profile_id,
+        candidate_type="CALIBRATION_OVERLAY",
+        status="ACTIVE",
+        execution_mode_scope="paper",
+        symbol_scope="ETH/USD",
+        regime_scope="TREND_UP",
+        baseline_target_type="MODEL_VERSION",
+        baseline_target_id="m20-live",
+        promotion_stage="LIVE_ELIGIBLE",
+        live_eligible=True,
+        created_at=datetime(2026, 4, 2, tzinfo=timezone.utc),
+        approved_at=datetime(2026, 4, 2, 1, tzinfo=timezone.utc),
+        activated_at=datetime(2026, 4, 2, 2, tzinfo=timezone.utc),
+    )
+
+    try:
+        await repository.save_continual_learning_profile(incumbent)
+        await repository.save_continual_learning_profile(target)
+        await repository.save_continual_learning_profile(other_scope)
+
+        changed_at = datetime(2026, 4, 2, 4, tzinfo=timezone.utc)
+        incumbent_profile = await repository.promote_continual_learning_profile(
+            target_profile_id=target_profile_id,
+            execution_mode_scope="paper",
+            symbol_scope="BTC/USD",
+            regime_scope="TREND_UP",
+            promotion_stage="LIVE_ELIGIBLE",
+            live_eligible=True,
+            changed_at=changed_at,
+        )
+
+        promoted = await repository.load_continual_learning_profile(
+            profile_id=target_profile_id
+        )
+        superseded = await repository.load_continual_learning_profile(
+            profile_id=incumbent_profile_id
+        )
+        unaffected = await repository.load_continual_learning_profile(
+            profile_id=other_scope_profile_id
+        )
+
+        assert incumbent_profile == incumbent_profile_id
+        assert promoted is not None
+        assert promoted.status == "ACTIVE"
+        assert promoted.promotion_stage == "LIVE_ELIGIBLE"
+        assert promoted.live_eligible is True
+        assert promoted.activated_at == changed_at
+        assert superseded is not None
+        assert superseded.status == "SUPERSEDED"
+        assert superseded.superseded_at == changed_at
+        assert unaffected is not None
+        assert unaffected.status == "ACTIVE"
+        assert unaffected.symbol_scope == "ETH/USD"
+    finally:
+        pool = repository._require_pool()  # pylint: disable=protected-access
+        await pool.execute(
+            "DELETE FROM continual_learning_profiles WHERE profile_id = $1",
+            target_profile_id,
+        )
+        await pool.execute(
+            "DELETE FROM continual_learning_profiles WHERE profile_id = $1",
+            incumbent_profile_id,
+        )
+        await pool.execute(
+            "DELETE FROM continual_learning_profiles WHERE profile_id = $1",
+            other_scope_profile_id,
         )
         await repository.close()
 

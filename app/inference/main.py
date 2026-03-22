@@ -24,8 +24,11 @@ from app.continual_learning.schemas import (
     ContinualLearningEventsResponse,
     ContinualLearningExperimentsResponse,
     ContinualLearningProfilesResponse,
+    ContinualLearningPromoteProfileRequest,
     ContinualLearningPromotionsResponse,
+    ContinualLearningRollbackRequest,
     ContinualLearningSummaryResponse,
+    ContinualLearningWorkflowResponse,
 )
 from app.common.config import Settings
 from app.common.logging import configure_logging
@@ -340,6 +343,34 @@ def create_app(
         limit: int = Query(default=50, ge=1, le=500),
     ) -> ContinualLearningEventsResponse:
         return await service.continual_learning_events(limit=limit)
+
+    @app.post(
+        "/continual-learning/promotions/promote-profile",
+        response_model=ContinualLearningWorkflowResponse,
+    )
+    async def continual_learning_promote_profile(
+        request: ContinualLearningPromoteProfileRequest,
+    ) -> ContinualLearningWorkflowResponse:
+        try:
+            return await service.continual_learning_promote_profile(request)
+        except RuntimeError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        except Exception as error:  # pylint: disable=broad-exception-caught
+            raise HTTPException(status_code=500, detail=str(error)) from error
+
+    @app.post(
+        "/continual-learning/promotions/rollback-active-profile",
+        response_model=ContinualLearningWorkflowResponse,
+    )
+    async def continual_learning_rollback_active_profile(
+        request: ContinualLearningRollbackRequest,
+    ) -> ContinualLearningWorkflowResponse:
+        try:
+            return await service.continual_learning_rollback_profile(request)
+        except RuntimeError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        except Exception as error:  # pylint: disable=broad-exception-caught
+            raise HTTPException(status_code=500, detail=str(error)) from error
 
     @app.get("/reliability/system", response_model=SystemReliabilityResponse)
     async def reliability_system() -> JSONResponse:

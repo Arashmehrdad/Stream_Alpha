@@ -207,6 +207,102 @@ The accepted M20 implementation is documented as:
 - held to a `pylint` target of `10.00/10` on touched files
 - local-first and inspectable by design
 
+## M21 Final Operator Workflow
+
+M21 is finalized as a guarded continual-learning operator workflow. It stays shadow-first, evidence-based, measurable, and reversible without introducing uncontrolled live self-retraining.
+
+M21 final packet adds:
+- guarded operator promotion for existing persisted continual-learning profiles only
+- guarded rollback activation through the explicit rollback path
+- persisted promotion and rollback decision truth for applied and block outcomes when the target profile truth exists
+- additive operator-console workflow visibility in the existing Models and Incidents views
+- two explicit write endpoints for manual operator apply calls
+
+M21 does not do:
+- trigger new training jobs
+- mutate production M4 model artifacts in place
+- create schedulers, queues, background workers, or orchestration platforms
+- bypass M10 risk, M11 execution, M12 live controls, M13 health/freshness gates, M14 trace truth, M19 bounded adaptation, or M20 ensemble behavior
+- hide blocked outcomes or rollback truth behind convenience automation
+
+### Guarded Rules
+
+Promotion remains manual and guarded:
+- the target profile must already exist in PostgreSQL
+- only `CALIBRATION_OVERLAY` may request `LIVE_ELIGIBLE`
+- `INCREMENTAL_SHADOW_CHALLENGER` remains `SHADOW_ONLY`
+- latest matching drift-cap status `BREACHED` blocks promotion
+- degraded M13 health blocks promotion
+- stale exact-row freshness blocks promotion
+- candidate policy can still block `LIVE_ELIGIBLE` even when the requested stage asks for it
+
+Rollback remains explicit and reversible:
+- rollback uses the existing explicit rollback path
+- there must be an active profile for the supplied scope
+- that active profile must expose an explicit `rollback_target_profile_id`
+- blocked rollback outcomes remain explicit and persisted when profile truth exists
+
+### Endpoints
+
+M21 final operator apply paths are:
+- `POST /continual-learning/promotions/promote-profile`
+- `POST /continual-learning/promotions/rollback-active-profile`
+
+Blocked workflow outcomes still return `200` with explicit `blocked=true` and decision truth when the request passes schema validation.
+
+### PowerShell Examples
+
+Promotion example:
+
+```powershell
+$body = @'
+{
+  "decision_id": "promote:cl-profile-1:20260322T120000Z",
+  "profile_id": "cl-profile-1",
+  "requested_promotion_stage": "PAPER_APPROVED",
+  "summary_text": "Manual guarded promotion after reviewing M21 evidence.",
+  "reason_codes": [
+    "OPERATOR_REVIEWED_EVIDENCE",
+    "MANUAL_M21_PROMOTION"
+  ],
+  "operator_confirmed": true
+}
+'@
+
+Invoke-RestMethod -Method Post `
+  -Uri http://127.0.0.1:8000/continual-learning/promotions/promote-profile `
+  -ContentType 'application/json' `
+  -Body $body
+```
+
+Rollback example:
+
+```powershell
+$body = @'
+{
+  "decision_id": "rollback:cl-profile-1:20260322T120500Z",
+  "execution_mode": "paper",
+  "symbol": "BTC/USD",
+  "regime_label": "TREND_UP",
+  "summary_text": "Manual guarded rollback to the explicit prior M21 profile.",
+  "operator_confirmed": true
+}
+'@
+
+Invoke-RestMethod -Method Post `
+  -Uri http://127.0.0.1:8000/continual-learning/promotions/rollback-active-profile `
+  -ContentType 'application/json' `
+  -Body $body
+```
+
+### Operational Truth
+
+The accepted final M21 workflow remains local-first and auditable:
+- promotion decisions and rollback decisions are written explicitly to PostgreSQL
+- workflow events remain visible in the operator console
+- active-profile changes stay scoped and reversible
+- production model artifacts are not retrained in place
+
 ## Repository Tree
 
 ```text

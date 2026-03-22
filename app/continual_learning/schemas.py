@@ -272,6 +272,61 @@ class ContinualLearningContextPayload(BaseModel):
     reason_codes: list[str] = Field(default_factory=list)
 
 
+class ContinualLearningPromoteProfileRequest(BaseModel):
+    """Guarded operator request for promoting one persisted M21 profile."""
+
+    decision_id: str
+    profile_id: str
+    requested_promotion_stage: ContinualLearningPromotionStage
+    summary_text: str
+    reason_codes: list[str] = Field(default_factory=list)
+    operator_confirmed: bool
+
+    @model_validator(mode="after")
+    def _validate_promote_request(self) -> "ContinualLearningPromoteProfileRequest":
+        if not self.summary_text.strip():
+            raise ValueError("summary_text must not be empty")
+        if not self.reason_codes:
+            raise ValueError("reason_codes must not be empty")
+        return self
+
+
+class ContinualLearningRollbackRequest(BaseModel):
+    """Guarded operator request for rolling back one active M21 profile."""
+
+    decision_id: str
+    execution_mode: str
+    symbol: str
+    regime_label: str
+    summary_text: str
+    operator_confirmed: bool
+
+    @model_validator(mode="after")
+    def _validate_rollback_request(self) -> "ContinualLearningRollbackRequest":
+        if not self.summary_text.strip():
+            raise ValueError("summary_text must not be empty")
+        return self
+
+
+class ContinualLearningWorkflowResponse(BaseModel):
+    """Explicit workflow result for guarded M21 promotion and rollback actions."""
+
+    success: bool
+    blocked: bool
+    decision_id: str
+    decision: str | None = None
+    target_profile_id: str | None = None
+    incumbent_profile_id: str | None = None
+    promotion_stage_after: str | None = None
+    live_eligible_after: bool | None = None
+    drift_cap_status: str | None = None
+    health_overall_status: str | None = None
+    freshness_status: str | None = None
+    event_id: str | None = None
+    reason_codes: list[str] = Field(default_factory=list)
+    summary_text: str
+
+
 class ContinualLearningSummaryResponse(BaseModel):
     """Read-only continual-learning summary payload."""
 

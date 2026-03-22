@@ -17,7 +17,9 @@ from app.continual_learning.schemas import (
     ContinualLearningDriftCapRecord,
     ContinualLearningExperimentRecord,
     ContinualLearningProfileRecord,
+    ContinualLearningPromoteProfileRequest,
     ContinualLearningPromotionDecisionRecord,
+    ContinualLearningRollbackRequest,
 )
 from app.continual_learning.service import ContinualLearningService
 
@@ -118,11 +120,57 @@ class _FakeRepo:
         )
         self._active_profile = self._profiles[rollback_target_profile_id]
 
+    async def promote_continual_learning_profile(
+        self,
+        *,
+        target_profile_id: str,
+        execution_mode_scope: str,
+        symbol_scope: str,
+        regime_scope: str,
+        promotion_stage: str,
+        live_eligible: bool,
+        changed_at,
+    ) -> str | None:
+        incumbent_profile_id = None
+        for profile in list(self._profiles.values()):
+            if (
+                profile.status == "ACTIVE"
+                and profile.execution_mode_scope == execution_mode_scope
+                and profile.symbol_scope == symbol_scope
+                and profile.regime_scope == regime_scope
+                and profile.profile_id != target_profile_id
+            ):
+                incumbent_profile_id = profile.profile_id
+                self._profiles[profile.profile_id] = profile.model_copy(
+                    update={"status": "SUPERSEDED", "superseded_at": changed_at}
+                )
+        target = self._profiles[target_profile_id]
+        self._profiles[target_profile_id] = target.model_copy(
+            update={
+                "status": "ACTIVE",
+                "promotion_stage": promotion_stage,
+                "live_eligible": live_eligible,
+                "approved_at": target.approved_at or changed_at,
+                "activated_at": changed_at,
+                "superseded_at": None,
+            }
+        )
+        self._active_profile = self._profiles[target_profile_id]
+        return incumbent_profile_id
+
     async def save_continual_learning_promotion_decision(self, decision) -> None:
         self._promotion_decisions.insert(0, decision)
 
     async def save_continual_learning_event(self, event) -> None:
         self._events.insert(0, event)
+
+    @property
+    def saved_promotions(self):
+        return list(self._promotion_decisions)
+
+    @property
+    def saved_events(self):
+        return list(self._events)
 
 
 def _build_config(root_dir: str) -> ContinualLearningConfig:
@@ -356,6 +404,333 @@ def test_shadow_challenger_live_eligible_stage_is_rejected() -> None:
         assert "INCREMENTAL_SHADOW_CHALLENGER" in str(error)
     else:
         raise AssertionError("Expected live-eligible shadow challenger profile to be rejected")
+
+
+def test_continual_learning_service_promote_profile_applies_and_persists_truth() -> None:
+    active, fallback = _build_profiles()
+    drift_cap = ContinualLearningDriftCapRecord(
+        cap_id="cap-promote",
+        execution_mode_scope="paper",
+        symbol_scope="BTC/USD",
+        regime_scope="TREND_UP",
+        candidate_type="CALIBRATION_OVERLAY",
+        status="WATCH",
+        observed_drift_score=0.11,
+        warning_threshold=0.10,
+        breach_threshold=0.20,
+        reason_code="DRIFT_WATCH",
+    )
+
+    with TemporaryDirectory() as tmp_dir:
+        repository = _FakeRepo(
+            active_profile=active,
+            fallback_profile=fallback,
+            drift_cap=drift_cap,
+        )
+        service = ContinualLearningService(
+            repository=repository,
+            config=_build_config(tmp_dir),
+        )
+
+        response = asyncio.run(
+            service.promote_profile(
+                ContinualLearningPromoteProfileRequest(
+                    decision_id="decision-promote-1",
+                    profile_id="profile-fallback",
+                    requested_promotion_stage="LIVE_ELIGIBLE",
+                    summary_text="promote the persisted fallback profile",
+                    reason_codes=["OPERATOR_REVIEWED_EVIDENCE"],
+                    operator_confirmed=True,
+                ),
+                health_overall_status="HEALTHY",
+                freshness_status="FRESH",
+            )
+        )
+
+        promoted = asyncio.run(
+            repository.load_continual_learning_profile(profile_id="profile-fallback")
+        )
+        superseded = asyncio.run(
+            repository.load_continual_learning_profile(profile_id="profile-active")
+        )
+
+        assert response.success is True
+        assert response.blocked is False
+        assert response.decision == "PROMOTE"
+        assert response.target_profile_id == "profile-fallback"
+        assert response.incumbent_profile_id == "profile-active"
+        assert response.live_eligible_after is True
+        assert promoted is not None
+        assert promoted.status == "ACTIVE"
+        assert superseded is not None
+        assert superseded.status == "SUPERSEDED"
+        assert repository.saved_promotions[0].decision == "PROMOTE"
+        assert repository.saved_events[0].event_type == "PROMOTION_APPLIED"
+        assert (
+            _read_json(service.config.artifacts.current_profile_path)["profile_id"]
+            == "profile-fallback"
+        )
+
+
+def test_continual_learning_service_promote_profile_blocks_on_breached_drift() -> None:
+    active, fallback = _build_profiles()
+    drift_cap = ContinualLearningDriftCapRecord(
+        cap_id="cap-breached",
+        execution_mode_scope="paper",
+        symbol_scope="BTC/USD",
+        regime_scope="TREND_UP",
+        candidate_type="CALIBRATION_OVERLAY",
+        status="BREACHED",
+        observed_drift_score=0.25,
+        warning_threshold=0.10,
+        breach_threshold=0.20,
+        reason_code="DRIFT_BREACHED",
+    )
+    repository = _FakeRepo(
+        active_profile=active,
+        fallback_profile=fallback,
+        drift_cap=drift_cap,
+    )
+    service = ContinualLearningService(
+        repository=repository,
+        config=_build_config("artifacts/tmp"),
+    )
+
+    response = asyncio.run(
+        service.promote_profile(
+            ContinualLearningPromoteProfileRequest(
+                decision_id="decision-promote-block-drift",
+                profile_id="profile-fallback",
+                requested_promotion_stage="PAPER_APPROVED",
+                summary_text="do not promote on breached drift",
+                reason_codes=["OPERATOR_REVIEWED_EVIDENCE"],
+                operator_confirmed=True,
+            ),
+            health_overall_status="HEALTHY",
+            freshness_status="FRESH",
+        )
+    )
+
+    active_after = asyncio.run(
+        repository.load_continual_learning_profile(profile_id="profile-active")
+    )
+
+    assert response.success is False
+    assert response.blocked is True
+    assert response.decision == "HOLD"
+    assert "CONTINUAL_LEARNING_DRIFT_CAP_BREACHED" in response.reason_codes
+    assert active_after is not None
+    assert active_after.status == "ACTIVE"
+    assert repository.saved_promotions[0].decision == "HOLD"
+    assert repository.saved_events[0].event_type == "PROMOTION_BLOCKED"
+
+
+def test_continual_learning_service_promote_profile_blocks_on_degraded_health() -> None:
+    active, fallback = _build_profiles()
+    drift_cap = ContinualLearningDriftCapRecord(
+        cap_id="cap-health",
+        execution_mode_scope="paper",
+        symbol_scope="BTC/USD",
+        regime_scope="TREND_UP",
+        candidate_type="CALIBRATION_OVERLAY",
+        status="WATCH",
+        observed_drift_score=0.11,
+        warning_threshold=0.10,
+        breach_threshold=0.20,
+        reason_code="DRIFT_WATCH",
+    )
+    repository = _FakeRepo(
+        active_profile=active,
+        fallback_profile=fallback,
+        drift_cap=drift_cap,
+    )
+    service = ContinualLearningService(
+        repository=repository,
+        config=_build_config("artifacts/tmp"),
+    )
+
+    response = asyncio.run(
+        service.promote_profile(
+            ContinualLearningPromoteProfileRequest(
+                decision_id="decision-promote-block-health",
+                profile_id="profile-fallback",
+                requested_promotion_stage="PAPER_APPROVED",
+                summary_text="hold while health is degraded",
+                reason_codes=["OPERATOR_REVIEWED_EVIDENCE"],
+                operator_confirmed=True,
+            ),
+            health_overall_status="DEGRADED",
+            freshness_status="FRESH",
+        )
+    )
+
+    assert response.success is False
+    assert response.blocked is True
+    assert "CONTINUAL_LEARNING_BLOCKED_BY_HEALTH_STATUS" in response.reason_codes
+    assert repository.saved_promotions[0].decision == "HOLD"
+    assert repository.saved_events[0].event_type == "PROMOTION_BLOCKED"
+
+
+def test_continual_learning_service_promote_profile_blocks_shadow_challenger_live() -> None:
+    active, fallback = _build_profiles()
+    shadow_profile = ContinualLearningProfileRecord(
+        profile_id="profile-shadow-1",
+        candidate_type="INCREMENTAL_SHADOW_CHALLENGER",
+        status="APPROVED",
+        execution_mode_scope="paper",
+        symbol_scope="BTC/USD",
+        regime_scope="TREND_UP",
+        baseline_target_type="MODEL_VERSION",
+        baseline_target_id="m20-live",
+        source_experiment_id="experiment-shadow-1",
+        promotion_stage="SHADOW_ONLY",
+        live_eligible=False,
+    )
+    drift_cap = ContinualLearningDriftCapRecord(
+        cap_id="cap-shadow",
+        execution_mode_scope="paper",
+        symbol_scope="BTC/USD",
+        regime_scope="TREND_UP",
+        candidate_type="INCREMENTAL_SHADOW_CHALLENGER",
+        status="HEALTHY",
+        observed_drift_score=0.02,
+        warning_threshold=0.10,
+        breach_threshold=0.20,
+        reason_code="DRIFT_HEALTHY",
+    )
+    repository = _FakeRepo(
+        active_profile=active,
+        fallback_profile=fallback,
+        drift_cap=drift_cap,
+        extra_profiles=[shadow_profile],
+    )
+    service = ContinualLearningService(
+        repository=repository,
+        config=_build_config("artifacts/tmp"),
+    )
+
+    response = asyncio.run(
+        service.promote_profile(
+            ContinualLearningPromoteProfileRequest(
+                decision_id="decision-promote-shadow-live",
+                profile_id="profile-shadow-1",
+                requested_promotion_stage="LIVE_ELIGIBLE",
+                summary_text="shadow challenger must stay shadow only",
+                reason_codes=["OPERATOR_REVIEWED_EVIDENCE"],
+                operator_confirmed=True,
+            ),
+            health_overall_status="HEALTHY",
+            freshness_status="FRESH",
+        )
+    )
+
+    assert response.success is False
+    assert response.blocked is True
+    assert "CONTINUAL_LEARNING_SHADOW_CHALLENGER_LIVE_BLOCKED" in response.reason_codes
+    assert repository.saved_promotions[0].decision == "HOLD"
+    assert repository.saved_events[0].event_type == "PROMOTION_BLOCKED"
+
+
+def test_continual_learning_service_rollback_profile_applies_and_persists_truth() -> None:
+    active, fallback = _build_profiles()
+    drift_cap = ContinualLearningDriftCapRecord(
+        cap_id="cap-rollback-workflow",
+        execution_mode_scope="paper",
+        symbol_scope="BTC/USD",
+        regime_scope="TREND_UP",
+        candidate_type="CALIBRATION_OVERLAY",
+        status="WATCH",
+        observed_drift_score=0.11,
+        warning_threshold=0.10,
+        breach_threshold=0.20,
+        reason_code="DRIFT_WATCH",
+    )
+    repository = _FakeRepo(
+        active_profile=active,
+        fallback_profile=fallback,
+        drift_cap=drift_cap,
+    )
+    service = ContinualLearningService(
+        repository=repository,
+        config=_build_config("artifacts/tmp"),
+    )
+
+    response = asyncio.run(
+        service.rollback_profile(
+            ContinualLearningRollbackRequest(
+                decision_id="decision-rollback-workflow",
+                execution_mode="paper",
+                symbol="BTC/USD",
+                regime_label="TREND_UP",
+                summary_text="restore prior approved profile",
+                operator_confirmed=True,
+            ),
+            health_overall_status="HEALTHY",
+            freshness_status="FRESH",
+        )
+    )
+
+    restored = asyncio.run(
+        repository.load_continual_learning_profile(profile_id="profile-fallback")
+    )
+
+    assert response.success is True
+    assert response.blocked is False
+    assert response.decision == "ROLLBACK"
+    assert response.target_profile_id == "profile-fallback"
+    assert restored is not None
+    assert restored.status == "ACTIVE"
+    assert repository.saved_promotions[0].decision == "ROLLBACK"
+    assert repository.saved_events[0].event_type == "ROLLBACK_APPLIED"
+
+
+def test_continual_learning_service_rollback_profile_blocks_without_target() -> None:
+    active, fallback = _build_profiles()
+    del fallback
+    active_without_target = active.model_copy(update={"rollback_target_profile_id": None})
+    drift_cap = ContinualLearningDriftCapRecord(
+        cap_id="cap-rollback-block",
+        execution_mode_scope="paper",
+        symbol_scope="BTC/USD",
+        regime_scope="TREND_UP",
+        candidate_type="CALIBRATION_OVERLAY",
+        status="WATCH",
+        observed_drift_score=0.11,
+        warning_threshold=0.10,
+        breach_threshold=0.20,
+        reason_code="DRIFT_WATCH",
+    )
+    repository = _FakeRepo(
+        active_profile=active_without_target,
+        fallback_profile=None,
+        drift_cap=drift_cap,
+    )
+    service = ContinualLearningService(
+        repository=repository,
+        config=_build_config("artifacts/tmp"),
+    )
+
+    response = asyncio.run(
+        service.rollback_profile(
+            ContinualLearningRollbackRequest(
+                decision_id="decision-rollback-blocked",
+                execution_mode="paper",
+                symbol="BTC/USD",
+                regime_label="TREND_UP",
+                summary_text="cannot rollback without explicit target",
+                operator_confirmed=True,
+            ),
+            health_overall_status="HEALTHY",
+            freshness_status="FRESH",
+        )
+    )
+
+    assert response.success is False
+    assert response.blocked is True
+    assert response.decision == "HOLD"
+    assert "CONTINUAL_LEARNING_NO_ROLLBACK_TARGET" in response.reason_codes
+    assert repository.saved_promotions[0].decision == "HOLD"
+    assert repository.saved_events[0].event_type == "ROLLBACK_BLOCKED"
 
 
 def test_resolve_runtime_context_includes_active_profile_and_health_freeze() -> None:

@@ -2085,6 +2085,70 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
                     changed_at,
                 )
 
+    async def promote_continual_learning_profile(  # pylint: disable=too-many-arguments
+        self,
+        *,
+        target_profile_id: str,
+        execution_mode_scope: str,
+        symbol_scope: str,
+        regime_scope: str,
+        promotion_stage: str,
+        live_eligible: bool,
+        changed_at: datetime,
+    ) -> str | None:
+        """Activate one continual-learning profile and supersede the incumbent in-scope profile."""
+        pool = self._require_pool()
+        async with pool.acquire() as connection:
+            async with connection.transaction():
+                incumbent_row = await connection.fetchrow(
+                    f"""
+                    SELECT profile_id
+                    FROM {self._continual_learning_profiles_table}
+                    WHERE status = 'ACTIVE'
+                      AND execution_mode_scope = $1
+                      AND symbol_scope = $2
+                      AND regime_scope = $3
+                      AND profile_id <> $4
+                    ORDER BY activated_at DESC NULLS LAST, created_at DESC, profile_id DESC
+                    LIMIT 1
+                    """,
+                    execution_mode_scope,
+                    symbol_scope,
+                    regime_scope,
+                    target_profile_id,
+                )
+                incumbent_profile_id = (
+                    None if incumbent_row is None else str(incumbent_row["profile_id"])
+                )
+                if incumbent_profile_id is not None:
+                    await connection.execute(
+                        f"""
+                        UPDATE {self._continual_learning_profiles_table}
+                        SET status = 'SUPERSEDED',
+                            superseded_at = $2
+                        WHERE profile_id = $1
+                        """,
+                        incumbent_profile_id,
+                        changed_at,
+                    )
+                await connection.execute(
+                    f"""
+                    UPDATE {self._continual_learning_profiles_table}
+                    SET status = 'ACTIVE',
+                        promotion_stage = $2,
+                        live_eligible = $3,
+                        approved_at = COALESCE(approved_at, $4),
+                        activated_at = $4,
+                        superseded_at = NULL
+                    WHERE profile_id = $1
+                    """,
+                    target_profile_id,
+                    promotion_stage,
+                    live_eligible,
+                    changed_at,
+                )
+                return incumbent_profile_id
+
     async def save_continual_learning_drift_cap(
         self,
         record: ContinualLearningDriftCapRecord,
