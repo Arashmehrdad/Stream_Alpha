@@ -1,6 +1,9 @@
 param(
     [ValidateSet("dev", "paper", "shadow", "live")]
-    [string]$Profile = "dev"
+    [string]$Profile = "dev",
+    [switch]$SkipOhlcBackfill,
+    [ValidateRange(26, 512)]
+    [int]$BackfillLookbackCandles = 128
 )
 
 $ErrorActionPreference = "Stop"
@@ -30,14 +33,20 @@ $env:STREAMALPHA_RUNTIME_PROFILE = $Profile
 $env:STREAMALPHA_TRADING_CONFIG_PATH = $tradingConfigPath
 $env:STREAMALPHA_STARTUP_REPORT_PATH = $startupReportPath
 
-$composeArgs = @("compose", "--profile", $Profile, "--env-file", ".env")
+$composeBaseArgs = @("compose", "--profile", $Profile, "--env-file", ".env")
 if (Test-Path ".env.secrets") {
-    $composeArgs += @("--env-file", ".env.secrets")
+    $composeBaseArgs += @("--env-file", ".env.secrets")
 }
-$composeArgs += @("up", "-d", "--build")
+$composeUpArgs = $composeBaseArgs + @("up", "-d", "--build")
+$composeRunArgs = $composeBaseArgs + @("run", "--rm", "producer")
 
 try {
-    & docker @composeArgs
+    & docker @composeUpArgs
+
+    if (-not $SkipOhlcBackfill) {
+        Write-Host "Seeding OHLC history for feature warmup..."
+        & docker @composeRunArgs python -m app.ingestion.backfill_ohlc --lookback-candles $BackfillLookbackCandles
+    }
 }
 finally {
     if ($null -eq $previousRuntimeProfile) {

@@ -9,11 +9,14 @@ import asyncio
 from pathlib import Path
 import sys
 
+import asyncpg
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from app.common.config import Settings
+from app.common.config import PostgresSettings
 from app.common.logging import configure_logging
 from app.runtime.config import resolve_trading_config_path
 from app.trading.config import load_paper_trading_config
@@ -51,11 +54,42 @@ def resolve_trader_config_path(config_value: str | None) -> Path:
     return resolve_trading_config_path()
 
 
+async def _resolve_postgres_dsn(postgres: PostgresSettings) -> str:
+    candidates = [postgres.dsn]
+    if postgres.host not in {"127.0.0.1", "localhost"}:
+        candidates.append(
+            PostgresSettings(
+                host="127.0.0.1",
+                port=postgres.port,
+                database=postgres.database,
+                user=postgres.user,
+                password=postgres.password,
+            ).dsn
+        )
+
+    last_error: Exception | None = None
+    for dsn in candidates:
+        try:
+            connection = await asyncpg.connect(dsn)
+        except (OSError, asyncpg.PostgresConnectionError) as error:
+            last_error = error
+            continue
+        await connection.close()
+        return dsn
+
+    if last_error is None:
+        raise ValueError("No PostgreSQL DSN candidates were available for paper trader")
+    raise ValueError(
+        f"Could not connect to PostgreSQL for paper trader: {last_error}"
+    ) from last_error
+
+
 async def _main_async(config_path: Path, *, run_once: bool) -> None:
     settings = Settings.from_env()
     configure_logging(settings.log_level)
     config = load_paper_trading_config(config_path)
-    repository = TradingRepository(settings.postgres.dsn, config.source_table)
+    postgres_dsn = await _resolve_postgres_dsn(settings.postgres)
+    repository = TradingRepository(postgres_dsn, config.source_table)
     signal_client = SignalClient(config.inference_base_url)
     runner = PaperTradingRunner(
         config=config,

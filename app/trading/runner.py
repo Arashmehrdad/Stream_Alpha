@@ -1074,10 +1074,11 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
         state: ReliabilityState,
         evaluated_at: datetime,
     ) -> ReliabilityState:
+        observed_at = utc_now()
         transitioned = transition_circuit_breaker(
             state=_to_breaker_state(state),
             config=self.reliability_config.circuit_breaker,
-            evaluated_at=evaluated_at,
+            evaluated_at=observed_at,
             observed_success=None,
         )
         refreshed = _merge_breaker_state(
@@ -1097,7 +1098,7 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
                     service_name=self.config.service_name,
                     component_name=self._signal_client_component,
                     event_type="BREAKER_TRANSITION",
-                    event_time=evaluated_at,
+                    event_time=observed_at,
                     reason_code=transitioned.reason_code or HEALTH_HEALTHY,
                     health_overall_status=refreshed.health_overall_status,
                     freshness_status=refreshed.freshness_status,
@@ -1113,10 +1114,11 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
         state: ReliabilityState,
         evaluated_at: datetime,
     ) -> ReliabilityState:
+        observed_at = utc_now()
         transitioned = transition_circuit_breaker(
             state=_to_breaker_state(state),
             config=self.reliability_config.circuit_breaker,
-            evaluated_at=evaluated_at,
+            evaluated_at=observed_at,
             observed_success=True,
         )
         refreshed = _merge_breaker_state(
@@ -1137,7 +1139,7 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
                     service_name=self.config.service_name,
                     component_name=self._signal_client_component,
                     event_type="SIGNAL_FETCH_SUCCESS",
-                    event_time=evaluated_at,
+                    event_time=observed_at,
                     reason_code=transitioned.reason_code or HEALTH_HEALTHY,
                     health_overall_status=refreshed.health_overall_status,
                     freshness_status=refreshed.freshness_status,
@@ -1154,10 +1156,11 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
         evaluated_at: datetime,
         detail: str,
     ) -> ReliabilityState:
+        observed_at = utc_now()
         transitioned = transition_circuit_breaker(
             state=_to_breaker_state(state),
             config=self.reliability_config.circuit_breaker,
-            evaluated_at=evaluated_at,
+            evaluated_at=observed_at,
             observed_success=False,
         )
         refreshed = _merge_breaker_state(
@@ -1175,7 +1178,7 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
                 service_name=self.config.service_name,
                 component_name=self._signal_client_component,
                 event_type="SIGNAL_FETCH_FAILURE",
-                event_time=evaluated_at,
+                event_time=observed_at,
                 reason_code=SIGNAL_FETCH_FAILED,
                 health_overall_status=refreshed.health_overall_status,
                 freshness_status=refreshed.freshness_status,

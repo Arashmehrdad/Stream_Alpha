@@ -7,6 +7,7 @@ from __future__ import annotations
 from datetime import datetime
 import re
 from typing import Any, Sequence
+from urllib.parse import urlsplit, urlunsplit
 
 import asyncpg
 
@@ -43,7 +44,23 @@ class InferenceDatabase:
         """Create the database pool if it is not already open."""
         if self._pool is not None:
             return
-        self._pool = await asyncpg.create_pool(self._dsn, min_size=1, max_size=5)
+        last_error: Exception | None = None
+        for dsn_candidate in _dsn_candidates(self._dsn):
+            try:
+                self._pool = await asyncpg.create_pool(
+                    dsn_candidate,
+                    min_size=1,
+                    max_size=5,
+                )
+            except (OSError, asyncpg.PostgresConnectionError) as error:
+                last_error = error
+                continue
+            return
+        if last_error is not None:
+            raise DatabaseUnavailableError(
+                f"Could not connect to PostgreSQL: {last_error}"
+            ) from last_error
+        raise DatabaseUnavailableError("Could not connect to PostgreSQL")
 
     async def close(self) -> None:
         """Close the database pool if one is open."""
@@ -151,3 +168,16 @@ class InferenceDatabase:
         if self._pool is None:
             raise DatabaseUnavailableError("PostgreSQL pool is not available")
         return self._pool
+
+
+def _dsn_candidates(dsn: str) -> tuple[str, ...]:
+    parsed = urlsplit(dsn)
+    host = parsed.hostname
+    if host in {None, "127.0.0.1", "localhost"}:
+        return (dsn,)
+
+    localhost_netloc = parsed.netloc.replace(host, "127.0.0.1", 1)
+    localhost_dsn = urlunsplit(
+        (parsed.scheme, localhost_netloc, parsed.path, parsed.query, parsed.fragment)
+    )
+    return (dsn, localhost_dsn)
