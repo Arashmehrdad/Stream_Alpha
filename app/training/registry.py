@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 import shutil
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 import joblib
@@ -199,7 +199,9 @@ def resolve_inference_model_metadata(
             f"{current_registry_path(registry_root).resolve()}",
         )
 
-    model_path = Path(str(current_entry["model_artifact_path"])).expanduser().resolve()
+    model_path = _resolve_registry_artifact_path(
+        str(current_entry["model_artifact_path"]),
+    )
     if not model_path.is_file():
         raise ValueError(f"Registry champion model artifact does not exist: {model_path}")
 
@@ -456,3 +458,31 @@ def _derive_override_model_version(artifact_path: Path) -> tuple[str, str]:
     if artifact_path.stem == "model":
         return parent.name, "MODEL_OVERRIDE_PATH"
     return artifact_path.stem, "MODEL_OVERRIDE_PATH"
+
+
+def _resolve_registry_artifact_path(path_value: str) -> Path:
+    """Resolve a registry artifact path across local and container runtimes."""
+    raw_path = str(path_value).strip()
+    direct_path = Path(raw_path).expanduser()
+    if direct_path.is_absolute() and direct_path.is_file():
+        return direct_path.resolve()
+
+    repo_relative_path = repo_root() / raw_path
+    if not direct_path.is_absolute() and repo_relative_path.is_file():
+        return repo_relative_path.resolve()
+
+    windows_parts = PureWindowsPath(raw_path).parts
+    repository_name = repo_root().name
+    if repository_name in windows_parts:
+        repository_index = windows_parts.index(repository_name)
+        translated_path = repo_root().joinpath(*windows_parts[repository_index + 1 :])
+        if translated_path.is_file():
+            return translated_path.resolve()
+    lowered_windows_parts = tuple(part.lower() for part in windows_parts)
+    if "artifacts" in lowered_windows_parts:
+        artifacts_index = lowered_windows_parts.index("artifacts")
+        translated_path = repo_root().joinpath(*windows_parts[artifacts_index:])
+        if translated_path.is_file():
+            return translated_path.resolve()
+
+    return direct_path.resolve()

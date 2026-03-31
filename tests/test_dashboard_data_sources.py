@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from datetime import datetime, timezone
 
@@ -963,3 +964,101 @@ def test_dashboard_snapshot_includes_recent_decision_traces_and_latest_blocked_t
     assert snapshot.database.latest_blocked_trade is not None
     assert snapshot.database.latest_blocked_trade.blocked_stage == "risk"
     assert snapshot.database.latest_blocked_trade.primary_reason_code == "TRADE_NOT_ALLOWED"
+
+
+def test_dashboard_snapshot_accepts_stringified_decision_trace_payloads() -> None:
+    class _TraceConnection(_RecordingConnection):
+        async def fetch(self, query: str, *params):
+            self.fetch_calls.append((query, params))
+            if "FROM \"decision_traces\"" in query:
+                return [
+                    {
+                        "id": 21,
+                        "service_name": "paper-trader",
+                        "execution_mode": "paper",
+                        "symbol": "BTC/USD",
+                        "signal": "BUY",
+                        "signal_row_id": "BTC/USD|2026-03-21T12:00:00Z",
+                        "signal_as_of_time": datetime(2026, 3, 21, 12, 5, tzinfo=timezone.utc),
+                        "model_name": "logistic_regression",
+                        "model_version": "m3-20260321T120000Z",
+                        "risk_outcome": "APPROVED",
+                        "trace_payload": json.dumps(
+                            {
+                                "schema_version": "m14_decision_trace_v1",
+                                "service_name": "paper-trader",
+                                "execution_mode": "paper",
+                                "symbol": "BTC/USD",
+                                "signal_row_id": "BTC/USD|2026-03-21T12:00:00Z",
+                                "signal_interval_begin": "2026-03-21T12:00:00Z",
+                                "signal_as_of_time": "2026-03-21T12:05:00Z",
+                                "model_name": "logistic_regression",
+                                "model_version": "m3-20260321T120000Z",
+                                "prediction": {
+                                    "model_name": "logistic_regression",
+                                    "model_version": "m3-20260321T120000Z",
+                                    "prob_up": 0.71,
+                                    "prob_down": 0.29,
+                                    "confidence": 0.71,
+                                    "predicted_class": "UP",
+                                    "top_features": [],
+                                },
+                                "signal": {
+                                    "signal": "BUY",
+                                    "reason": "buy",
+                                },
+                                "risk": {
+                                    "outcome": "APPROVED",
+                                    "primary_reason_code": "BUY_APPROVED",
+                                    "reason_codes": ["BUY_APPROVED"],
+                                    "reason_texts": ["buy approved"],
+                                    "requested_notional": 1000.0,
+                                    "approved_notional": 1000.0,
+                                    "portfolio_context": {
+                                        "available_cash": 10000.0,
+                                        "open_position_count": 0,
+                                        "current_equity": 10000.0,
+                                        "total_open_exposure_notional": 0.0,
+                                        "current_symbol_exposure_notional": 0.0,
+                                    },
+                                    "service_risk_state": {
+                                        "trading_day": "2026-03-21",
+                                        "realized_pnl_today": 0.0,
+                                        "equity_high_watermark": 10000.0,
+                                        "current_equity": 10000.0,
+                                        "loss_streak_count": 0,
+                                        "kill_switch_enabled": False,
+                                    },
+                                    "ordered_adjustments": [],
+                                },
+                            }
+                        ),
+                        "json_report_path": "artifacts/rationale/paper-trader/paper/21.json",
+                        "markdown_report_path": "artifacts/rationale/paper-trader/paper/21.md",
+                        "created_at": datetime(2026, 3, 21, 12, 5, tzinfo=timezone.utc),
+                        "updated_at": datetime(2026, 3, 21, 12, 5, tzinfo=timezone.utc),
+                    }
+                ]
+            return []
+
+        async def fetchrow(self, query: str, *params):
+            self.fetchrow_calls.append((query, params))
+            return None
+
+    connection = _TraceConnection()
+
+    async def _db_connect(_dsn: str):
+        return connection
+
+    data_sources = DashboardDataSources(
+        settings=_settings(),
+        trading_config=_paper_config(),
+        http_client=_HealthyHttpClient(),
+        db_connect=_db_connect,
+    )
+
+    snapshot = asyncio.run(data_sources.load_snapshot())
+
+    assert snapshot.database.recent_decision_traces
+    assert snapshot.database.recent_decision_traces[0].decision_trace_id == 21
+    assert snapshot.database.recent_decision_traces[0].primary_reason_code == "BUY_APPROVED"

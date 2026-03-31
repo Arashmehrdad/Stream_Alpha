@@ -10,6 +10,7 @@ import joblib
 import pytest
 
 from app.inference.service import load_model_artifact
+from app.training import registry as registry_module
 from app.training.registry import write_json_atomic
 
 
@@ -78,6 +79,32 @@ def test_load_model_artifact_rejects_bad_path(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="INFERENCE_MODEL_PATH does not exist"):
         load_model_artifact(str(missing_path))
+
+
+def test_load_model_artifact_translates_windows_registry_paths_for_runtime_portability(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Registry-backed loading should resolve Windows host paths inside Linux runtimes."""
+    fake_repo_root = tmp_path / "workspace"
+    artifact_path = _write_artifact(fake_repo_root)
+    registry_root = fake_repo_root / "artifacts" / "registry"
+    write_json_atomic(
+        registry_root / "current.json",
+        {
+            "model_version": "m3-20260319T223002Z",
+            "model_artifact_path": (
+                "Z:\\remote\\Stream_Alpha\\artifacts\\training\\m3\\20260319T223002Z\\model.joblib"
+            ),
+        },
+    )
+    monkeypatch.setattr(registry_module, "repo_root", lambda: fake_repo_root)
+
+    artifact = load_model_artifact("", registry_root=registry_root)
+
+    assert Path(artifact.model_artifact_path) == artifact_path.resolve()
+    assert artifact.model_version == "m3-20260319T223002Z"
+    assert artifact.model_version_source == "REGISTRY_CURRENT"
 
 
 def test_load_model_artifact_rejects_malformed_payload(tmp_path: Path) -> None:

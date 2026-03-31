@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+import json
 import re
 from typing import Any, Mapping, Sequence
 
@@ -2386,8 +2387,21 @@ def _engine_state_from_row(row: Mapping[str, Any]) -> EngineStateSnapshot:
     )
 
 
+def _coerce_mapping_payload(value: Any, *, field_name: str) -> Mapping[str, Any]:
+    """Accept JSONB payloads returned as either native mappings or serialized JSON strings."""
+    if isinstance(value, Mapping):
+        return value
+    if isinstance(value, str):
+        parsed = json.loads(value)
+        if isinstance(parsed, Mapping):
+            return parsed
+    raise ValueError(f"{field_name} must be a mapping-compatible payload")
+
+
 def _decision_trace_from_row(row: Mapping[str, Any]) -> DecisionTraceSnapshot:
-    trace_payload = DecisionTracePayload.model_validate(row["trace_payload"])
+    trace_payload = DecisionTracePayload.model_validate(
+        _coerce_mapping_payload(row["trace_payload"], field_name="trace_payload")
+    )
     risk_payload = trace_payload.risk
     blocked_trade = trace_payload.blocked_trade
     threshold_snapshot = trace_payload.threshold_snapshot
