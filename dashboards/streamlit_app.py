@@ -5,9 +5,9 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, time, timezone
 from pathlib import Path
+from typing import Any
 
 import streamlit as st
-import streamlit.components.v1 as components
 
 from app.common.config import Settings
 from app.runtime.config import resolve_runtime_profile, resolve_trading_config_path
@@ -53,6 +53,8 @@ from dashboards.widgets import (
 
 # pylint: disable=too-many-locals,too-many-arguments,too-many-statements,too-many-lines
 
+_SNAPSHOT_SESSION_KEY = "streamalpha_dashboard_snapshot"
+
 
 def main() -> None:
     """Run the read-only Stream Alpha M15 operator console."""
@@ -64,17 +66,87 @@ def main() -> None:
         page_icon="SA",
         layout="wide",
     )
-    _maybe_enable_auto_refresh(settings.dashboard.refresh_seconds)
 
     st.title("Stream Alpha")
     st.caption("Operator console with accepted M15-M21 foundations")
+    _render_refreshing_console(
+        settings=settings,
+        trading_config=trading_config,
+    )
 
-    snapshot = asyncio.run(
+
+def _render_refreshing_console(
+    *,
+    settings: Settings,
+    trading_config: PaperTradingConfig,
+) -> None:
+    refresh_seconds = max(int(settings.dashboard.refresh_seconds), 0)
+    fragment_api = getattr(st, "fragment", None)
+
+    if not callable(fragment_api):
+        _render_dynamic_console(
+            settings=settings,
+            trading_config=trading_config,
+        )
+        return
+
+    if refresh_seconds > 0:
+
+        @fragment_api(run_every=refresh_seconds)
+        def _refresh_fragment() -> None:
+            _render_dynamic_console(
+                settings=settings,
+                trading_config=trading_config,
+            )
+
+    else:
+
+        @fragment_api
+        def _refresh_fragment() -> None:
+            _render_dynamic_console(
+                settings=settings,
+                trading_config=trading_config,
+            )
+
+    _refresh_fragment()
+
+
+def _load_dashboard_snapshot(
+    *,
+    settings: Settings,
+    trading_config: PaperTradingConfig,
+):
+    return asyncio.run(
         DashboardDataSources(
             settings=settings,
             trading_config=trading_config,
         ).load_snapshot()
     )
+
+
+def _refresh_dashboard_snapshot(
+    *,
+    settings: Settings,
+    trading_config: PaperTradingConfig,
+):
+    snapshot = _load_dashboard_snapshot(
+        settings=settings,
+        trading_config=trading_config,
+    )
+    st.session_state[_SNAPSHOT_SESSION_KEY] = snapshot
+    return snapshot
+
+
+def _render_dynamic_console(
+    *,
+    settings: Settings,
+    trading_config: PaperTradingConfig,
+) -> None:
+    snapshot = _refresh_dashboard_snapshot(
+        settings=settings,
+        trading_config=trading_config,
+    )
+
     runtime_profile = resolve_display_runtime_profile(snapshot=snapshot)
     reference_time = max(snapshot.api_health.checked_at, snapshot.database.checked_at)
     incidents = build_operator_incident_rows(
@@ -456,6 +528,12 @@ def _render_signals_view(
             },
         ],
     )
+    _render_compact_bar_chart(
+        title="Signal Distribution",
+        rows=_build_signal_distribution_chart_rows(latest_signals),
+        category_field="signal",
+        value_field="count",
+    )
     render_table("Latest Signals By Asset", latest_signals)
     render_table(
         "Continual Learning Signal Context",
@@ -498,6 +576,12 @@ def _render_trades_view(
                 "detail": "Unavailable if PostgreSQL trading state could not be read",
             },
         ],
+    )
+    _render_compact_bar_chart(
+        title="Open Position Exposure",
+        rows=_build_open_position_exposure_chart_rows(open_position_rows),
+        category_field="symbol",
+        value_field="entry_notional",
     )
 
     filtered_traces = _filter_trade_journal(
@@ -553,6 +637,12 @@ def _render_risk_view(
                 else traces[0].signal_as_of_time.isoformat(),
             },
         ],
+    )
+    _render_compact_bar_chart(
+        title="Per-Regime Total PnL",
+        rows=_build_regime_performance_chart_rows(performance_by_regime_rows),
+        category_field="regime_label",
+        value_field="total_pnl",
     )
     render_table("Latest Blocked Trade Rationale", latest_blocked_trade_rows)
     render_table("Recent Risk Decisions", risk_rows)
@@ -651,6 +741,12 @@ def _render_health_view(
         )
 
     render_table("Reliability Summary", reliability_rows)
+    _render_compact_bar_chart(
+        title="Active Alert Severity",
+        rows=_build_alert_severity_chart_rows(active_alert_rows),
+        category_field="severity",
+        value_field="count",
+    )
     render_table("Active Alerts", active_alert_rows)
     render_table("Startup Safety", startup_safety_rows)
     render_table("Daily Operations Summary", daily_summary_rows)
@@ -823,6 +919,12 @@ def _render_incidents_view(
     incident_timeline_rows,
 ) -> None:
     render_incidents_panel(incidents)
+    _render_compact_bar_chart(
+        title="Continual Learning Drift Cap Status",
+        rows=_build_drift_cap_status_chart_rows(snapshot=snapshot),
+        category_field="status",
+        value_field="count",
+    )
     render_table("Incident Timeline", incident_timeline_rows)
     render_table(
         "Continual Learning Events",
@@ -1284,6 +1386,117 @@ def _venue_summary_cards(row: dict[str, object]) -> list[dict[str, str]]:
     ]
 
 
+def _render_compact_bar_chart(
+    *,
+    title: str,
+    rows: list[dict[str, Any]],
+    category_field: str,
+    value_field: str,
+) -> None:
+    chart_rows = [
+        row
+        for row in rows
+        if row.get(category_field) is not None and row.get(value_field) is not None
+    ]
+    if not chart_rows:
+        return
+    st.caption(title)
+    st.vega_lite_chart(
+        {
+            "data": {"values": chart_rows},
+            "mark": {"type": "bar", "cornerRadiusTopLeft": 3, "cornerRadiusTopRight": 3},
+            "encoding": {
+                "x": {
+                    "field": category_field,
+                    "type": "nominal",
+                    "sort": None,
+                    "axis": {"labelAngle": 0, "title": None},
+                },
+                "y": {
+                    "field": value_field,
+                    "type": "quantitative",
+                    "axis": {"title": None},
+                },
+                "tooltip": [
+                    {"field": category_field, "type": "nominal"},
+                    {"field": value_field, "type": "quantitative"},
+                ],
+            },
+            "height": 220,
+        },
+        use_container_width=True,
+    )
+
+
+def _build_signal_distribution_chart_rows(
+    latest_signals: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    counts = {"BUY": 0, "SELL": 0, "HOLD": 0, "UNAVAILABLE": 0}
+    for row in latest_signals:
+        signal = str(row.get("signal") or "UNAVAILABLE")
+        counts[signal] = counts.get(signal, 0) + 1
+    return [
+        {"signal": signal, "count": count}
+        for signal, count in counts.items()
+        if count > 0
+    ]
+
+
+def _build_regime_performance_chart_rows(
+    performance_by_regime_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "regime_label": row["regime_label"],
+            "total_pnl": float(row["total_pnl"]),
+        }
+        for row in performance_by_regime_rows
+        if row.get("regime_label") is not None and row.get("total_pnl") is not None
+    ]
+
+
+def _build_alert_severity_chart_rows(
+    active_alert_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    counts: dict[str, int] = {}
+    for row in active_alert_rows:
+        severity = str(row.get("severity") or "UNKNOWN")
+        counts[severity] = counts.get(severity, 0) + 1
+    return [
+        {"severity": severity, "count": count}
+        for severity, count in counts.items()
+    ]
+
+
+def _build_drift_cap_status_chart_rows(*, snapshot) -> list[dict[str, Any]]:
+    counts: dict[str, int] = {}
+    for item in snapshot.continual_learning.drift_caps:
+        status = str(item.status or "UNKNOWN")
+        counts[status] = counts.get(status, 0) + 1
+    return [
+        {"status": status, "count": count}
+        for status, count in counts.items()
+    ]
+
+
+def _build_open_position_exposure_chart_rows(
+    open_position_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    exposure_by_symbol: dict[str, float] = {}
+    for row in open_position_rows:
+        symbol = row.get("symbol")
+        entry_notional = row.get("entry_notional")
+        if symbol is None or entry_notional is None:
+            continue
+        exposure_by_symbol[str(symbol)] = exposure_by_symbol.get(str(symbol), 0.0) + float(
+            entry_notional
+        )
+    return [
+        {"symbol": symbol, "entry_notional": notional}
+        for symbol, notional in exposure_by_symbol.items()
+    ]
+
+
 def _filter_trade_journal(
     *,
     traces: tuple[DecisionTraceSnapshot, ...],
@@ -1367,24 +1580,6 @@ def _filter_trade_journal(
         outcome_category=selected_outcome,
         only_blocked=only_blocked,
     )
-
-
-def _maybe_enable_auto_refresh(refresh_seconds: int) -> None:
-    if refresh_seconds <= 0:
-        return
-    components.html(
-        f"""
-        <script>
-            setTimeout(function() {{
-                window.parent.location.reload();
-            }}, {refresh_seconds * 1000});
-        </script>
-        """,
-        height=0,
-        width=0,
-    )
-
-
 def _render_rationale_report_downloads(recent_traces) -> None:
     if not recent_traces:
         return

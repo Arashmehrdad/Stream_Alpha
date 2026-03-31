@@ -1476,6 +1476,10 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
                     heartbeat_stale_after_seconds=(
                         self.reliability_config.heartbeat.stale_after_seconds
                     ),
+                    idle_healthy_after_seconds=(
+                        (self.trading_config.interval_minutes * 60)
+                        + self.reliability_config.heartbeat.stale_after_seconds
+                    ),
                 ),
             ),
             lag_by_symbol=lag_by_symbol,

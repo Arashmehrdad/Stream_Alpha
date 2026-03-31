@@ -269,6 +269,11 @@ class OperationalAlertService:
         counts_by_category = {category: 0 for category in _CATEGORY_ORDER}
         for event in daily_events:
             counts_by_category[event.category] = counts_by_category.get(event.category, 0) + 1
+        if startup_safety_report.primary_reason_code:
+            counts_by_category["STARTUP_SAFETY"] = max(
+                counts_by_category.get("STARTUP_SAFETY", 0),
+                1,
+            )
 
         highest_severity = "INFO"
         for event in daily_events:
@@ -277,6 +282,11 @@ class OperationalAlertService:
         for state in active_states:
             if _SEVERITY_RANK[state.severity] > _SEVERITY_RANK[highest_severity]:
                 highest_severity = state.severity
+        startup_safety_severity = (
+            "INFO" if startup_safety_report.startup_safety_passed else "CRITICAL"
+        )
+        if _SEVERITY_RANK[startup_safety_severity] > _SEVERITY_RANK[highest_severity]:
+            highest_severity = startup_safety_severity
 
         summary = DailyOperationsSummary(
             schema_version=DAILY_SUMMARY_SCHEMA_VERSION,

@@ -19,12 +19,17 @@ from dashboards.data_sources import (
     SignalSnapshot,
 )
 from dashboards.streamlit_app import (
+    _build_alert_severity_chart_rows,
     _build_continual_learning_breached_drift_rows,
     _build_continual_learning_event_rows,
     _build_continual_learning_freeze_rows,
     _build_continual_learning_guardrail_rows,
     _build_continual_learning_signal_rows,
     _build_continual_learning_workflow_rows,
+    _build_drift_cap_status_chart_rows,
+    _build_open_position_exposure_chart_rows,
+    _build_regime_performance_chart_rows,
+    _build_signal_distribution_chart_rows,
     resolve_display_runtime_profile,
 )
 
@@ -67,6 +72,59 @@ def test_runtime_profile_falls_back_to_env(monkeypatch) -> None:
     )
 
     assert resolve_display_runtime_profile(snapshot=snapshot) == "LIVE"
+
+
+def test_signal_distribution_chart_rows_are_counted_from_visible_signals() -> None:
+    rows = _build_signal_distribution_chart_rows(
+        [
+            {"symbol": "BTC/USD", "signal": "BUY"},
+            {"symbol": "ETH/USD", "signal": "HOLD"},
+            {"symbol": "SOL/USD", "signal": "BUY"},
+            {"symbol": "DOGE/USD", "signal": "UNAVAILABLE"},
+        ]
+    )
+
+    assert rows == [
+        {"signal": "BUY", "count": 2},
+        {"signal": "HOLD", "count": 1},
+        {"signal": "UNAVAILABLE", "count": 1},
+    ]
+
+
+def test_chart_helpers_keep_existing_truth_aggregation_explicit() -> None:
+    exposure_rows = _build_open_position_exposure_chart_rows(
+        [
+            {"symbol": "BTC/USD", "entry_notional": 1000.0},
+            {"symbol": "BTC/USD", "entry_notional": 500.0},
+            {"symbol": "ETH/USD", "entry_notional": 250.0},
+        ]
+    )
+    regime_rows = _build_regime_performance_chart_rows(
+        [
+            {"regime_label": "RANGE", "total_pnl": 12.5},
+            {"regime_label": "TREND_UP", "total_pnl": -4.0},
+        ]
+    )
+    severity_rows = _build_alert_severity_chart_rows(
+        [
+            {"severity": "CRITICAL"},
+            {"severity": "WARNING"},
+            {"severity": "CRITICAL"},
+        ]
+    )
+
+    assert exposure_rows == [
+        {"symbol": "BTC/USD", "entry_notional": 1500.0},
+        {"symbol": "ETH/USD", "entry_notional": 250.0},
+    ]
+    assert regime_rows == [
+        {"regime_label": "RANGE", "total_pnl": 12.5},
+        {"regime_label": "TREND_UP", "total_pnl": -4.0},
+    ]
+    assert severity_rows == [
+        {"severity": "CRITICAL", "count": 2},
+        {"severity": "WARNING", "count": 1},
+    ]
 
 
 def test_continual_learning_signal_rows_are_built_from_loaded_snapshot() -> None:
@@ -185,6 +243,9 @@ def test_continual_learning_incident_rows_highlight_rollback_and_breached_drift(
 
     assert event_rows[0]["highlight"] == "ROLLBACK_APPLIED"
     assert breached_rows[0]["highlight"] == "DRIFT_BREACHED"
+    assert _build_drift_cap_status_chart_rows(snapshot=snapshot) == [
+        {"status": "BREACHED", "count": 1}
+    ]
 
 
 def test_continual_learning_workflow_and_guardrail_rows_are_built_from_snapshot() -> None:

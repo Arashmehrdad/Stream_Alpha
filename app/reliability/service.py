@@ -366,6 +366,7 @@ def build_signal_client_health_snapshot(
     state: CircuitBreakerState | None,
     evaluated_at: datetime,
     heartbeat_stale_after_seconds: int,
+    idle_healthy_after_seconds: int | None = None,
 ) -> ServiceHealthSnapshot:
     """Build the operator-facing signal-client health summary from breaker state."""
     if state is None:
@@ -380,12 +381,14 @@ def build_signal_client_health_snapshot(
             reason_code=HEARTBEAT_MISSING,
             detail="No signal-client reliability state has been written",
         )
-
-    reference_time = state.last_heartbeat_at or state.updated_at
+    reference_time = state.last_heartbeat_at or state.last_success_at or state.updated_at
+    max_age_seconds = heartbeat_stale_after_seconds
+    if idle_healthy_after_seconds is not None:
+        max_age_seconds = max(max_age_seconds, idle_healthy_after_seconds)
     heartbeat_freshness = evaluate_heartbeat_freshness(
         observed_at=reference_time,
         evaluated_at=evaluated_at,
-        max_age_seconds=heartbeat_stale_after_seconds,
+        max_age_seconds=max_age_seconds,
     )
     if heartbeat_freshness.freshness_status != "FRESH":
         return ServiceHealthSnapshot(
