@@ -182,7 +182,7 @@ def resolve_inference_model_metadata(
 ) -> dict[str, str]:
     """Resolve the active inference model path plus stable version metadata."""
     if model_override.strip():
-        override_path = Path(model_override).expanduser().resolve()
+        override_path = _resolve_registry_artifact_path(model_override)
         if not override_path.is_file():
             raise ValueError(f"INFERENCE_MODEL_PATH does not exist: {override_path}")
         model_version, model_version_source = _derive_override_model_version(override_path)

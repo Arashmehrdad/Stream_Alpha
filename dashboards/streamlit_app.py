@@ -80,6 +80,24 @@ def _render_refreshing_console(
     settings: Settings,
     trading_config: PaperTradingConfig,
 ) -> None:
+    snapshot = st.session_state.get(_SNAPSHOT_SESSION_KEY)
+    if snapshot is None:
+        snapshot = _refresh_dashboard_snapshot(
+            settings=settings,
+            trading_config=trading_config,
+        )
+    runtime_profile = resolve_display_runtime_profile(snapshot=snapshot)
+    render_runtime_profile_badge(
+        runtime_profile=runtime_profile,
+        execution_mode=trading_config.execution.mode,
+    )
+    with st.sidebar:
+        _render_sidebar(
+            settings=settings,
+            trading_config=trading_config,
+            runtime_profile=runtime_profile,
+        )
+
     refresh_seconds = max(int(settings.dashboard.refresh_seconds), 0)
     fragment_api = getattr(st, "fragment", None)
 
@@ -147,7 +165,6 @@ def _render_dynamic_console(
         trading_config=trading_config,
     )
 
-    runtime_profile = resolve_display_runtime_profile(snapshot=snapshot)
     reference_time = max(snapshot.api_health.checked_at, snapshot.database.checked_at)
     incidents = build_operator_incident_rows(
         snapshot=snapshot,
@@ -263,17 +280,6 @@ def _render_dynamic_console(
         trading_config=trading_config,
     )
     trader_freshness = build_trader_freshness(snapshot.database.engine_states)
-
-    render_runtime_profile_badge(
-        runtime_profile=runtime_profile,
-        execution_mode=trading_config.execution.mode,
-    )
-    with st.sidebar:
-        _render_sidebar(
-            settings=settings,
-            trading_config=trading_config,
-            runtime_profile=runtime_profile,
-        )
 
     render_operator_banner(banner)
     render_live_critical_state_strip(live_critical_strip)

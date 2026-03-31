@@ -107,6 +107,24 @@ def test_load_model_artifact_translates_windows_registry_paths_for_runtime_porta
     assert artifact.model_version_source == "REGISTRY_CURRENT"
 
 
+def test_load_model_artifact_translates_windows_override_paths_for_runtime_portability(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Explicit override paths should resolve Windows host paths inside Linux runtimes."""
+    fake_repo_root = tmp_path / "workspace"
+    artifact_path = _write_artifact(fake_repo_root)
+    monkeypatch.setattr(registry_module, "repo_root", lambda: fake_repo_root)
+
+    artifact = load_model_artifact(
+        "Z:\\remote\\Stream_Alpha\\artifacts\\training\\m3\\20260319T223002Z\\model.joblib"
+    )
+
+    assert Path(artifact.model_artifact_path) == artifact_path.resolve()
+    assert artifact.model_version == "m3-20260319T223002Z"
+    assert artifact.model_version_source == "RUN_DIR_DERIVED"
+
+
 def test_load_model_artifact_rejects_malformed_payload(tmp_path: Path) -> None:
     """Missing required keys should fail validation."""
     artifact_path = tmp_path / "bad.joblib"
