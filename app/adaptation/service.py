@@ -1,6 +1,6 @@
 """Read and apply bounded M19 adaptation without changing core authorities."""
 
-# pylint: disable=too-many-arguments,too-many-locals
+# pylint: disable=too-many-arguments,too-many-locals,too-many-lines
 
 from __future__ import annotations
 
@@ -195,11 +195,27 @@ class AdaptationService:
             regime_label=regime_label,
             limit=1,
         )
+        performance = await self.repository.load_adaptive_performance_windows(
+            execution_mode=execution_mode,
+            symbol=symbol,
+            regime_label=regime_label,
+            limit=1,
+        )
         active_profile = await self.repository.load_active_adaptive_profile(
             execution_mode=execution_mode,
             symbol=symbol,
             regime_label=regime_label,
         )
+        evidence_backed = bool(drift or performance)
+        reason_codes = (
+            ["ACTIVE_PROFILE_PRESENT"]
+            if active_profile is not None
+            else ["NO_ACTIVE_PROFILE"]
+        )
+        if evidence_backed:
+            reason_codes.append("RUNTIME_EVIDENCE_PRESENT")
+        else:
+            reason_codes.append("NO_RUNTIME_EVIDENCE")
         return AdaptationSummaryResponse(
             enabled=self.config.enabled,
             active_profile_count=sum(1 for item in profiles if item.status == "ACTIVE"),
@@ -207,15 +223,22 @@ class AdaptationService:
                 None if active_profile is None else active_profile.profile_id
             ),
             adaptation_status=("ACTIVE" if active_profile is not None else "IDLE"),
+            evidence_backed=evidence_backed,
             latest_drift_status=None if not drift else drift[0].status,
+            latest_drift_updated_at=None if not drift else drift[0].updated_at,
             latest_promotion_decision=(
                 None if not promotions else promotions[0].decision
             ),
-            reason_codes=(
-                ["ACTIVE_PROFILE_PRESENT"]
-                if active_profile is not None
-                else ["NO_ACTIVE_PROFILE"]
+            latest_performance_window_id=(
+                None if not performance else performance[0].window_id
             ),
+            latest_performance_trade_count=(
+                None if not performance else performance[0].trade_count
+            ),
+            latest_performance_created_at=(
+                None if not performance else performance[0].created_at
+            ),
+            reason_codes=reason_codes,
         )
 
     async def drift(
@@ -374,7 +397,7 @@ class AdaptationService:
         interval_minutes: int,
         symbols: tuple[str, ...],
         system_reliability=None,
-    ) -> None:
+        ) -> None:
         """Persist additive M19 runtime truth from existing feature, trade, and trace evidence."""
         if not self.config.enabled or not await self._ensure_repository_ready():
             return
@@ -393,16 +416,27 @@ class AdaptationService:
         ):
             return
         evaluated_at = utc_now()
-        await self._persist_runtime_drift_states(
+        drift_items = await self._persist_runtime_drift_states(
             source_exchange=source_exchange,
             interval_minutes=interval_minutes,
             symbols=symbols,
         )
-        await self._persist_runtime_performance_windows(
+        performance_items = await self._persist_runtime_performance_windows(
             service_name=service_name,
             execution_mode=execution_mode,
             system_reliability=system_reliability,
             evaluated_at=evaluated_at,
+        )
+        self._write_drift_summary_artifact(
+            symbol="ALL",
+            regime_label="ALL",
+            items=drift_items,
+        )
+        self._write_performance_summary_artifact(
+            execution_mode=execution_mode,
+            symbol="ALL",
+            regime_label="ALL",
+            items=performance_items,
         )
 
     def write_profile_artifacts(
@@ -511,7 +545,7 @@ class AdaptationService:
         source_exchange: str,
         interval_minutes: int,
         symbols: tuple[str, ...],
-    ) -> None:
+    ) -> list[AdaptiveDriftRecord]:
         reference_count = self.config.drift.minimum_reference_samples
         live_count = self.config.drift.minimum_live_samples
         required_rows = reference_count + live_count
@@ -522,6 +556,7 @@ class AdaptationService:
         live_starts = []
         live_ends = []
         included_symbols: list[str] = []
+        saved_records: list[AdaptiveDriftRecord] = []
 
         for symbol in symbols:
             rows = await self.repository.load_feature_rows_for_adaptation(
@@ -561,6 +596,7 @@ class AdaptationService:
             if drift_record is None:
                 continue
             await self.repository.save_adaptive_drift_state(drift_record)
+            saved_records.append(drift_record)
             for feature_name, values in reference_series.items():
                 aggregate_reference[feature_name].extend(values)
             for feature_name, values in live_series.items():
@@ -572,7 +608,7 @@ class AdaptationService:
             included_symbols.append(symbol)
 
         if not included_symbols:
-            return
+            return saved_records
         aggregate_record = self._build_drift_record_from_series(
             symbol="ALL",
             regime_label="ALL",
@@ -586,6 +622,8 @@ class AdaptationService:
         )
         if aggregate_record is not None:
             await self.repository.save_adaptive_drift_state(aggregate_record)
+            saved_records.append(aggregate_record)
+        return saved_records
 
     async def _persist_runtime_performance_windows(
         self,
@@ -594,7 +632,7 @@ class AdaptationService:
         execution_mode: str,
         system_reliability,
         evaluated_at,
-    ) -> None:
+    ) -> list[AdaptivePerformanceWindow]:
         positions = await self.repository.load_positions(
             service_name=service_name,
             execution_mode=execution_mode,
@@ -607,7 +645,7 @@ class AdaptationService:
             and self._position_event_time(position) is not None
         ]
         if not closed_positions:
-            return
+            return []
         earliest_event_time = min(
             self._position_event_time(position) for position in closed_positions
         )
@@ -621,6 +659,7 @@ class AdaptationService:
             execution_mode=execution_mode,
             since=earliest_event_time,
         )
+        saved_windows: list[AdaptivePerformanceWindow] = []
         for symbol_scope, regime_scope, scoped_positions in self._performance_scopes(
             closed_positions
         ):
@@ -656,29 +695,30 @@ class AdaptationService:
                     if window.window_start <= row["event_time"] <= window.window_end
                     and row["slippage_sample_count"] > 0
                 )
-                await self.repository.save_adaptive_performance_window(
-                    window.model_copy(
-                        update={
-                            "precision": (
-                                0.0
-                                if comparable_count == 0
-                                else positive_count / comparable_count
-                            ),
-                            "blocked_trade_rate": (
-                                0.0 if decision_count == 0 else blocked_count / decision_count
-                            ),
-                            "shadow_divergence_rate": 0.0,
-                            "health_context": self._performance_health_context(
-                                system_reliability=system_reliability,
-                                decision_count=decision_count,
-                                blocked_count=blocked_count,
-                                comparable_count=comparable_count,
-                                positive_count=positive_count,
-                                slippage_sample_count=slippage_sample_count,
-                            ),
-                        }
-                    )
+                persisted_window = window.model_copy(
+                    update={
+                        "precision": (
+                            0.0
+                            if comparable_count == 0
+                            else positive_count / comparable_count
+                        ),
+                        "blocked_trade_rate": (
+                            0.0 if decision_count == 0 else blocked_count / decision_count
+                        ),
+                        "shadow_divergence_rate": 0.0,
+                        "health_context": self._performance_health_context(
+                            system_reliability=system_reliability,
+                            decision_count=decision_count,
+                            blocked_count=blocked_count,
+                            comparable_count=comparable_count,
+                            positive_count=positive_count,
+                            slippage_sample_count=slippage_sample_count,
+                        ),
+                    }
                 )
+                await self.repository.save_adaptive_performance_window(persisted_window)
+                saved_windows.append(persisted_window)
+        return saved_windows
 
     def _split_drift_windows(
         self,

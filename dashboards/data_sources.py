@@ -74,9 +74,16 @@ class ApiHealthSnapshot:
     startup_safety_reason_code: str | None = None
     active_adaptation_count: int | None = None
     adaptation_status: str | None = None
+    adaptation_evidence_backed: bool | None = None
+    ensemble_profile_id: str | None = None
+    ensemble_status: str | None = None
+    ensemble_candidate_count: int | None = None
+    ensemble_roster_status: str | None = None
+    ensemble_roster_reason_codes: tuple[str, ...] = field(default_factory=tuple)
     active_continual_learning_profile_id: str | None = None
     continual_learning_status: str | None = None
     continual_learning_drift_cap_status: str | None = None
+    continual_learning_evidence_backed: bool | None = None
     error: str | None = None
 
 
@@ -111,8 +118,17 @@ class SignalSnapshot:
     adaptive_size_multiplier: float | None = None
     drift_status: str | None = None
     frozen_by_health_gate: bool = False
+    ensemble_profile_id: str | None = None
+    ensemble_active: bool = False
+    ensemble_candidate_count: int | None = None
+    ensemble_fallback_reason: str | None = None
+    ensemble_agreement_band: str | None = None
+    ensemble_effective_confidence: float | None = None
+    ensemble_roster_status: str | None = None
+    ensemble_roster_reason_codes: tuple[str, ...] = field(default_factory=tuple)
     continual_learning_status: str | None = None
     continual_learning_profile_id: str | None = None
+    continual_learning_evidence_backed: bool | None = None
     continual_learning_frozen: bool = False
     continual_learning_candidate_type: str | None = None
     continual_learning_promotion_stage: str | None = None
@@ -447,9 +463,14 @@ class AdaptationSummarySnapshot:
     active_profile_count: int = 0
     active_profile_id: str | None = None
     adaptation_status: str | None = None
+    evidence_backed: bool = False
     frozen_by_health_gate: bool = False
     latest_drift_status: str | None = None
+    latest_drift_updated_at: datetime | None = None
     latest_promotion_decision: str | None = None
+    latest_performance_window_id: str | None = None
+    latest_performance_trade_count: int | None = None
+    latest_performance_created_at: datetime | None = None
     reason_codes: tuple[str, ...] = field(default_factory=tuple)
     error: str | None = None
 
@@ -533,7 +554,9 @@ class ContinualLearningSummarySnapshot:
     active_profile_count: int = 0
     active_profile_id: str | None = None
     continual_learning_status: str | None = None
+    evidence_backed: bool = False
     latest_drift_cap_status: str | None = None
+    latest_drift_cap_updated_at: datetime | None = None
     latest_promotion_decision: str | None = None
     latest_event_type: str | None = None
     reason_codes: tuple[str, ...] = field(default_factory=tuple)
@@ -909,6 +932,34 @@ class DashboardDataSources:
                 if payload.get("adaptation_status") is None
                 else str(payload["adaptation_status"])
             ),
+            adaptation_evidence_backed=(
+                None
+                if payload.get("adaptation_evidence_backed") is None
+                else bool(payload["adaptation_evidence_backed"])
+            ),
+            ensemble_profile_id=(
+                None
+                if payload.get("ensemble_profile_id") is None
+                else str(payload["ensemble_profile_id"])
+            ),
+            ensemble_status=(
+                None
+                if payload.get("ensemble_status") is None
+                else str(payload["ensemble_status"])
+            ),
+            ensemble_candidate_count=(
+                None
+                if payload.get("ensemble_candidate_count") is None
+                else int(payload["ensemble_candidate_count"])
+            ),
+            ensemble_roster_status=(
+                None
+                if payload.get("ensemble_roster_status") is None
+                else str(payload["ensemble_roster_status"])
+            ),
+            ensemble_roster_reason_codes=tuple(
+                str(item) for item in payload.get("ensemble_roster_reason_codes", [])
+            ),
             active_continual_learning_profile_id=(
                 None
                 if payload.get("active_continual_learning_profile_id") is None
@@ -923,6 +974,11 @@ class DashboardDataSources:
                 None
                 if payload.get("continual_learning_drift_cap_status") is None
                 else str(payload["continual_learning_drift_cap_status"])
+            ),
+            continual_learning_evidence_backed=(
+                None
+                if payload.get("continual_learning_evidence_backed") is None
+                else bool(payload["continual_learning_evidence_backed"])
             ),
             error=None if response.status_code == 200 else f"HTTP {response.status_code}",
         )
@@ -1562,6 +1618,40 @@ def _signal_from_payload(
             else str(payload["drift_status"])
         ),
         frozen_by_health_gate=bool(payload.get("frozen_by_health_gate", False)),
+        ensemble_profile_id=(
+            None
+            if payload.get("ensemble_profile_id") is None
+            else str(payload["ensemble_profile_id"])
+        ),
+        ensemble_active=bool(payload.get("ensemble_active", False)),
+        ensemble_candidate_count=(
+            None
+            if payload.get("ensemble_candidate_count") is None
+            else int(payload["ensemble_candidate_count"])
+        ),
+        ensemble_fallback_reason=(
+            None
+            if payload.get("ensemble_fallback_reason") is None
+            else str(payload["ensemble_fallback_reason"])
+        ),
+        ensemble_agreement_band=(
+            None
+            if payload.get("ensemble_agreement_band") is None
+            else str(payload["ensemble_agreement_band"])
+        ),
+        ensemble_effective_confidence=(
+            None
+            if payload.get("ensemble_effective_confidence") is None
+            else float(payload["ensemble_effective_confidence"])
+        ),
+        ensemble_roster_status=(
+            None
+            if payload.get("ensemble_roster_status") is None
+            else str(payload["ensemble_roster_status"])
+        ),
+        ensemble_roster_reason_codes=tuple(
+            str(item) for item in payload.get("ensemble_roster_reason_codes", [])
+        ),
         continual_learning_status=(
             None
             if payload.get("continual_learning_status") is None
@@ -1571,6 +1661,11 @@ def _signal_from_payload(
             None
             if payload.get("continual_learning_profile_id") is None
             else str(payload["continual_learning_profile_id"])
+        ),
+        continual_learning_evidence_backed=(
+            None
+            if payload.get("continual_learning_evidence_backed") is None
+            else bool(payload["continual_learning_evidence_backed"])
         ),
         continual_learning_frozen=bool(payload.get("continual_learning_frozen", False)),
         continual_learning_candidate_type=(
@@ -1640,6 +1735,14 @@ def _adaptation_summary_from_payload(
     *,
     checked_at: datetime,
 ) -> AdaptationSummarySnapshot:
+    latest_drift_updated_at = None
+    if isinstance(payload.get("latest_drift_updated_at"), str):
+        latest_drift_updated_at = parse_rfc3339(str(payload["latest_drift_updated_at"]))
+    latest_performance_created_at = None
+    if isinstance(payload.get("latest_performance_created_at"), str):
+        latest_performance_created_at = parse_rfc3339(
+            str(payload["latest_performance_created_at"])
+        )
     return AdaptationSummarySnapshot(
         available=True,
         checked_at=checked_at,
@@ -1655,17 +1758,30 @@ def _adaptation_summary_from_payload(
             if payload.get("adaptation_status") is None
             else str(payload["adaptation_status"])
         ),
+        evidence_backed=bool(payload.get("evidence_backed", False)),
         frozen_by_health_gate=bool(payload.get("frozen_by_health_gate", False)),
         latest_drift_status=(
             None
             if payload.get("latest_drift_status") is None
             else str(payload["latest_drift_status"])
         ),
+        latest_drift_updated_at=latest_drift_updated_at,
         latest_promotion_decision=(
             None
             if payload.get("latest_promotion_decision") is None
             else str(payload["latest_promotion_decision"])
         ),
+        latest_performance_window_id=(
+            None
+            if payload.get("latest_performance_window_id") is None
+            else str(payload["latest_performance_window_id"])
+        ),
+        latest_performance_trade_count=(
+            None
+            if payload.get("latest_performance_trade_count") is None
+            else int(payload["latest_performance_trade_count"])
+        ),
+        latest_performance_created_at=latest_performance_created_at,
         reason_codes=tuple(str(item) for item in payload.get("reason_codes", [])),
     )
 
@@ -1748,6 +1864,11 @@ def _continual_learning_summary_from_payload(
     checked_at: datetime,
     aggregated_scope: bool,
 ) -> ContinualLearningSummarySnapshot:
+    latest_drift_cap_updated_at = None
+    if isinstance(payload.get("latest_drift_cap_updated_at"), str):
+        latest_drift_cap_updated_at = parse_rfc3339(
+            str(payload["latest_drift_cap_updated_at"])
+        )
     return ContinualLearningSummarySnapshot(
         available=True,
         checked_at=checked_at,
@@ -1763,11 +1884,13 @@ def _continual_learning_summary_from_payload(
             if payload.get("continual_learning_status") is None
             else str(payload["continual_learning_status"])
         ),
+        evidence_backed=bool(payload.get("evidence_backed", False)),
         latest_drift_cap_status=(
             None
             if payload.get("latest_drift_cap_status") is None
             else str(payload["latest_drift_cap_status"])
         ),
+        latest_drift_cap_updated_at=latest_drift_cap_updated_at,
         latest_promotion_decision=(
             None
             if payload.get("latest_promotion_decision") is None

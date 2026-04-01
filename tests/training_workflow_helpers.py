@@ -11,6 +11,10 @@ from typing import Any
 import joblib
 
 
+AUTHORITATIVE_TEST_MODEL_NAME = "authoritative_candidate_fixture"
+SECONDARY_TEST_MODEL_NAME = "secondary_candidate_fixture"
+
+
 class SerializableProbabilityModel:
     """Tiny serializable classifier stub with binary probabilities."""
 
@@ -36,10 +40,7 @@ def write_workflow_config(config_path: Path) -> Path:
         "first_train_fraction": 0.5,
         "interval_column": "interval_begin",
         "label_horizon_candles": 3,
-        "models": {
-            "logistic_regression": {"max_iter": 100},
-            "hist_gradient_boosting": {"max_iter": 10},
-        },
+        "models": {},
         "numeric_feature_columns": ["close_price", "log_return_1"],
         "purge_gap_candles": 3,
         "round_trip_fee_bps": 20,
@@ -58,7 +59,7 @@ def write_run_dir(
     base_dir: Path,
     run_name: str,
     *,
-    model_name: str = "logistic_regression",
+    model_name: str = AUTHORITATIVE_TEST_MODEL_NAME,
     mean_long_only_net_value_proxy: float,
     directional_accuracy: float,
     brier_score: float,
@@ -79,6 +80,11 @@ def write_run_dir(
         if expanded_feature_names is None
         else expanded_feature_names
     )
+    secondary_model_name = (
+        SECONDARY_TEST_MODEL_NAME
+        if model_name != SECONDARY_TEST_MODEL_NAME
+        else "tertiary_candidate_fixture"
+    )
     run_dir = base_dir / run_name
     run_dir.mkdir(parents=True, exist_ok=False)
 
@@ -89,10 +95,7 @@ def write_run_dir(
         "first_train_fraction": 0.5,
         "interval_column": "interval_begin",
         "label_horizon_candles": 3,
-        "models": {
-            "logistic_regression": {"max_iter": 100},
-            "hist_gradient_boosting": {"max_iter": 10},
-        },
+        "models": {},
         "numeric_feature_columns": ["close_price", "log_return_1"],
         "purge_gap_candles": 3,
         "round_trip_fee_bps": 20,
@@ -196,7 +199,7 @@ def write_run_dir(
                 accuracy=directional_accuracy,
                 brier=brier_score,
             ),
-            "hist_gradient_boosting": _metrics_payload(
+            secondary_model_name: _metrics_payload(
                 mean_long_only_net_value_proxy - 0.001,
                 accuracy=directional_accuracy - 0.02,
                 brier=brier_score + 0.01,

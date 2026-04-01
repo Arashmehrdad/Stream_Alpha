@@ -11,6 +11,7 @@ from app.common.time import to_rfc3339, utc_now
 from app.ensemble.config import default_ensemble_config_path, load_ensemble_config
 from app.ensemble.schemas import (
     EnsembleEvaluationSliceMetrics,
+    EnsembleProfileRecord,
     EnsembleResearchCandidate,
     EnsembleResearchResult,
     EnsembleRosterSelection,
@@ -65,6 +66,206 @@ class EnsembleResearchRunOutput:
     selection: EnsembleRosterSelection
 
 
+def build_m20_candidate_inventory_truth(  # pylint: disable=too-many-locals
+    candidate_results: list[EnsembleResearchResult],
+    *,
+    active_profile: EnsembleProfileRecord | None = None,
+) -> dict[str, Any]:
+    """Summarize current Packet 2 truth even when no stronger roster is selectable."""
+    generalists = [
+        result
+        for result in candidate_results
+        if result.candidate.candidate_role == GENERALIST
+        and result.candidate.model_family in {"AUTOGLUON", "REGISTRY_CHAMPION_BASELINE"}
+    ]
+    trend_specialists = [
+        result
+        for result in candidate_results
+        if result.candidate.candidate_role == TREND_SPECIALIST
+        and result.candidate.model_family in SPECIALIST_FAMILIES
+    ]
+    range_specialists = [
+        result
+        for result in candidate_results
+        if result.candidate.candidate_role == RANGE_SPECIALIST
+        and result.candidate.model_family in SPECIALIST_FAMILIES
+    ]
+    best_generalist = (
+        None if not generalists else _select_best_result(generalists, SLICE_ALL)
+    )
+    best_trend = (
+        None
+        if not trend_specialists
+        else _select_best_result(trend_specialists, SLICE_TREND_COMBINED)
+    )
+    best_range = (
+        None if not range_specialists else _select_best_result(range_specialists, SLICE_RANGE)
+    )
+    generalist_packet2_all_slice_net = (
+        None
+        if best_generalist is None
+        else best_generalist.metrics_by_slice[SLICE_ALL].net_pnl_after_fees_slippage
+    )
+    generalist_authoritative_net_metric = _authoritative_generalist_net_metric(
+        best_generalist
+    )
+    generalist_economics_positive = (
+        generalist_authoritative_net_metric is not None
+        and generalist_authoritative_net_metric > 0.0
+    )
+    trend_value_positive = (
+        best_trend is not None
+        and best_trend.metrics_by_slice[SLICE_TREND_COMBINED].net_pnl_after_fees_slippage
+        > 0.0
+    )
+    range_value_positive = (
+        best_range is not None
+        and best_range.metrics_by_slice[SLICE_RANGE].net_pnl_after_fees_slippage > 0.0
+    )
+    role_diversity_complete = bool(best_generalist and best_trend and best_range)
+    regime_slice_value_complete = bool(trend_value_positive and range_value_positive)
+    economic_acceptance_complete = bool(generalist_economics_positive)
+    stronger_specialist_roster_supported = bool(
+        role_diversity_complete
+        and regime_slice_value_complete
+        and economic_acceptance_complete
+    )
+    reason_codes: list[str] = []
+    if best_generalist is None:
+        reason_codes.append("GENERALIST_ROLE_MISSING")
+    else:
+        reason_codes.append("GENERALIST_ROLE_PRESENT")
+    if generalist_authoritative_net_metric is None:
+        reason_codes.append("GENERALIST_ECONOMICS_UNAVAILABLE")
+    elif not generalist_economics_positive:
+        reason_codes.append("GENERALIST_ECONOMICS_NEGATIVE_AFTER_COSTS")
+    if best_trend is None:
+        reason_codes.append("TREND_SPECIALIST_ROLE_MISSING")
+    elif not trend_value_positive:
+        reason_codes.append("TREND_SPECIALIST_REGIME_VALUE_UNPROVEN")
+    if best_range is None:
+        reason_codes.append("RANGE_SPECIALIST_ROLE_MISSING")
+    elif not range_value_positive:
+        reason_codes.append("RANGE_SPECIALIST_REGIME_VALUE_UNPROVEN")
+    if len(candidate_results) < 3:
+        reason_codes.append("CANDIDATE_BREADTH_NARROW")
+    if stronger_specialist_roster_supported:
+        roster_status = "ACTIVE_STRONG" if active_profile is not None else "READY"
+        reason_codes.append("STRONGER_SPECIALIST_ROSTER_SUPPORTED")
+    else:
+        roster_status = "ACTIVE_WEAK" if active_profile is not None else "INSUFFICIENT"
+        reason_codes.append("STRONGER_SPECIALIST_ROSTER_UNSUPPORTED")
+
+    active_roster_enabled = 0
+    active_roster_roles: list[str] = []
+    if active_profile is not None:
+        enabled_entries = [
+            item
+            for item in active_profile.candidate_roster_json
+            if bool(item.get("enabled", True))
+        ]
+        active_roster_enabled = len(enabled_entries)
+        active_roster_roles = sorted(
+            {
+                str(item.get("candidate_role", "")).strip()
+                for item in enabled_entries
+                if str(item.get("candidate_role", "")).strip()
+            }
+        )
+        if active_roster_enabled < 3:
+            reason_codes.append("ACTIVE_PROFILE_ROSTER_INCOMPLETE")
+
+    return make_json_safe(
+        {
+            "packet": "M20_PACKET_2",
+            "model_stack_after_autogluon_batch": {
+                "generalist_present_and_trained_now": best_generalist is not None,
+                "subsumed_indirectly_through_autogluon": [
+                    "XGBoost",
+                    "LightGBM",
+                    "CatBoost",
+                    "tabular MLP-like learners",
+                ],
+                "still_missing_for_specialist_purposes": [
+                    "TREND_SPECIALIST"
+                    if best_trend is None
+                    else None,
+                    "RANGE_SPECIALIST"
+                    if best_range is None
+                    else None,
+                ],
+            },
+            "candidate_inventory": {
+                "registry_candidate_count": len(candidate_results),
+                "eligible_role_counts": {
+                    GENERALIST: len(generalists),
+                    TREND_SPECIALIST: len(trend_specialists),
+                    RANGE_SPECIALIST: len(range_specialists),
+                },
+                "model_families": sorted(
+                    {result.candidate.model_family for result in candidate_results}
+                ),
+            },
+            "best_available_candidates": {
+                GENERALIST: (
+                    None if best_generalist is None else best_generalist.model_dump(mode="json")
+                ),
+                TREND_SPECIALIST: (
+                    None if best_trend is None else best_trend.model_dump(mode="json")
+                ),
+                RANGE_SPECIALIST: (
+                    None if best_range is None else best_range.model_dump(mode="json")
+                ),
+            },
+            "current_truth": {
+                "active_profile_id": (
+                    None if active_profile is None else active_profile.profile_id
+                ),
+                "active_roster_enabled_candidate_count": active_roster_enabled,
+                "active_roster_roles": active_roster_roles,
+                "generalist_packet2_all_slice_net_pnl_after_fees_slippage": (
+                    generalist_packet2_all_slice_net
+                ),
+                "generalist_authoritative_net_metric": (
+                    generalist_authoritative_net_metric
+                ),
+                "generalist_authoritative_metric_source": (
+                    "registry_winner_metrics.mean_long_only_net_value_proxy"
+                    if generalist_authoritative_net_metric is not None
+                    else None
+                ),
+                "role_diversity_complete": role_diversity_complete,
+                "regime_slice_value_complete": regime_slice_value_complete,
+                "economic_acceptance_complete": economic_acceptance_complete,
+                "stronger_specialist_roster_supported": (
+                    stronger_specialist_roster_supported
+                ),
+                "roster_status": roster_status,
+                "reason_codes": reason_codes,
+            },
+        }
+    )
+
+
+def build_profile_truth_refresh(
+    *,
+    active_profile: EnsembleProfileRecord,
+    candidate_results: list[EnsembleResearchResult],
+) -> EnsembleProfileRecord:
+    """Refresh the active profile evidence summary with current Packet 2 truth."""
+    return active_profile.model_copy(
+        update={
+            "evidence_summary_json": {
+                **dict(active_profile.evidence_summary_json),
+                "runtime_truth": build_m20_candidate_inventory_truth(
+                    candidate_results,
+                    active_profile=active_profile,
+                ),
+            }
+        }
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _EvaluatedRow:
     regime_label: str
@@ -99,7 +300,10 @@ def load_registry_research_candidates(
             artifact_path=str(entry["model_artifact_path"]),
             trained_at=str(entry["trained_at"]),
             scope_regimes=list(resolved_scope_regimes),
-            entry_metadata=metadata,
+            entry_metadata={
+                **metadata,
+                "winner_metrics": dict(entry.get("winner_metrics") or {}),
+            },
         )
         candidates[(candidate.model_version, candidate.model_family)] = candidate
 
@@ -122,6 +326,7 @@ def load_registry_research_candidates(
                 entry_metadata={
                     **metadata,
                     "source": "current_registry",
+                    "winner_metrics": dict(current_entry.get("winner_metrics") or {}),
                 },
             )
             candidates[(
@@ -503,6 +708,7 @@ def _build_evidence_summary(
                 RANGE_SPECIALIST: selected_range.model_dump(mode="json"),
             },
             "candidate_count": len(candidate_results),
+            "runtime_truth": build_m20_candidate_inventory_truth(candidate_results),
             "deferred_items": [
                 (
                     "Weighted aggregate ensemble explainability remains deferred "
@@ -523,6 +729,20 @@ def _primary_slice_for_role(candidate_role: str) -> str:
     raise ValueError(
         f"Unsupported candidate_role for Packet 2 selection: {candidate_role}"
     )
+
+
+def _authoritative_generalist_net_metric(
+    result: EnsembleResearchResult | None,
+) -> float | None:
+    if result is None:
+        return None
+    winner_metrics = result.candidate.entry_metadata.get("winner_metrics")
+    if not isinstance(winner_metrics, dict):
+        return None
+    metric = winner_metrics.get("mean_long_only_net_value_proxy")
+    if metric is None:
+        return None
+    return float(metric)
 
 
 

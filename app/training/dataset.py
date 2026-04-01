@@ -47,12 +47,12 @@ def _deduplicate(items: list[str]) -> list[str]:
     return ordered
 
 
-@dataclass(frozen=True, slots=True)
-class ModelHyperparameters:
-    """Explicit per-model hyperparameters loaded from the checked-in config."""
-
-    logistic_regression: dict[str, Any]
-    hist_gradient_boosting: dict[str, Any]
+LEGACY_ARCHIVED_MODEL_NAMES = frozenset(
+    {
+        "logistic_regression",
+        "hist_gradient_boosting",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,7 +73,7 @@ class TrainingConfig:  # pylint: disable=too-many-instance-attributes
     test_fraction: float
     round_trip_fee_bps: float
     artifact_root: str
-    models: ModelHyperparameters
+    models: dict[str, dict[str, Any]]
 
     @property
     def round_trip_fee_rate(self) -> float:
@@ -104,8 +104,8 @@ class TrainingConfig:  # pylint: disable=too-many-instance-attributes
                 "round_trip_fee_bps": self.round_trip_fee_bps,
                 "artifact_root": self.artifact_root,
                 "models": {
-                    "logistic_regression": self.models.logistic_regression,
-                    "hist_gradient_boosting": self.models.hist_gradient_boosting,
+                    model_name: dict(model_config)
+                    for model_name, model_config in sorted(self.models.items())
                 },
             }
         )
@@ -161,6 +161,22 @@ class TrainingDataset:
 def load_training_config(config_path: Path) -> TrainingConfig:
     """Load and validate the checked-in JSON config for the offline training run."""
     config_data = json.loads(config_path.read_text(encoding="utf-8"))
+    raw_models = dict(config_data.get("models", {}))
+    models = {
+        str(model_name): dict(model_config)
+        for model_name, model_config in raw_models.items()
+    }
+    legacy_models = sorted(
+        model_name
+        for model_name in models
+        if model_name in LEGACY_ARCHIVED_MODEL_NAMES
+    )
+    if legacy_models:
+        raise ValueError(
+            "Legacy archived sklearn models are no longer allowed in the "
+            "authoritative training configs: "
+            f"{legacy_models}"
+        )
     return TrainingConfig(
         source_table=str(config_data["source_table"]),
         symbols=tuple(str(symbol) for symbol in config_data["symbols"]),
@@ -180,10 +196,7 @@ def load_training_config(config_path: Path) -> TrainingConfig:
         test_fraction=float(config_data["test_fraction"]),
         round_trip_fee_bps=float(config_data["round_trip_fee_bps"]),
         artifact_root=str(config_data["artifact_root"]),
-        models=ModelHyperparameters(
-            logistic_regression=dict(config_data["models"]["logistic_regression"]),
-            hist_gradient_boosting=dict(config_data["models"]["hist_gradient_boosting"]),
-        ),
+        models=models,
     )
 
 

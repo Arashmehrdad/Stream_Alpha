@@ -46,12 +46,16 @@ class HealthResponse(BaseModel):
     startup_safety_reason_code: str | None = None
     active_adaptation_count: int | None = None
     adaptation_status: str | None = None
+    adaptation_evidence_backed: bool | None = None
     ensemble_profile_id: str | None = None
     ensemble_status: str | None = None
     ensemble_candidate_count: int | None = None
+    ensemble_roster_status: str | None = None
+    ensemble_roster_reason_codes: list[str] = Field(default_factory=list)
     active_continual_learning_profile_id: str | None = None
     continual_learning_status: str | None = None
     continual_learning_drift_cap_status: str | None = None
+    continual_learning_evidence_backed: bool | None = None
 
 
 class FeatureRowResponse(BaseModel):  # pylint: disable=too-many-instance-attributes
@@ -126,9 +130,12 @@ class PredictionResponse(BaseModel):
     ensemble_effective_confidence: float | None = None
     ensemble_candidate_count: int | None = None
     ensemble_fallback_reason: str | None = None
+    ensemble_roster_status: str | None = None
+    ensemble_roster_reason_codes: list[str] = Field(default_factory=list)
     ensemble: EnsembleContextPayload | None = None
     continual_learning_profile_id: str | None = None
     continual_learning_status: str | None = None
+    continual_learning_evidence_backed: bool | None = None
     continual_learning_frozen: bool = False
     continual_learning: ContinualLearningContextPayload | None = None
 
@@ -182,9 +189,12 @@ class SignalResponse(BaseModel):
     ensemble_effective_confidence: float | None = None
     ensemble_candidate_count: int | None = None
     ensemble_fallback_reason: str | None = None
+    ensemble_roster_status: str | None = None
+    ensemble_roster_reason_codes: list[str] = Field(default_factory=list)
     ensemble: EnsembleContextPayload | None = None
     continual_learning_profile_id: str | None = None
     continual_learning_status: str | None = None
+    continual_learning_evidence_backed: bool | None = None
     continual_learning_frozen: bool = False
     continual_learning: ContinualLearningContextPayload | None = None
 

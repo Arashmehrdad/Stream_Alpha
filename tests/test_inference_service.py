@@ -14,6 +14,7 @@ from app.continual_learning.schemas import (
     ContinualLearningContextPayload,
     ContinualLearningProfileRecord,
     ContinualLearningPromoteProfileRequest,
+    ContinualLearningSummaryResponse,
     ContinualLearningRollbackRequest,
     ContinualLearningWorkflowResponse,
 )
@@ -149,7 +150,17 @@ class RecordingContinualLearningService:
         )
 
     async def summary(self, **_kwargs):
-        raise AssertionError("Not used in this focused test file")
+        return ContinualLearningSummaryResponse(
+            enabled=True,
+            active_profile_count=1,
+            active_profile_id="cl-profile-1",
+            continual_learning_status="ACTIVE",
+            evidence_backed=True,
+            active_candidate_type="CALIBRATION_OVERLAY",
+            latest_drift_cap_status="WATCH",
+            latest_promotion_decision="HOLD",
+            reason_codes=["ACTIVE_PROFILE_PRESENT", "DRIFT_CAP_EVIDENCE_PRESENT"],
+        )
 
     async def experiments(self, **_kwargs):
         raise AssertionError("Not used in this focused test file")

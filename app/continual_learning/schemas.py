@@ -334,8 +334,10 @@ class ContinualLearningSummaryResponse(BaseModel):
     active_profile_count: int
     active_profile_id: str | None = None
     continual_learning_status: str
+    evidence_backed: bool = False
     active_candidate_type: ContinualLearningCandidateType | None = None
     latest_drift_cap_status: ContinualLearningDriftCapStatus | None = None
+    latest_drift_cap_updated_at: datetime | None = None
     latest_promotion_decision: ContinualLearningDecisionType | None = None
     latest_event_type: str | None = None
     reason_codes: list[str] = Field(default_factory=list)

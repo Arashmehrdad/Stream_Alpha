@@ -813,6 +813,7 @@ def _render_adaptation_section(*, snapshot) -> None:
             {"label": "Execution mode", "value": snapshot.api_health.runtime_profile or "-"},
             {"label": "Active profile", "value": summary.active_profile_id or "-"},
             {"label": "Adaptation status", "value": summary.adaptation_status or "-"},
+            {"label": "Evidence-backed", "value": str(summary.evidence_backed)},
             {
                 "label": "Freeze gate",
                 "value": str(summary.frozen_by_health_gate),
@@ -838,6 +839,9 @@ def _render_adaptation_section(*, snapshot) -> None:
                 "current_execution_mode": snapshot.api_health.runtime_profile,
                 "active_profile": summary.active_profile_id,
                 "drift_status": summary.latest_drift_status,
+                "evidence_backed": summary.evidence_backed,
+                "latest_performance_window": summary.latest_performance_window_id,
+                "latest_performance_trade_count": summary.latest_performance_trade_count,
                 "latest_promotion": summary.latest_promotion_decision,
                 "freeze_gate": summary.frozen_by_health_gate,
                 "reason_codes": ", ".join(summary.reason_codes),
@@ -982,6 +986,10 @@ def _render_continual_learning_section(*, snapshot) -> None:
                 "value": summary.latest_drift_cap_status or "-",
             },
             {
+                "label": "Evidence-backed",
+                "value": str(summary.evidence_backed),
+            },
+            {
                 "label": "Rollback target",
                 "value": rollback_target or "-",
                 "detail": "Shown only when exactly one active profile is visible",
@@ -1050,6 +1058,7 @@ def _build_continual_learning_workflow_rows(*, snapshot) -> list[dict[str, objec
             "latest_promotion_decision": summary.latest_promotion_decision,
             "latest_event_type": summary.latest_event_type,
             "drift_cap_status": summary.latest_drift_cap_status,
+            "evidence_backed": summary.evidence_backed,
             "operator_note": "MANUAL_AND_GUARDED",
             "reason_codes": ", ".join(summary.reason_codes),
         }

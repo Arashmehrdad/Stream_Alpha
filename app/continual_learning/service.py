@@ -214,6 +214,7 @@ class ContinualLearningService:
         promotions = await self.repository.load_continual_learning_promotion_decisions(limit=1)
         events = await self.repository.load_continual_learning_events(limit=1)
         drift_status = None
+        drift_updated_at = None
         active_profile_id = None
         active_candidate_type = None
 
@@ -226,6 +227,7 @@ class ContinualLearningService:
                 regime_label=regime_label,
             )
             drift_status = _worst_drift_cap_status(matching_drift_caps)
+            drift_updated_at = _latest_drift_cap_updated_at(matching_drift_caps)
             if len(active_profiles) == 1:
                 active_profile_id = active_profiles[0].profile_id
                 active_candidate_type = active_profiles[0].candidate_type
@@ -244,6 +246,7 @@ class ContinualLearningService:
                 regime_label=regime_label,
             )
             drift_status = None if drift_cap is None else drift_cap.status
+            drift_updated_at = None if drift_cap is None else drift_cap.updated_at
 
         reason_codes: list[str] = []
         if aggregate_scope:
@@ -253,14 +256,21 @@ class ContinualLearningService:
             if active_profiles
             else "NO_ACTIVE_CONTINUAL_LEARNING_PROFILE"
         )
+        evidence_backed = drift_status is not None
+        if evidence_backed:
+            reason_codes.append("DRIFT_CAP_EVIDENCE_PRESENT")
+        else:
+            reason_codes.append("NO_DRIFT_CAP_EVIDENCE")
 
         summary = ContinualLearningSummaryResponse(
             enabled=self.config.enabled,
             active_profile_count=len(active_profiles),
             active_profile_id=active_profile_id,
             continual_learning_status=("ACTIVE" if active_profiles else "IDLE"),
+            evidence_backed=evidence_backed,
             active_candidate_type=active_candidate_type,
             latest_drift_cap_status=drift_status,
+            latest_drift_cap_updated_at=drift_updated_at,
             latest_promotion_decision=(
                 None if not promotions else promotions[0].decision
             ),
@@ -375,6 +385,7 @@ class ContinualLearningService:
         ):
             return
         seen_scopes: set[tuple[str, str]] = set()
+        saved_caps: list[ContinualLearningDriftCapRecord] = []
         for symbol_scope in ("ALL", *symbols):
             scope = (execution_mode, symbol_scope)
             if scope in seen_scopes:
@@ -387,13 +398,26 @@ class ContinualLearningService:
             if drift_state is None:
                 continue
             for candidate_type in self.config.candidate_types:
-                await self.repository.save_continual_learning_drift_cap(
-                    self._drift_cap_from_adaptive_state(
-                        drift_state=drift_state,
-                        execution_mode=execution_mode,
-                        candidate_type=candidate_type,
-                    )
+                drift_cap = self._drift_cap_from_adaptive_state(
+                    drift_state=drift_state,
+                    execution_mode=execution_mode,
+                    candidate_type=candidate_type,
                 )
+                await self.repository.save_continual_learning_drift_cap(drift_cap)
+                saved_caps.append(drift_cap)
+        self._write_drift_caps_summary_artifact(
+            execution_mode=execution_mode,
+            symbol="ALL",
+            regime_label="ALL",
+            items=saved_caps,
+        )
+        self._write_summary_artifact(
+            await self.summary(
+                execution_mode=execution_mode,
+                symbol="ALL",
+                regime_label="ALL",
+            )
+        )
 
     async def promotions(self, *, limit: int = 50) -> ContinualLearningPromotionsResponse:
         """Return the read-only continual-learning promotions payload."""
@@ -1123,3 +1147,14 @@ def _worst_drift_cap_status(
         "BREACHED": 2,
     }
     return max(drift_caps, key=lambda item: severity.get(item.status, -1)).status
+
+
+def _latest_drift_cap_updated_at(
+    drift_caps: list[ContinualLearningDriftCapRecord],
+):
+    if not drift_caps:
+        return None
+    timestamped_caps = [item for item in drift_caps if item.updated_at is not None]
+    if not timestamped_caps:
+        return None
+    return max(timestamped_caps, key=lambda item: item.updated_at).updated_at

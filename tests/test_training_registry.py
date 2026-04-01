@@ -4,7 +4,10 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+
+import pytest
 
 from app.training.compare import compare_run_to_current, write_comparison_artifact
 from app.training.promote import promote_run
@@ -145,3 +148,64 @@ def test_run_manifest_carries_economics_contract_and_acceptance(tmp_path: Path) 
     assert manifest["economics_contract"]["name"] == "LONG_ONLY_AFTER_COST_PROXY"
     assert manifest["acceptance"]["winner_after_cost_positive"] is False
     assert manifest["acceptance"]["meets_acceptance_target"] is False
+
+
+def test_promote_run_rejects_legacy_archived_sklearn_winner(tmp_path: Path) -> None:
+    """Legacy sklearn winners must not promote into the authoritative registry."""
+    run_dir = write_run_dir(
+        tmp_path / "m3",
+        "20260319T223002Z",
+        model_name="logistic_regression",
+        mean_long_only_net_value_proxy=0.001,
+        directional_accuracy=0.55,
+        brier_score=0.24,
+    )
+
+    with pytest.raises(ValueError, match="Legacy archived sklearn model"):
+        promote_run(
+            run_dir,
+            model_version="m3-20260319T223002Z",
+            registry_root=tmp_path / "registry",
+        )
+
+
+def test_promote_run_bootstraps_over_legacy_archived_current_entry(tmp_path: Path) -> None:
+    """A new authoritative run should replace the archived current pointer without comparison."""
+    registry_root = tmp_path / "registry"
+    legacy_run = write_run_dir(
+        tmp_path / "legacy",
+        "20260319T223002Z",
+        model_name="logistic_regression",
+        mean_long_only_net_value_proxy=0.001,
+        directional_accuracy=0.55,
+        brier_score=0.24,
+    )
+    legacy_current = {
+        "model_version": "m3-20260319T223002Z",
+        "model_name": "logistic_regression",
+        "model_artifact_path": str((legacy_run / "model.joblib").resolve()),
+        "run_manifest_path": str((legacy_run / "run_manifest.json").resolve()),
+    }
+    (registry_root).mkdir(parents=True, exist_ok=True)
+    (registry_root / "current.json").write_text(
+        json.dumps(legacy_current, indent=2),
+        encoding="utf-8",
+    )
+
+    authoritative_run = write_run_dir(
+        tmp_path / "m3",
+        "20260401T120000Z",
+        model_name="autogluon_tabular",
+        mean_long_only_net_value_proxy=0.002,
+        directional_accuracy=0.58,
+        brier_score=0.22,
+    )
+
+    current = promote_run(
+        authoritative_run,
+        model_version="m3-20260401T120000Z",
+        registry_root=registry_root,
+    )
+
+    assert current["model_name"] == "autogluon_tabular"
+    assert current["model_version"] == "m3-20260401T120000Z"

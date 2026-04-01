@@ -204,9 +204,14 @@ class AdaptationSummaryResponse(BaseModel):
     active_profile_count: int
     active_profile_id: str | None = None
     adaptation_status: str
+    evidence_backed: bool = False
     frozen_by_health_gate: bool = False
     latest_drift_status: str | None = None
+    latest_drift_updated_at: datetime | None = None
     latest_promotion_decision: str | None = None
+    latest_performance_window_id: str | None = None
+    latest_performance_trade_count: int | None = None
+    latest_performance_created_at: datetime | None = None
     reason_codes: list[str] = Field(default_factory=list)
 
 

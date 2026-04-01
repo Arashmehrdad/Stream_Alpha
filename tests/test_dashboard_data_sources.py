@@ -1,6 +1,7 @@
 """Dashboard data-source tests for Stream Alpha M6."""
 
 # pylint: disable=duplicate-code,missing-function-docstring,too-few-public-methods
+# pylint: disable=too-many-lines,too-many-statements
 
 from __future__ import annotations
 
@@ -141,8 +142,8 @@ class _HealthyHttpClient:
                     "startup_safety_status": "PASSED",
                     "startup_safety_reason_code": "STARTUP_SAFETY_PASSED",
                     "model_loaded": True,
-                    "model_name": "logistic_regression",
-                    "model_artifact_path": "artifacts/training/m3/model.joblib",
+                    "model_name": "dynamic_ensemble",
+                    "model_artifact_path": None,
                     "regime_loaded": True,
                     "regime_run_id": "20260320T120000Z",
                     "regime_artifact_path": "artifacts/regime/m8/20260320T120000Z/thresholds.json",
@@ -151,9 +152,20 @@ class _HealthyHttpClient:
                     "health_overall_status": "HEALTHY",
                     "reason_code": "HEALTH_HEALTHY",
                     "freshness_status": "FRESH",
+                    "adaptation_evidence_backed": True,
+                    "ensemble_profile_id": "m20-paper-all-minimal-20260331T205941Z",
+                    "ensemble_status": "ACTIVE",
+                    "ensemble_candidate_count": 1,
+                    "ensemble_roster_status": "ACTIVE_WEAK",
+                    "ensemble_roster_reason_codes": [
+                        "GENERALIST_ROLE_PRESENT",
+                        "TREND_SPECIALIST_ROLE_MISSING",
+                        "RANGE_SPECIALIST_ROLE_MISSING",
+                    ],
                     "active_continual_learning_profile_id": "cl-profile-1",
                     "continual_learning_status": "ACTIVE",
                     "continual_learning_drift_cap_status": "WATCH",
+                    "continual_learning_evidence_backed": True,
                 },
             )
         if path == "/freshness":
@@ -358,6 +370,7 @@ class _HealthyHttpClient:
                     "active_profile_count": 1,
                     "active_profile_id": "profile-test-1",
                     "adaptation_status": "ACTIVE",
+                    "evidence_backed": True,
                     "frozen_by_health_gate": False,
                     "latest_drift_status": "WATCH",
                     "latest_promotion_decision": "HOLD",
@@ -446,6 +459,7 @@ class _HealthyHttpClient:
                     "active_profile_count": 1,
                     "active_profile_id": "cl-profile-1",
                     "continual_learning_status": "ACTIVE",
+                    "evidence_backed": True,
                     "active_candidate_type": "CALIBRATION_OVERLAY",
                     "latest_drift_cap_status": "WATCH",
                     "latest_promotion_decision": "HOLD",
@@ -554,7 +568,19 @@ class _HealthyHttpClient:
                 "reason_code": "HEALTH_HEALTHY",
                 "freshness_status": "FRESH",
                 "health_overall_status": "HEALTHY",
+                "ensemble_profile_id": "m20-paper-all-minimal-20260331T205941Z",
+                "ensemble_active": True,
+                "ensemble_candidate_count": 1,
+                "ensemble_agreement_band": "LOW",
+                "ensemble_effective_confidence": 0.62,
+                "ensemble_roster_status": "ACTIVE_WEAK",
+                "ensemble_roster_reason_codes": [
+                    "GENERALIST_ROLE_PRESENT",
+                    "TREND_SPECIALIST_ROLE_MISSING",
+                    "RANGE_SPECIALIST_ROLE_MISSING",
+                ],
                 "continual_learning_status": "ACTIVE",
+                "continual_learning_evidence_backed": True,
                 "continual_learning_profile_id": "cl-profile-1",
                 "continual_learning_frozen": True,
                 "continual_learning": {
@@ -642,9 +668,17 @@ def test_dashboard_snapshot_loads_adaptation_surfaces() -> None:
     assert snapshot.continual_learning.events[0].event_type == "PROFILE_ACTIVE"
     assert snapshot.api_health.regime_run_id == "20260320T120000Z"
     assert snapshot.api_health.health_overall_status == "HEALTHY"
+    assert snapshot.api_health.ensemble_status == "ACTIVE"
+    assert snapshot.api_health.ensemble_roster_status == "ACTIVE_WEAK"
+    assert "RANGE_SPECIALIST_ROLE_MISSING" in snapshot.api_health.ensemble_roster_reason_codes
+    assert snapshot.api_health.adaptation_evidence_backed is True
     assert snapshot.api_health.active_continual_learning_profile_id == "cl-profile-1"
     assert snapshot.api_health.continual_learning_status == "ACTIVE"
+    assert snapshot.api_health.continual_learning_evidence_backed is True
+    assert snapshot.signals[0].ensemble_profile_id == "m20-paper-all-minimal-20260331T205941Z"
+    assert snapshot.signals[0].ensemble_roster_status == "ACTIVE_WEAK"
     assert snapshot.signals[0].continual_learning_status == "ACTIVE"
+    assert snapshot.signals[0].continual_learning_evidence_backed is True
     assert snapshot.signals[0].continual_learning_profile_id == "cl-profile-1"
     assert snapshot.signals[0].continual_learning_candidate_type == "CALIBRATION_OVERLAY"
     assert snapshot.signals[0].continual_learning_frozen is True

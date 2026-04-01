@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app.training.dataset import DatasetSample, ModelHyperparameters, TrainingConfig
+import pytest
+
+from app.training.dataset import DatasetSample, TrainingConfig, load_training_config
 from app.training.service import (
     TrainingRegimeContext,
     _build_prediction_records,
@@ -56,10 +59,7 @@ def _config() -> TrainingConfig:
         test_fraction=0.1,
         round_trip_fee_bps=20.0,
         artifact_root="artifacts/training/m3",
-        models=ModelHyperparameters(
-            logistic_regression={"max_iter": 100},
-            hist_gradient_boosting={"max_iter": 10},
-        ),
+        models={},
     )
 
 
@@ -77,7 +77,7 @@ def test_build_prediction_records_use_long_only_trade_or_flat_contract() -> None
     )
 
     predictions = _build_prediction_records(
-        model_name="logistic_regression",
+        model_name="authoritative_candidate_fixture",
         fold_index=0,
         test_samples=[buy_sample, hold_sample],
         predicted_labels=[1, 0],
@@ -110,7 +110,7 @@ def test_regime_economics_and_summary_do_not_overstate_negative_winner() -> None
         label=0,
     )
     predictions = _build_prediction_records(
-        model_name="logistic_regression",
+        model_name="authoritative_candidate_fixture",
         fold_index=0,
         test_samples=[buy_sample, hold_sample],
         predicted_labels=[1, 0],
@@ -130,13 +130,13 @@ def test_regime_economics_and_summary_do_not_overstate_negative_winner() -> None
         config=_config(),
         dataset_manifest={"eligible_rows": 2, "unique_timestamps": 2},
         aggregate_summary={
-            "logistic_regression": {
+            "authoritative_candidate_fixture": {
                 "directional_accuracy": 0.55,
                 "brier_score": 0.24,
                 "mean_long_only_net_value_proxy": -0.0005,
                 "economics_by_regime": regime_economics,
             },
-            "hist_gradient_boosting": {
+            "secondary_candidate_fixture": {
                 "directional_accuracy": 0.54,
                 "brier_score": 0.25,
                 "mean_long_only_net_value_proxy": -0.0008,
@@ -162,10 +162,80 @@ def test_regime_economics_and_summary_do_not_overstate_negative_winner() -> None
             thresholds_by_symbol={},
             labels_by_row_id={},
         ),
-        winner_name="logistic_regression",
+        winner_name="authoritative_candidate_fixture",
         model_path=Path("artifacts/training/m3/model.joblib"),
     )
 
     assert summary["acceptance"]["winner_after_cost_positive"] is False
     assert summary["acceptance"]["meets_acceptance_target"] is False
     assert summary["winner"]["selection_rule"]["primary"] == "mean_long_only_net_value_proxy"
+
+
+def test_training_config_rejects_legacy_archived_sklearn_models(
+    tmp_path: Path,
+) -> None:
+    """Checked-in authoritative configs must reject legacy sklearn models."""
+    config_path = tmp_path / "training.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "source_table": "feature_ohlc",
+                "symbols": ["BTC/USD"],
+                "time_column": "as_of_time",
+                "interval_column": "interval_begin",
+                "close_column": "close_price",
+                "categorical_feature_columns": ["symbol"],
+                "numeric_feature_columns": ["close_price"],
+                "label_horizon_candles": 3,
+                "purge_gap_candles": 3,
+                "test_folds": 2,
+                "first_train_fraction": 0.5,
+                "test_fraction": 0.1,
+                "round_trip_fee_bps": 20.0,
+                "artifact_root": "artifacts/training/m3",
+                "models": {"logistic_regression": {"max_iter": 100}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Legacy archived sklearn models"):
+        load_training_config(config_path)
+
+
+def test_training_config_accepts_autogluon_tabular_authoritative_model(
+    tmp_path: Path,
+) -> None:
+    """Checked-in authoritative configs should allow the real AutoGluon path."""
+    config_path = tmp_path / "training.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "source_table": "feature_ohlc",
+                "symbols": ["BTC/USD"],
+                "time_column": "as_of_time",
+                "interval_column": "interval_begin",
+                "close_column": "close_price",
+                "categorical_feature_columns": ["symbol"],
+                "numeric_feature_columns": ["close_price"],
+                "label_horizon_candles": 3,
+                "purge_gap_candles": 3,
+                "test_folds": 2,
+                "first_train_fraction": 0.5,
+                "test_fraction": 0.1,
+                "round_trip_fee_bps": 20.0,
+                "artifact_root": "artifacts/training/m3",
+                "models": {
+                    "autogluon_tabular": {
+                        "presets": "medium_quality",
+                        "time_limit": 30,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_training_config(config_path)
+
+    assert tuple(config.models) == ("autogluon_tabular",)

@@ -9,16 +9,12 @@ from pathlib import Path
 from typing import Any, Callable
 
 import joblib
-from sklearn.ensemble import HistGradientBoostingClassifier
-from sklearn.feature_extraction import DictVectorizer
-from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
     brier_score_loss,
     confusion_matrix,
     precision_recall_fscore_support,
 )
-from sklearn.pipeline import Pipeline
 
 from app.common.serialization import make_json_safe
 from app.common.time import to_rfc3339, utc_now
@@ -31,8 +27,10 @@ from app.regime.service import (
     compute_percentile,
 )
 from app.training.baselines import PersistenceBaseline, build_dummy_classifier
+from app.training.autogluon import build_autogluon_tabular_classifier
 from app.training.dataset import (
     DatasetSample,
+    LEGACY_ARCHIVED_MODEL_NAMES,
     TrainingConfig,
     load_training_config,
     load_training_dataset,
@@ -43,7 +41,9 @@ from app.training.splits import minimum_required_unique_timestamps
 
 _REGIME_CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "regime.m8.json"
 _REQUIRED_PROMOTION_BASELINES = ("persistence_3", "dummy_most_frequent")
-_LEARNED_MODEL_NAMES = ("logistic_regression", "hist_gradient_boosting")
+_AUTHORITATIVE_MODEL_BUILDERS: dict[str, Callable[[dict[str, Any]], Any]] = {
+    "autogluon_tabular": build_autogluon_tabular_classifier,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +101,7 @@ class TrainingRegimeContext:
 def run_training(config_path: Path) -> Path:  # pylint: disable=too-many-locals
     """Run the full offline M3 training flow and save artifacts to disk."""
     config = load_training_config(config_path)
+    _validate_authoritative_model_stack(config)
     dataset = load_training_dataset(config)
     _validate_split_readiness(dataset, config)
     regime_context = _build_training_regime_context(dataset.samples, config)
@@ -212,29 +213,55 @@ def _create_artifact_dir(config: TrainingConfig) -> Path:
 def _build_model_factories(
     config: TrainingConfig,
 ) -> dict[str, Callable[[], Any]]:
-    return {
+    model_factories: dict[str, Callable[[], Any]] = {
         "persistence_3": _build_persistence_baseline,
         "dummy_most_frequent": build_dummy_classifier,
-        "logistic_regression": lambda: Pipeline(
-            steps=[
-                ("vectorizer", DictVectorizer(sparse=False)),
-                ("classifier", LogisticRegression(**config.models.logistic_regression)),
-            ]
-        ),
-        "hist_gradient_boosting": lambda: Pipeline(
-            steps=[
-                ("vectorizer", DictVectorizer(sparse=False)),
-                (
-                    "classifier",
-                    HistGradientBoostingClassifier(**config.models.hist_gradient_boosting),
-                ),
-            ]
-        ),
     }
+    for model_name, model_config in config.models.items():
+        builder = _AUTHORITATIVE_MODEL_BUILDERS.get(model_name)
+        if builder is None:
+            raise ValueError(
+                "No authoritative training builder exists yet for configured model(s): "
+                f"{sorted(config.models)}"
+            )
+        model_factories[model_name] = (
+            lambda builder=builder, model_config=dict(model_config): builder(model_config)
+        )
+    return model_factories
 
 
 def _build_persistence_baseline() -> PersistenceBaseline:
     return PersistenceBaseline()
+
+
+def _validate_authoritative_model_stack(config: TrainingConfig) -> None:
+    configured_models = tuple(sorted(config.models))
+    if not configured_models:
+        raise ValueError(
+            "No active authoritative trainable models are configured. "
+            "Legacy sklearn models have been removed from the main training path "
+            "and the intended primary stack is not implemented yet."
+        )
+    legacy_models = [
+        model_name
+        for model_name in configured_models
+        if model_name in LEGACY_ARCHIVED_MODEL_NAMES
+    ]
+    if legacy_models:
+        raise ValueError(
+            "Legacy archived sklearn models are no longer allowed in the "
+            f"authoritative training path: {legacy_models}"
+        )
+    unsupported_models = [
+        model_name
+        for model_name in configured_models
+        if model_name not in _AUTHORITATIVE_MODEL_BUILDERS
+    ]
+    if unsupported_models:
+        raise ValueError(
+            "No authoritative training builder exists yet for configured model(s): "
+            f"{unsupported_models}"
+        )
 
 
 def _partition_samples(
@@ -309,7 +336,7 @@ def _predict_for_model(
         return labels, probabilities
 
     train_labels = [sample.label for sample in train_samples]
-    if model_name in {"logistic_regression", "hist_gradient_boosting"} and len(
+    if model_name not in _REQUIRED_PROMOTION_BASELINES and len(
         set(train_labels)
     ) < 2:
         constant_label = int(train_labels[0])
@@ -462,7 +489,7 @@ def _select_winner(aggregate_summary: dict[str, dict[str, Any]]) -> str:
     learned_models = {
         name: metrics
         for name, metrics in aggregate_summary.items()
-        if name in _LEARNED_MODEL_NAMES
+        if name not in _REQUIRED_PROMOTION_BASELINES
     }
     if not learned_models:
         raise ValueError("No learned models were available for winner selection")
@@ -488,9 +515,22 @@ def _fit_winner_on_full_dataset(
 
     fitted_model = model_factories[winner_name]()
     fitted_model.fit([sample.features for sample in samples], train_labels)
-    vectorizer = fitted_model.named_steps["vectorizer"]
-    feature_names = [str(name) for name in vectorizer.get_feature_names_out()]
+    feature_names = _resolve_expanded_feature_names(
+        fitted_model=fitted_model,
+    )
     return fitted_model, feature_names
+
+
+def _resolve_expanded_feature_names(
+    *,
+    fitted_model: Any,
+) -> list[str]:
+    """Resolve stable expanded feature names across model families."""
+    if hasattr(fitted_model, "get_expanded_feature_names"):
+        names = fitted_model.get_expanded_feature_names()
+        return [str(name) for name in names]
+    vectorizer = fitted_model.named_steps["vectorizer"]
+    return [str(name) for name in vectorizer.get_feature_names_out()]
 
 
 def _save_model_artifact(
@@ -524,22 +564,29 @@ def _build_summary_payload(
     model_path: Path,
 ) -> dict[str, Any]:
     winner_metrics = aggregate_summary[winner_name]
+    learned_model_names = tuple(
+        model_name
+        for model_name in aggregate_summary
+        if model_name not in _REQUIRED_PROMOTION_BASELINES
+    )
     learned_models_positive_after_costs = [
         model_name
-        for model_name in _LEARNED_MODEL_NAMES
+        for model_name in learned_model_names
         if aggregate_summary[model_name]["mean_long_only_net_value_proxy"] > 0.0
     ]
     learned_models_beating_persistence = _learned_models_beating_after_costs(
         aggregate_summary,
         baseline_name="persistence_3",
+        learned_model_names=learned_model_names,
     )
     learned_models_beating_dummy = _learned_models_beating_after_costs(
         aggregate_summary,
         baseline_name="dummy_most_frequent",
+        learned_model_names=learned_model_names,
     )
     learned_models_beating_all_baselines = [
         model_name
-        for model_name in _LEARNED_MODEL_NAMES
+        for model_name in learned_model_names
         if all(
             aggregate_summary[model_name]["mean_long_only_net_value_proxy"]
             > aggregate_summary[baseline_name]["mean_long_only_net_value_proxy"]
@@ -739,11 +786,12 @@ def _learned_models_beating_after_costs(
     aggregate_summary: dict[str, dict[str, Any]],
     *,
     baseline_name: str,
+    learned_model_names: tuple[str, ...],
 ) -> list[str]:
     baseline_metric = aggregate_summary[baseline_name]["mean_long_only_net_value_proxy"]
     return [
         model_name
-        for model_name in _LEARNED_MODEL_NAMES
+        for model_name in learned_model_names
         if aggregate_summary[model_name]["mean_long_only_net_value_proxy"] > baseline_metric
     ]
 

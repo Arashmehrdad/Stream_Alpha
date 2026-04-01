@@ -8,18 +8,19 @@
   "interval_column": "interval_begin",
   "label_horizon_candles": 3,
   "models": {
-    "hist_gradient_boosting": {
-      "learning_rate": 0.05,
-      "max_depth": 3,
-      "max_iter": 200,
-      "min_samples_leaf": 20,
-      "random_state": 42
-    },
-    "logistic_regression": {
-      "C": 1.0,
-      "class_weight": "balanced",
-      "max_iter": 2000,
-      "random_state": 42
+    "autogluon_tabular": {
+      "eval_metric": "log_loss",
+      "fit_weighted_ensemble": true,
+      "hyperparameters": {
+        "CAT": {},
+        "GBM": {},
+        "XGB": {}
+      },
+      "num_bag_folds": 0,
+      "num_stack_levels": 0,
+      "presets": "medium_quality",
+      "time_limit": 120,
+      "verbosity": 0
     }
   },
   "numeric_feature_columns": [

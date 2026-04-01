@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from app.common.time import to_rfc3339, utc_now
+from app.training.dataset import LEGACY_ARCHIVED_MODEL_NAMES
 from app.training.registry import (
     append_registry_history,
     copy_run_snapshot_to_registry,
@@ -33,7 +34,10 @@ def promote_run(
     if not resolved_model_version:
         raise ValueError("model_version cannot be empty")
 
-    current_entry = load_current_registry_entry(registry_root)
+    previous_entry = load_current_registry_entry(registry_root)
+    current_entry = previous_entry
+    if current_entry is not None and _is_legacy_archived_current_entry(current_entry):
+        current_entry = None
     comparison_payload = _load_comparison_payload(resolved_run_dir)
     if current_entry is not None:
         if comparison_payload is None:
@@ -72,7 +76,7 @@ def promote_run(
             "event_type": "PROMOTE",
             "model_version": resolved_model_version,
             "previous_model_version": (
-                None if current_entry is None else current_entry["model_version"]
+                None if previous_entry is None else previous_entry["model_version"]
             ),
             "source_run_dir": str(resolved_run_dir),
             "comparison_passed": (
@@ -129,6 +133,11 @@ def _bootstrap_comparison_payload() -> dict[str, Any]:
             "No current champion was registered at promotion time.",
         ],
     }
+
+
+def _is_legacy_archived_current_entry(entry: dict[str, Any]) -> bool:
+    """Treat the archived sklearn current pointer as non-authoritative bootstrap state."""
+    return str(entry.get("model_name", "")).strip() in LEGACY_ARCHIVED_MODEL_NAMES
 
 
 if __name__ == "__main__":

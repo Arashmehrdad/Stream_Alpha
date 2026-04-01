@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 
 import pytest
 
@@ -154,3 +155,40 @@ def test_compare_run_fails_when_challenger_does_not_beat_dummy_baseline(
 
     assert comparison["passed"] is False
     assert any("dummy_most_frequent" in reason for reason in comparison["reasons"])
+
+
+def test_compare_run_treats_legacy_archived_current_entry_as_no_champion(
+    tmp_path: Path,
+) -> None:
+    """The first authoritative challenger should bootstrap over the archived legacy pointer."""
+    config_path = write_workflow_config(tmp_path / "training.m7.json")
+    registry_root = tmp_path / "registry"
+    registry_root.mkdir(parents=True, exist_ok=True)
+    (registry_root / "current.json").write_text(
+        json.dumps(
+            {
+                "model_version": "m3-20260319T223002Z",
+                "model_name": "logistic_regression",
+                "model_artifact_path": "artifacts/registry/models/m3-20260319T223002Z/model.joblib",
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    challenger_run = write_run_dir(
+        tmp_path / "m7",
+        "20260320T010101Z",
+        model_name="autogluon_tabular",
+        mean_long_only_net_value_proxy=0.0025,
+        directional_accuracy=0.553,
+        brier_score=0.245,
+    )
+
+    comparison = compare_run_to_current(
+        run_dir=challenger_run,
+        config_path=config_path,
+        registry_root=registry_root,
+    )
+
+    assert comparison["champion"] is None
+    assert comparison["decision"] == "bootstrap_allowed"

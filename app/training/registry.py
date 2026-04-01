@@ -13,6 +13,7 @@ import joblib
 
 from app.common.serialization import make_json_safe
 from app.common.time import to_rfc3339, utc_now
+from app.training.dataset import LEGACY_ARCHIVED_MODEL_NAMES
 
 
 REQUIRED_RUN_ARTIFACTS = (
@@ -185,6 +186,11 @@ def resolve_inference_model_metadata(
         override_path = _resolve_registry_artifact_path(model_override)
         if not override_path.is_file():
             raise ValueError(f"INFERENCE_MODEL_PATH does not exist: {override_path}")
+        override_payload = _load_model_payload(override_path)
+        _assert_authoritative_runtime_model_name(
+            override_payload["model_name"],
+            source=f"INFERENCE_MODEL_PATH override at {override_path}",
+        )
         model_version, model_version_source = _derive_override_model_version(override_path)
         return {
             "model_artifact_path": str(override_path),
@@ -204,6 +210,13 @@ def resolve_inference_model_metadata(
     )
     if not model_path.is_file():
         raise ValueError(f"Registry champion model artifact does not exist: {model_path}")
+    current_model_name = str(current_entry.get("model_name", "")).strip()
+    if not current_model_name:
+        current_model_name = _load_model_payload(model_path)["model_name"]
+    _assert_authoritative_runtime_model_name(
+        current_model_name,
+        source=f"registry current champion at {model_path}",
+    )
 
     model_version = str(current_entry.get("model_version", "")).strip()
     if not model_version:
@@ -272,6 +285,10 @@ def export_external_model_to_registry(
         raise ValueError(f"Model artifact path does not exist: {source_path}")
 
     payload = _load_model_payload(source_path)
+    _assert_authoritative_runtime_model_name(
+        payload["model_name"],
+        source=f"registry export at {source_path}",
+    )
     model_dir = registry_models_root(registry_root) / resolved_model_version
     if model_dir.exists():
         raise ValueError(f"Promoted model version already exists: {resolved_model_version}")
@@ -321,6 +338,10 @@ def copy_run_snapshot_to_registry(
     resolved_source_run_dir = Path(source_run_dir).resolve()
     artifact_paths = required_run_artifact_paths(resolved_source_run_dir)
     manifest = build_run_manifest(resolved_source_run_dir)
+    _assert_authoritative_runtime_model_name(
+        str(manifest["winner"]["model_name"]),
+        source=f"run promotion at {resolved_source_run_dir}",
+    )
     model_dir = registry_models_root(registry_root) / model_version
     if model_dir.exists():
         raise ValueError(f"Promoted model version already exists: {model_version}")
@@ -486,3 +507,16 @@ def _resolve_registry_artifact_path(path_value: str) -> Path:
             return translated_path.resolve()
 
     return direct_path.resolve()
+
+
+def _assert_authoritative_runtime_model_name(
+    model_name: str,
+    *,
+    source: str,
+) -> None:
+    """Reject legacy sklearn artifacts from the authoritative runtime path."""
+    if model_name in LEGACY_ARCHIVED_MODEL_NAMES:
+        raise ValueError(
+            "Legacy archived sklearn model is no longer allowed in the "
+            f"authoritative runtime or registry path for {source}: {model_name}",
+        )

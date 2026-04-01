@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from app.training.dataset import TrainingConfig, _build_symbol_samples, ModelHyperparameters
+from app.training.dataset import TrainingConfig, _build_symbol_samples
 
 
 def _make_config() -> TrainingConfig:
@@ -23,10 +23,7 @@ def _make_config() -> TrainingConfig:
         test_fraction=0.1,
         round_trip_fee_bps=20.0,
         artifact_root="artifacts/training/m3",
-        models=ModelHyperparameters(
-            logistic_regression={"max_iter": 100},
-            hist_gradient_boosting={"max_iter": 10},
-        ),
+        models={},
     )
 
 

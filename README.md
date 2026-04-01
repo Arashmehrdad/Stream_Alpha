@@ -23,7 +23,7 @@ Accepted milestones and current higher-foundation status:
 * M17 operational alerting foundation
 * M18 usability and strategy evaluation foundation
 * M19 bounded adaptation now has runtime-generated persisted drift/performance truth, without invented active adaptive profiles or promotions beyond real persisted state
-* M20 dynamic ensemble is active, but limited and candidate-pool constrained by the actual trained registry-backed artifacts available today
+* M20 dynamic ensemble surfaces and persisted profile truth exist, and the authoritative training/registry/runtime path now has one real AutoGluon candidate family, but the candidate ecosystem remains narrow and not economically accepted yet
 * M21 guarded continual learning now has runtime-generated persisted drift-cap truth, without invented active profiles, experiments, or promotions beyond real persisted state
 
 Second Foundation v2 is not honestly complete through M21 yet. The repo now exposes truthful M19-M21 runtime surfaces without overclaiming stronger model diversity, profile activity, or promotion evidence than currently exists.
@@ -111,26 +111,36 @@ These boundaries are part of the accepted design and should be treated as stable
 
 * **M18** adds usability and strategy evaluation truth, divergence reporting, and realistic promotion evidence.
 * **M19** now writes runtime-generated persisted drift/performance truth. It should be read as bounded adaptation evidence, not as proof of stronger adaptive profile or promotion activity than the real persisted state supports.
-* **M20** is active in runtime, but still limited and candidate-pool constrained by the actual trained registry-backed artifacts available today.
+* **M20** still exposes ensemble surfaces and persisted profile truth, and the authoritative path now has one real AutoGluon candidate family, but it must now be judged on real candidate breadth, role diversity, regime-slice value, and economics after costs. On those terms it remains active but weak.
 * **M21** now writes runtime-generated persisted drift-cap truth. Guarded workflow/read surfaces exist, but the repo does not invent active continual-learning profiles, experiments, or promotions beyond real persisted truth.
 
-## Corrected model-stack judgment
+## Model stack after AutoGluon batch
 
 ### Present and trained now
 
+* `autogluon_tabular`
+* real promoted AutoGluon artifacts now exist and load through the current registry-backed runtime path
+* simple baselines may still exist for evaluation and comparison, but they are not the intended primary production model stack
+
+### Legacy historical artifacts still present for backward inspection
+
 * `logistic_regression`
 * `hist_gradient_boosting`
-* simple baselines only where they are actually produced by the committed training/evaluation flow
 
-### Supported indirectly via real AutoGluon only if actually real
+### Subsumed indirectly through AutoGluon
 
-* none today
+* AutoGluon-managed sublearners may exist inside `autogluon_tabular` artifacts, but they do not count as separately registry-addressable model families today
 
-AutoGluon does **not** currently receive credit in this repo because there is no proven end-to-end training or import workflow that produces real registry-backed, runtime-usable AutoGluon artifacts in the current baseline.
+AutoGluon now receives credit in this repo because there is proven end-to-end training, promotion, registry, and runtime loading for real `autogluon_tabular` artifacts. That credit does not imply economic acceptance or a broad specialist roster yet.
+
+### Still genuinely missing for M20 specialist purposes
+
+* real `TREND_SPECIALIST` candidate families with committed trained artifacts and runtime-usable registry truth
+* real `RANGE_SPECIALIST` candidate families with committed trained artifacts and runtime-usable registry truth
+* enough specialist breadth to claim meaningful regime-slice value rather than a minimal active roster
 
 ### Referenced in design but not actually trained / registry-backed / runtime-usable
 
-* AutoGluon
 * NeuralForecast NHITS
 * NeuralForecast NBEATSx
 * NeuralForecast TFT
@@ -138,7 +148,7 @@ AutoGluon does **not** currently receive credit in this repo because there is no
 * River
 * other advanced specialist families mentioned in design or research targeting hooks without real committed trained artifacts and runtime-usable registry truth
 
-### Not needed separately if AutoGluon becomes real later
+### Not counted separately even though AutoGluon is now real
 
 * XGBoost
 * LightGBM
@@ -152,8 +162,9 @@ AutoGluon does **not** currently receive credit in this repo because there is no
 
 ### Impact on M20
 
-* M20 is active, but it is only as strong as the actual trained candidate pool.
-* The current ensemble should not be described as richly specialist or strongly diverse; it is constrained by the limited registry-backed candidates actually available at runtime.
+* M20 should now be judged from real candidate breadth, role diversity, regime-slice value, and economics after costs, not from missing umbrella-model plumbing.
+* One real registry-backed, runtime-usable AutoGluon family is now present and does provide honest generalist candidate truth.
+* That does not yet create real trend or range specialists, and the current promoted AutoGluon proof remains negative after costs, so M20 should still not be described as richly specialist, strongly diverse, or operationally strong.
 
 ### Impact on M21
 
@@ -604,4 +615,4 @@ That means:
 * there is no uncontrolled live self-retraining
 * GitHub Actions baseline validation now protects the accepted v2 branch, while local-first validation remains primary
 
-The honest current limitation is that M20 remains candidate-pool constrained, and M19/M21 should be judged from the real persisted truth now generated at runtime rather than stronger profile, promotion, or specialist-model diversity that does not yet exist.
+The honest current limitation is that the old sklearn models now remain legacy-only historical artifacts, while the authoritative path has only one real `autogluon_tabular` family and that proof is still negative after costs. M19/M21 should therefore be judged from the real persisted truth now generated at runtime rather than stronger profile, promotion, or specialist-model diversity that does not yet exist.

@@ -348,6 +348,7 @@ class FakeAdaptationService:
             active_profile_count=1,
             active_profile_id="profile-test-1",
             adaptation_status="ACTIVE",
+            evidence_backed=True,
             latest_drift_status="WATCH",
             latest_promotion_decision="HOLD",
             reason_codes=["ACTIVE_PROFILE_PRESENT"],
@@ -467,6 +468,7 @@ class NullAdaptationService:
             enabled=True,
             active_profile_count=0,
             adaptation_status="UNAVAILABLE",
+            evidence_backed=False,
             reason_codes=["ADAPTATION_REPOSITORY_UNAVAILABLE"],
         )
 
@@ -544,6 +546,7 @@ class NullContinualLearningService:
             active_profile_count=0,
             active_profile_id=None,
             continual_learning_status="IDLE",
+            evidence_backed=False,
             latest_drift_cap_status=None,
             latest_promotion_decision=None,
             reason_codes=["NO_ACTIVE_CONTINUAL_LEARNING_PROFILE"],
@@ -996,7 +999,7 @@ def _write_artifact(tmp_path: Path, *, prob_up: float) -> Path:
     artifact_path = tmp_path / f"model-{prob_up:.2f}.joblib"
     joblib.dump(
         {
-            "model_name": "logistic_regression",
+            "model_name": "runtime_candidate_fixture",
             "trained_at": "2026-03-19T22:30:02Z",
             "feature_columns": ["symbol", "close_price"],
             "expanded_feature_names": ["symbol=BTC/USD", "close_price"],
@@ -1078,6 +1081,18 @@ def _build_active_ensemble_service(tmp_path: Path) -> EnsembleService:
                 "expected_model_name": "ensemble_trend_specialist",
             },
         ],
+        evidence_summary_json={
+            "runtime_truth": {
+                "current_truth": {
+                    "roster_status": "ACTIVE_WEAK",
+                    "reason_codes": [
+                        "GENERALIST_ROLE_PRESENT",
+                        "RANGE_SPECIALIST_ROLE_MISSING",
+                        "STRONGER_SPECIALIST_ROSTER_UNSUPPORTED",
+                    ],
+                }
+            }
+        },
     )
 
     async def _load_active_profile(**_kwargs) -> EnsembleProfileRecord | None:
@@ -1094,7 +1109,7 @@ def _write_feature_aware_artifact(tmp_path: Path) -> Path:
     artifact_path.parent.mkdir(parents=True, exist_ok=False)
     joblib.dump(
         {
-            "model_name": "logistic_regression",
+            "model_name": "runtime_candidate_fixture",
             "trained_at": "2026-03-21T12:00:00Z",
             "feature_columns": [
                 "symbol",
@@ -1279,6 +1294,7 @@ def test_m19_additive_adaptation_fields_and_read_only_endpoints_are_exposed(
 
     assert health_payload["active_adaptation_count"] == 1
     assert health_payload["adaptation_status"] == "ACTIVE"
+    assert health_payload["adaptation_evidence_backed"] is True
     assert predict_payload["adaptation_profile_id"] == "profile-test-1"
     assert predict_payload["calibrated_confidence"] == 0.74
     assert signal_payload["adaptation_profile_id"] == "profile-test-1"
@@ -1778,6 +1794,8 @@ def test_health_includes_ensemble_fields(tmp_path: Path) -> None:
     payload = response.json()
     assert "ensemble_status" in payload
     assert "ensemble_candidate_count" in payload
+    assert "ensemble_roster_status" in payload
+    assert "ensemble_roster_reason_codes" in payload
     assert payload["ensemble_status"] == "DISABLED"
     assert payload["ensemble_candidate_count"] == 0
 
@@ -1792,6 +1810,7 @@ def test_predict_includes_ensemble_fields(tmp_path: Path) -> None:
     assert payload["ensemble_candidate_count"] == 0
     assert payload["ensemble_fallback_reason"] == "ENSEMBLE_FALLBACK_DISABLED"
     assert payload["ensemble_profile_id"] is None
+    assert payload["ensemble_roster_status"] is None
 
 
 def test_signal_includes_ensemble_fields(tmp_path: Path) -> None:
@@ -1804,6 +1823,7 @@ def test_signal_includes_ensemble_fields(tmp_path: Path) -> None:
     assert payload["ensemble_candidate_count"] == 0
     assert payload["ensemble_fallback_reason"] == "ENSEMBLE_FALLBACK_DISABLED"
     assert payload["ensemble_profile_id"] is None
+    assert payload["ensemble_roster_status"] is None
 
 
 def test_health_reports_real_active_ensemble_runtime(tmp_path: Path, monkeypatch) -> None:
@@ -1826,6 +1846,8 @@ def test_health_reports_real_active_ensemble_runtime(tmp_path: Path, monkeypatch
     assert payload["ensemble_status"] == "ACTIVE"
     assert payload["ensemble_profile_id"] == "ens-profile-active-1"
     assert payload["ensemble_candidate_count"] == 2
+    assert payload["ensemble_roster_status"] == "ACTIVE_WEAK"
+    assert "RANGE_SPECIALIST_ROLE_MISSING" in payload["ensemble_roster_reason_codes"]
     assert payload["model_name"] == "dynamic_ensemble"
     assert payload["model_artifact_path"] is None
 
@@ -1859,6 +1881,8 @@ def test_predict_returns_ensemble_backed_output_when_active(
     assert payload["prob_down"] == pytest.approx(0.325)
     assert payload["confidence"] == pytest.approx(0.675)
     assert payload["ensemble_effective_confidence"] == pytest.approx(0.675)
+    assert payload["ensemble_roster_status"] == "ACTIVE_WEAK"
+    assert "RANGE_SPECIALIST_ROLE_MISSING" in payload["ensemble_roster_reason_codes"]
     assert payload["prediction_explanation"]["available"] is False
     assert payload["prediction_explanation"]["method"] == "ensemble_pending"
     assert (
@@ -1868,6 +1892,7 @@ def test_predict_returns_ensemble_backed_output_when_active(
     assert payload["top_features"] == []
     assert payload["ensemble"]["ensemble_profile_id"] == "ens-profile-active-1"
     assert payload["ensemble"]["candidate_count"] == 2
+    assert payload["ensemble"]["roster_status"] == "ACTIVE_WEAK"
 
 
 def test_signal_uses_ensemble_effective_confidence_when_active(
@@ -1898,6 +1923,7 @@ def test_signal_uses_ensemble_effective_confidence_when_active(
     assert payload["model_name"] == "dynamic_ensemble"
     assert payload["model_version"] == "ensemble_profile:ens-profile-active-1"
     assert payload["ensemble_effective_confidence"] == pytest.approx(0.675)
+    assert payload["ensemble_roster_status"] == "ACTIVE_WEAK"
     assert adaptation_service.last_kwargs is not None
     assert adaptation_service.last_kwargs["confidence"] == pytest.approx(0.675)
     assert payload["ensemble"]["agreement_band"] == "HIGH"
@@ -1934,6 +1960,19 @@ class ActiveFrozenContinualLearningService(NullContinualLearningService):
             reason_codes=reason_codes,
         )
 
+    async def summary(self, **_kwargs) -> ContinualLearningSummaryResponse:
+        return ContinualLearningSummaryResponse(
+            enabled=True,
+            active_profile_count=1,
+            active_profile_id="cl-profile-1",
+            continual_learning_status="ACTIVE",
+            evidence_backed=True,
+            active_candidate_type="CALIBRATION_OVERLAY",
+            latest_drift_cap_status="WATCH",
+            latest_promotion_decision="HOLD",
+            reason_codes=["ACTIVE_PROFILE_PRESENT", "DRIFT_CAP_EVIDENCE_PRESENT"],
+        )
+
 
 def test_health_includes_continual_learning_fields(tmp_path: Path) -> None:
     """/health should expose additive M21 continual-learning summary fields."""
@@ -1949,6 +1988,7 @@ def test_health_includes_continual_learning_fields(tmp_path: Path) -> None:
     assert payload["active_continual_learning_profile_id"] == "cl-profile-1"
     assert payload["continual_learning_status"] == "ACTIVE"
     assert payload["continual_learning_drift_cap_status"] == "WATCH"
+    assert payload["continual_learning_evidence_backed"] is True
 
 
 def test_predict_includes_continual_learning_fields_without_value_changes(tmp_path: Path) -> None:
@@ -1967,6 +2007,7 @@ def test_predict_includes_continual_learning_fields_without_value_changes(tmp_pa
     assert payload["predicted_class"] == "UP"
     assert payload["continual_learning_profile_id"] == "cl-profile-1"
     assert payload["continual_learning_status"] == "ACTIVE"
+    assert payload["continual_learning_evidence_backed"] is True
     assert payload["continual_learning_frozen"] is False
     assert payload["continual_learning"]["baseline_target_id"] == "m20-live"
     assert payload["continual_learning"]["promotion_stage"] == "LIVE_ELIGIBLE"
@@ -1991,6 +2032,7 @@ def test_signal_marks_continual_learning_frozen_under_degraded_health(tmp_path: 
     assert payload["decision_source"] == "reliability"
     assert payload["continual_learning_profile_id"] == "cl-profile-1"
     assert payload["continual_learning_status"] == "ACTIVE"
+    assert payload["continual_learning_evidence_backed"] is True
     assert payload["continual_learning_frozen"] is True
     assert "CONTINUAL_LEARNING_FROZEN_BY_HEALTH_GATE" in payload["continual_learning"][
         "reason_codes"
@@ -2023,6 +2065,7 @@ def test_continual_learning_read_only_endpoints_return_payloads(tmp_path: Path) 
     assert promotions.status_code == 200
     assert events.status_code == 200
     assert summary.json()["continual_learning_status"] == "IDLE"
+    assert summary.json()["evidence_backed"] is False
     assert profiles.json()["items"][0]["profile_id"] == "cl-profile-1"
     assert drift_caps.json()["items"][0]["status"] == "WATCH"
     assert promotions.json()["items"][0]["decision"] == "HOLD"

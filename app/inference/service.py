@@ -372,7 +372,7 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
         except Exception:  # pylint: disable=broad-exception-caught
             return
 
-    async def _resolve_runtime_ensemble_state(  # pylint: disable=too-many-return-statements
+    async def _resolve_runtime_ensemble_state(  # pylint: disable=too-many-return-statements,too-many-locals
         self,
         *,
         row: dict[str, Any],
@@ -492,8 +492,30 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
             active_profile=active_profile,
             failed_candidates=failed_candidates,
         )
+        roster_status, roster_reason_codes = self._resolve_ensemble_roster_truth(
+            active_profile
+        )
         return EnsembleRuntimeState(
-            result=result,
+            result=EnsembleResult(
+                active=result.active,
+                ensemble_profile_id=result.ensemble_profile_id,
+                approval_stage=result.approval_stage,
+                ensemble_prob_up=result.ensemble_prob_up,
+                ensemble_prob_down=result.ensemble_prob_down,
+                ensemble_predicted_class=result.ensemble_predicted_class,
+                raw_ensemble_confidence=result.raw_ensemble_confidence,
+                effective_confidence=result.effective_confidence,
+                agreement_band=result.agreement_band,
+                vote_agreement_ratio=result.vote_agreement_ratio,
+                probability_spread=result.probability_spread,
+                agreement_multiplier=result.agreement_multiplier,
+                candidate_count=result.candidate_count,
+                roster_status=roster_status,
+                roster_reason_codes=roster_reason_codes,
+                participating_candidates=result.participating_candidates,
+                weighting_reason_codes=result.weighting_reason_codes,
+                fallback_reason=result.fallback_reason,
+            ),
             status=(
                 "ACTIVE" if result.active and result.candidate_count > 0 else "FALLBACK"
             ),
@@ -556,12 +578,17 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
             )
 
         candidate_count = sum(1 for item in roster if item.enabled)
+        roster_status, roster_reason_codes = self._resolve_ensemble_roster_truth(
+            active_profile
+        )
         return EnsembleRuntimeState(
             result=EnsembleResult(
                 active=candidate_count > 0,
                 ensemble_profile_id=active_profile.profile_id,
                 approval_stage=active_profile.approval_stage,
                 candidate_count=candidate_count,
+                roster_status=roster_status,
+                roster_reason_codes=roster_reason_codes,
             ),
             status="ACTIVE" if candidate_count > 0 else "FALLBACK",
         )
@@ -618,6 +645,27 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
         if ensemble_result.active and ensemble_result.ensemble_profile_id is not None:
             return "dynamic_ensemble", None
         return self.model_artifact.model_name, self.model_artifact.model_artifact_path
+
+    def _resolve_ensemble_roster_truth(
+        self,
+        active_profile,
+    ) -> tuple[str | None, tuple[str, ...]]:
+        if active_profile is None:
+            return None, ()
+        runtime_truth = active_profile.evidence_summary_json.get("runtime_truth", {})
+        current_truth = runtime_truth.get("current_truth", {})
+        roster_status = current_truth.get("roster_status")
+        reason_codes = current_truth.get("reason_codes", [])
+        if isinstance(roster_status, str) and isinstance(reason_codes, list):
+            return roster_status, tuple(str(code) for code in reason_codes)
+        enabled_entries = [
+            item
+            for item in active_profile.candidate_roster_json
+            if bool(item.get("enabled", True))
+        ]
+        if len(enabled_entries) < 3:
+            return "ACTIVE_WEAK", ("ACTIVE_PROFILE_ROSTER_INCOMPLETE",)
+        return "ACTIVE", ("ACTIVE_PROFILE_PRESENT",)
 
     def record_request(self, *, path: str, status_code: int, latency_ms: float) -> None:
         """Record one completed HTTP request."""
@@ -718,12 +766,22 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
                 startup_safety_reason_code=alert_health["startup_safety_reason_code"],
                 active_adaptation_count=adaptation_summary.active_profile_count,
                 adaptation_status=adaptation_summary.adaptation_status,
+                adaptation_evidence_backed=adaptation_summary.evidence_backed,
                 ensemble_profile_id=ensemble_health.result.ensemble_profile_id,
                 ensemble_status=ensemble_health.status,
                 ensemble_candidate_count=ensemble_health.result.candidate_count,
+                ensemble_roster_status=ensemble_health.result.roster_status,
+                ensemble_roster_reason_codes=list(
+                    ensemble_health.result.roster_reason_codes
+                ),
                 active_continual_learning_profile_id=continual_learning_profile_id,
                 continual_learning_status=continual_learning_status,
                 continual_learning_drift_cap_status=continual_learning_drift_cap_status,
+                continual_learning_evidence_backed=(
+                    False
+                    if not database_healthy or not model_loaded
+                    else await self._resolve_health_continual_learning_evidence_backed()
+                ),
             ),
         )
 
@@ -786,6 +844,14 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
             health_overall_status=health_overall_status,
             freshness_status=freshness_status,
         )
+
+    async def _resolve_health_continual_learning_evidence_backed(self) -> bool:
+        summary = await self.continual_learning_service.summary(
+            execution_mode=self.trading_config.execution.mode,
+            symbol="ALL",
+            regime_label="ALL",
+        )
+        return summary.evidence_backed
 
     def validate_symbol(self, symbol: str) -> None:
         """Validate that the request symbol is part of the configured Kraken set."""
@@ -918,6 +984,8 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
                 ensemble_effective_confidence=ensemble_result.effective_confidence,
                 ensemble_candidate_count=ensemble_result.candidate_count,
                 ensemble_fallback_reason=ensemble_result.fallback_reason,
+                ensemble_roster_status=ensemble_result.roster_status,
+                ensemble_roster_reason_codes=list(ensemble_result.roster_reason_codes),
                 ensemble=ensemble_result.to_context_payload(
                     regime_label=resolved_regime.regime_label,
                     regime_run_id=resolved_regime.regime_run_id,
@@ -932,6 +1000,9 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
                         in continual_learning_context.reason_codes
                         else "IDLE"
                     )
+                ),
+                continual_learning_evidence_backed=(
+                    continual_learning_context.drift_cap_status is not None
                 ),
                 continual_learning_frozen=continual_learning_context.frozen_by_health_gate,
                 continual_learning=continual_learning_context,
@@ -1085,6 +1156,8 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
             ensemble_effective_confidence=ensemble_result.effective_confidence,
             ensemble_candidate_count=ensemble_result.candidate_count,
             ensemble_fallback_reason=ensemble_result.fallback_reason,
+            ensemble_roster_status=ensemble_result.roster_status,
+            ensemble_roster_reason_codes=list(ensemble_result.roster_reason_codes),
             ensemble=ensemble_result.to_context_payload(
                 regime_label=prediction.regime_label,
                 regime_run_id=prediction.regime_run_id,
@@ -1099,6 +1172,9 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
                     in continual_learning_context.reason_codes
                     else "IDLE"
                 )
+            ),
+            continual_learning_evidence_backed=(
+                continual_learning_context.drift_cap_status is not None
             ),
             continual_learning_frozen=continual_learning_context.frozen_by_health_gate,
             continual_learning=continual_learning_context,
@@ -2257,6 +2333,9 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
                     in continual_learning_context.reason_codes
                     else "IDLE"
                 )
+            ),
+            continual_learning_evidence_backed=(
+                continual_learning_context.drift_cap_status is not None
             ),
             continual_learning_frozen=continual_learning_context.frozen_by_health_gate,
             continual_learning=continual_learning_context,

@@ -9,7 +9,11 @@ from pathlib import Path
 from typing import Any
 
 from app.common.time import to_rfc3339, utc_now
-from app.training.dataset import TrainingConfig, load_training_config
+from app.training.dataset import (
+    LEGACY_ARCHIVED_MODEL_NAMES,
+    TrainingConfig,
+    load_training_config,
+)
 from app.training.registry import (
     build_run_manifest,
     load_current_registry_entry,
@@ -93,6 +97,8 @@ def compare_run_to_current(
         primary_metric=workflow.comparison_policy.primary_metric,
     )
     current_entry = load_current_registry_entry(registry_root)
+    if current_entry is not None and _is_legacy_archived_current_entry(current_entry):
+        current_entry = None
     if current_entry is None:
         return _no_champion_payload(
             challenger_manifest,
@@ -340,6 +346,11 @@ def _baseline_failure_reasons(baseline_checks: dict[str, Any]) -> list[str]:
             f"{baseline_name} after costs",
         )
     return reasons
+
+
+def _is_legacy_archived_current_entry(entry: dict[str, Any]) -> bool:
+    """Treat archived sklearn champions as non-authoritative bootstrap state."""
+    return str(entry.get("model_name", "")).strip() in LEGACY_ARCHIVED_MODEL_NAMES
 
 
 if __name__ == "__main__":

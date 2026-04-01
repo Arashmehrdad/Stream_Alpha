@@ -183,7 +183,9 @@ class _FakeRepo:
         self._profile = profile
         self._drift = drift
         self._performance = performance
-        self._profiles = {profile.profile_id: profile}
+        self._profiles = {}
+        if profile is not None:
+            self._profiles[profile.profile_id] = profile
         self._promotion_decisions = []
 
     async def connect(self) -> None:
@@ -783,64 +785,137 @@ def test_adaptation_service_rolls_back_to_target_profile_and_persists_decision()
         assert Path(config.artifacts.current_profile_path).exists()
 
 
-def test_write_runtime_persisted_truth_saves_m19_drift_and_performance_rows() -> None:
-    base_config = load_adaptation_config(default_adaptation_config_path())
-    config = replace(
-        base_config,
-        rolling_windows=replace(
-            base_config.rolling_windows,
-            trade_counts=(1, 2),
-            day_windows=(7,),
-        ),
-        drift=replace(
-            base_config.drift,
-            minimum_reference_samples=3,
-            minimum_live_samples=3,
-            features=("log_return_1", "realized_vol_12"),
-        ),
+def test_adaptation_summary_reports_idle_but_evidence_backed_when_rows_exist() -> None:
+    drift = AdaptiveDriftRecord(
+        symbol="ALL",
+        regime_label="ALL",
+        detector_name="psi",
+        window_id="rolling_50_vs_50",
+        reference_window_start=datetime(2026, 3, 1, tzinfo=timezone.utc),
+        reference_window_end=datetime(2026, 3, 10, tzinfo=timezone.utc),
+        live_window_start=datetime(2026, 3, 11, tzinfo=timezone.utc),
+        live_window_end=datetime(2026, 3, 22, tzinfo=timezone.utc),
+        drift_score=0.18,
+        warning_threshold=0.10,
+        breach_threshold=0.20,
+        status="WATCH",
+        reason_code="DRIFT_WATCH",
+        updated_at=datetime(2026, 3, 22, 12, 0, tzinfo=timezone.utc),
     )
-    repository = _RuntimeRepo()
-    service = AdaptationService(repository=repository, config=config)
+    performance = AdaptivePerformanceWindow(
+        execution_mode="paper",
+        symbol="ALL",
+        regime_label="ALL",
+        window_id="last_20_trades",
+        window_type="trade_count",
+        window_start=datetime(2026, 3, 10, tzinfo=timezone.utc),
+        window_end=datetime(2026, 3, 22, tzinfo=timezone.utc),
+        trade_count=20,
+        net_pnl_after_costs=-0.02,
+        max_drawdown=0.03,
+        profit_factor=0.9,
+        expectancy=-0.001,
+        win_rate=0.45,
+        precision=0.46,
+        avg_slippage_bps=3.0,
+        blocked_trade_rate=0.10,
+        shadow_divergence_rate=0.0,
+        health_context={},
+        created_at=datetime(2026, 3, 22, 12, 1, tzinfo=timezone.utc),
+    )
+    service = AdaptationService(
+        repository=_FakeRepo(profile=None, drift=drift, performance=performance),
+    )
 
-    asyncio.run(
-        service.write_runtime_persisted_truth(
-            service_name="paper-trader",
+    summary = asyncio.run(
+        service.summary(
             execution_mode="paper",
-            source_exchange="kraken",
-            interval_minutes=5,
-            symbols=("BTC/USD", "ETH/USD"),
-            system_reliability=SimpleNamespace(
-                health_overall_status="HEALTHY",
-                reason_codes=("HEALTH_HEALTHY",),
-            ),
+            symbol="ALL",
+            regime_label="ALL",
         )
     )
 
-    drift_keys = {
-        (item.symbol, item.regime_label)
-        for item in repository.saved_drift_states
-    }
-    performance_keys = {
-        (item.execution_mode, item.symbol, item.regime_label, item.window_id)
-        for item in repository.saved_performance_windows
-    }
+    assert summary.adaptation_status == "IDLE"
+    assert summary.evidence_backed is True
+    assert summary.latest_drift_status == "WATCH"
+    assert summary.latest_performance_window_id == "last_20_trades"
+    assert "NO_ACTIVE_PROFILE" in summary.reason_codes
+    assert "RUNTIME_EVIDENCE_PRESENT" in summary.reason_codes
 
-    assert ("BTC/USD", "ALL") in drift_keys
-    assert ("ALL", "ALL") in drift_keys
-    assert (
-        "paper",
-        "ALL",
-        "ALL",
-        "last_2_trades",
-    ) in performance_keys
-    aggregate_window = next(
-        item
-        for item in repository.saved_performance_windows
-        if item.execution_mode == "paper"
-        and item.symbol == "ALL"
-        and item.regime_label == "ALL"
-        and item.window_id == "last_2_trades"
-    )
-    assert aggregate_window.avg_slippage_bps > 0.0
-    assert aggregate_window.health_context["precision_comparable_count"] == 1
-    assert aggregate_window.health_context["blocked_decision_count"] == 0
+
+def test_write_runtime_persisted_truth_saves_m19_drift_and_performance_rows() -> None:
+    base_config = load_adaptation_config(default_adaptation_config_path())
+    with TemporaryDirectory() as temp_dir:
+        config = replace(
+            base_config,
+            rolling_windows=replace(
+                base_config.rolling_windows,
+                trade_counts=(1, 2),
+                day_windows=(7,),
+            ),
+            drift=replace(
+                base_config.drift,
+                minimum_reference_samples=3,
+                minimum_live_samples=3,
+                features=("log_return_1", "realized_vol_12"),
+            ),
+            artifacts=replace(
+                base_config.artifacts,
+                root_dir=temp_dir,
+                drift_summary_path=str(Path(temp_dir) / "drift" / "latest_summary.json"),
+                performance_summary_path=str(
+                    Path(temp_dir) / "performance" / "latest_summary.json"
+                ),
+                current_profile_path=str(Path(temp_dir) / "profiles" / "current.json"),
+                promotions_history_path=str(Path(temp_dir) / "promotions" / "history.jsonl"),
+                reports_dir=str(Path(temp_dir) / "reports"),
+                challengers_dir=str(Path(temp_dir) / "challengers"),
+            ),
+        )
+        repository = _RuntimeRepo()
+        service = AdaptationService(repository=repository, config=config)
+
+        asyncio.run(
+            service.write_runtime_persisted_truth(
+                service_name="paper-trader",
+                execution_mode="paper",
+                source_exchange="kraken",
+                interval_minutes=5,
+                symbols=("BTC/USD", "ETH/USD"),
+                system_reliability=SimpleNamespace(
+                    health_overall_status="HEALTHY",
+                    reason_codes=("HEALTH_HEALTHY",),
+                ),
+            )
+        )
+
+        drift_keys = {
+            (item.symbol, item.regime_label)
+            for item in repository.saved_drift_states
+        }
+        performance_keys = {
+            (item.execution_mode, item.symbol, item.regime_label, item.window_id)
+            for item in repository.saved_performance_windows
+        }
+
+        assert ("BTC/USD", "ALL") in drift_keys
+        assert ("ALL", "ALL") in drift_keys
+        assert (
+            "paper",
+            "ALL",
+            "ALL",
+            "last_2_trades",
+        ) in performance_keys
+        aggregate_window = next(
+            item
+            for item in repository.saved_performance_windows
+            if item.execution_mode == "paper"
+            and item.symbol == "ALL"
+            and item.regime_label == "ALL"
+            and item.window_id == "last_2_trades"
+        )
+        assert aggregate_window.avg_slippage_bps > 0.0
+        assert aggregate_window.health_context["precision_comparable_count"] == 1
+        assert aggregate_window.health_context["blocked_decision_count"] == 0
+        assert Path(config.artifacts.drift_summary_path).exists()
+        assert Path(config.artifacts.performance_summary_path).exists()

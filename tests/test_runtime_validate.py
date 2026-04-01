@@ -27,7 +27,7 @@ def _write_model_artifact(tmp_path: Path) -> Path:
     artifact_path = tmp_path / "model.joblib"
     joblib.dump(
         {
-            "model_name": "logistic_regression",
+            "model_name": "runtime_candidate_fixture",
             "trained_at": "2026-03-22T10:00:00Z",
             "feature_columns": ["symbol", "close_price"],
             "expanded_feature_names": ["symbol=BTC/USD", "close_price"],

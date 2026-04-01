@@ -1,25 +1,33 @@
 # Stream Alpha strongest-honest alignment plan
 
 ## Frozen Findings
-1. M20 is active but limited and candidate-pool constrained.
-2. M19 and M21 have code and read surfaces but lack runtime-generated persisted truth.
-3. /health currently misreports the active top-level model identity.
-4. README currently overclaims completion through M21.
-5. Real trained/runtime-usable model support is narrower than design intent.
+1. M20 is active but still limited and candidate-pool constrained.
+2. M19 and M21 now have runtime-generated persisted truth, but they still sit on a narrow upstream model ecosystem.
+3. /health now reports the truthful top-level ensemble identity.
+4. README no longer overclaims completion through M21 and must keep tracking the narrower honest state.
+5. Real trained/runtime-usable model support is still narrower than design intent even after the first real authoritative AutoGluon path landed.
 6. Research hooks do not count as trained model presence.
-7. No credit for AutoGluon unless there is real training/import support plus registry/runtime-usable artifacts.
+7. AutoGluon now receives credit only because there is real training/import support plus registry/runtime-usable artifacts; that does not imply economic acceptance.
 
-## Corrected model-stack judgment
+## Model stack after AutoGluon batch
 ### Present and trained now
+- autogluon_tabular
+- real promoted AutoGluon artifacts now exist and load through the current registry-backed runtime path
+- simple baselines may still exist for evaluation and comparison, but they do not count as the intended primary production model stack
+
+### Legacy historical artifacts still present for backward inspection
 - logistic_regression
 - hist_gradient_boosting
-- simple baselines only if actually trained and used
 
-### Supported indirectly via real AutoGluon
-- none until proven by real workflow plus registry/runtime artifacts
+### Subsumed indirectly through AutoGluon
+- AutoGluon-managed sublearners may exist inside autogluon_tabular artifacts, but they do not count as separately registry-addressable model families today
+
+### Still genuinely missing for M20 specialist purposes
+- real trend specialists with committed trained artifacts and runtime-usable registry truth
+- real range specialists with committed trained artifacts and runtime-usable registry truth
+- enough specialist breadth to claim regime-slice value rather than a minimal active roster
 
 ### Referenced in design but not actually trained / registry-backed / runtime-usable
-- AutoGluon
 - NeuralForecast NHITS
 - NeuralForecast NBEATSx
 - NeuralForecast TFT
@@ -27,7 +35,7 @@
 - River
 - any other named family without real artifact and runtime proof
 
-### Not needed separately if AutoGluon becomes real later
+### Not counted separately even though AutoGluon is now real
 - XGBoost
 - LightGBM
 - CatBoost
@@ -35,7 +43,7 @@
 
 ### Impact
 - M19: cannot be judged strong if upstream model/runtime truth is still limited
-- M20: current ensemble must be judged only from the actual trained candidate pool
+- M20: old sklearn artifacts no longer count as current authoritative candidates, one real AutoGluon family now provides honest generalist truth, and remaining judgment must be based on breadth, role diversity, regime-slice value, and economics after costs
 - M21: cannot be judged strong if underlying promotion candidate ecosystem is still narrow
 
 ## Batch matrix
@@ -94,3 +102,150 @@
   - Targeted checks passed:
     - `Select-String -Path README.md -Pattern 'complete through \\*\\*M21\\*\\*|Second Foundation v2 is complete\\.|Second Foundation v2 is complete through accepted M21'` -> no matches
     - `Select-String -Path README.md -Pattern 'Corrected model-stack judgment|candidate-pool constrained|runtime-generated persisted drift/performance truth|runtime-generated persisted drift-cap truth|AutoGluon'` -> expected matches present
+
+## Phase 2 - M20 strengthening
+
+### Batch matrix
+| Batch | Goal | Files | Status | Targeted checks | Notes |
+|---|---|---|---|---|---|
+| A | Determine the smallest honest M20 strengthening path from the current repo/runtime truth | PLANS.md | DONE | targeted training/registry/runtime checks | No immediate strengthening move exists without creating a new real registry-backed candidate artifact; the active roster already uses all currently available runtime-usable registry entries |
+| B | Demote legacy sklearn models from the authoritative training, registry, and runtime path | training configs/service/registry, focused tests, README, PLANS.md | DONE | targeted training/runtime checks | This batch intentionally breaks the old sklearn-first path instead of preserving it as the de facto main stack |
+| C | Create a real authoritative AutoGluon training, promotion, and runtime path | training configs/service/registry/promote/compare, focused tests, README, PLANS.md | DONE | targeted tests plus live retrain/promote/runtime checks | One real authoritative AutoGluon family now exists, but it is still negative after costs and does not meet acceptance |
+| D | Re-rate M19/M20/M21 from current evidence and expose evidence-backed idle truth | adaptation/continual/ensemble/inference/dashboard surfaces, focused tests, README, PLANS.md | IN PROGRESS | targeted service/API/dashboard checks plus live DB/artifact proof | M19 and M21 must stop reading as empty when persisted truth exists; M20 must read as active-but-weak when specialist breadth/economics stay insufficient |
+
+### Batch A log
+- Inspected only the M20-relevant files and runtime truth needed to answer the strengthening question:
+  - `AGENTS.md`
+  - `PLANS.md`
+  - `configs/ensemble.yaml`
+  - `configs/training.m3.json`
+  - `configs/training.m7.json`
+  - `app/training/service.py`
+  - `app/training/retrain.py`
+  - `app/training/registry.py`
+  - `app/ensemble/service.py`
+  - `app/ensemble/schemas.py`
+  - `app/inference/service.py`
+  - `artifacts/registry/current.json`
+  - `artifacts/registry/models/m3-20260319T223002Z/{registry_entry.json,summary.json}`
+  - `artifacts/registry/models/m7-20260320T134537Z/{registry_entry.json,summary.json}`
+  - `artifacts/training/m7/20260320T134537Z/run_manifest.json`
+- Established current supported trainable model families in code:
+  - learned models: `logistic_regression`, `hist_gradient_boosting`
+  - simple baselines: `persistence_3`, `dummy_most_frequent`
+- Established current registry-backed runtime-usable candidate artifacts:
+  - `m3-20260319T223002Z` -> `logistic_regression`
+  - `m7-20260320T134537Z` -> `logistic_regression`
+- Established current active M20 persisted truth:
+  - active profile `m20-paper-all-minimal-20260331T205941Z`
+  - roster contains both currently available registry-backed candidates
+  - both active candidates are `logistic_regression`
+  - runtime now reports `ensemble_candidate_count = 2` with no fallback reason on `/signal`
+- Established what is missing from the active M20 research/promotion path:
+  - `hist_gradient_boosting` is supported in training code and evaluated in run summaries, but there is no registry-backed, runtime-usable `hist_gradient_boosting` artifact to add to the active roster
+  - no real `RANGE_SPECIALIST` candidate exists in the current artifact pool
+  - the existing ensemble promotion record is still the minimal manual activation of the currently available registry-backed roster
+- Batch A conclusion:
+  - no immediate honest strengthening move exists using only the currently available registry-backed runtime-usable artifacts, because the active roster already uses all of them
+  - the smallest next honest batch is to create a real additional candidate artifact from an already-supported model family, starting with `hist_gradient_boosting`, and persist it through the normal training/registry path before any M20 roster change
+
+### Batch B log
+- Read only `AGENTS.md` and `PLANS.md` before editing, then stayed inside the already identified training/registry/runtime-path files and focused tests.
+- Removed `logistic_regression` and `hist_gradient_boosting` from the authoritative checked-in training configs:
+  - `configs/training.m3.json`
+  - `configs/training.m7.json`
+  - both now load with `models = {}`
+- Removed legacy sklearn assumptions from the authoritative training path:
+  - `app/training/dataset.py` now treats legacy sklearn names as archived-only and rejects them when they appear in authoritative configs
+  - `app/training/service.py` no longer builds, selects, or summarizes the old sklearn pair as the authoritative learned-model set
+  - the authoritative training path now fails explicitly until a real replacement model builder exists
+- Removed legacy sklearn assumptions from the registry/runtime path:
+  - `app/training/registry.py` now rejects legacy sklearn artifacts when they are used as:
+    - direct inference overrides
+    - current registry champions
+    - exported registry entries
+    - promoted run winners
+- Updated the focused tests and helpers so they no longer enforce sklearn as the active expected model path:
+  - `tests/training_workflow_helpers.py`
+  - `tests/test_training_service.py`
+  - `tests/test_training_labels.py`
+  - `tests/test_training_registry.py`
+  - `tests/test_inference_model_loader.py`
+  - `tests/test_runtime_validate.py`
+  - `tests/test_inference_api.py`
+  - `tests/test_ensemble_packet2.py`
+- Updated `README.md` so the model-stack wording now matches the new truth:
+  - no present authoritative primary model stack yet
+  - `logistic_regression` and `hist_gradient_boosting` remain legacy-only historical artifacts
+- Targeted checks passed:
+  - `python -m pytest tests\test_training_service.py tests\test_training_labels.py tests\test_training_compare.py tests\test_training_registry.py tests\test_ensemble_packet2.py tests\test_inference_model_loader.py tests\test_runtime_validate.py tests\test_inference_api.py -q` -> `61 passed`
+  - `python -m pylint app\training\dataset.py app\training\service.py app\training\registry.py tests\training_workflow_helpers.py tests\test_training_service.py tests\test_training_labels.py tests\test_training_compare.py tests\test_training_registry.py tests\test_ensemble_packet2.py tests\test_inference_model_loader.py tests\test_runtime_validate.py tests\test_inference_api.py` -> `10.00/10`
+  - `python` targeted config check -> `training.m3.json {}` and `training.m7.json {}`
+- Targeted runtime-path truth check passed:
+  - `resolve_inference_model_metadata("")` now fails explicitly against the current registry-backed sklearn champion with:
+    - `Legacy archived sklearn model is no longer allowed in the authoritative runtime or registry path ... logistic_regression`
+- Batch B conclusion:
+  - the old sklearn-first path is no longer authoritative for training, promotion, registry, or runtime resolution
+  - legacy sklearn traces and artifacts remain only for backward inspection
+  - the intended main model stack is now honestly blocked until a real replacement training/import path produces registry-backed, runtime-usable artifacts
+
+### Batch C log
+- Read only the already-established training/registry/runtime-path files and stayed inside the focused replacement-model batch rather than reopening the broader audit.
+- Added a real authoritative AutoGluon model builder and self-contained artifact path:
+  - `app/training/autogluon.py`
+  - `app/training/service.py`
+  - `configs/training.m3.json`
+  - `configs/training.m7.json`
+  - `requirements.txt`
+- Updated the training, compare, promote, and runtime resolution path so real AutoGluon artifacts can count honestly while the archived sklearn artifacts stay blocked from the authoritative path:
+  - `app/training/dataset.py`
+  - `app/training/compare.py`
+  - `app/training/promote.py`
+  - `app/training/registry.py`
+- Updated the focused tests and README/plan wording so they match the new truth:
+  - `tests/training_workflow_helpers.py`
+  - `tests/test_training_service.py`
+  - `tests/test_training_labels.py`
+  - `tests/test_training_compare.py`
+  - `tests/test_training_registry.py`
+  - `tests/test_ensemble_packet2.py`
+  - `tests/test_inference_model_loader.py`
+  - `tests/test_runtime_validate.py`
+  - `tests/test_inference_api.py`
+  - `README.md`
+  - `PLANS.md`
+- Targeted checks passed:
+  - `python -m pytest tests\test_training_service.py tests\test_training_labels.py tests\test_training_compare.py tests\test_training_registry.py tests\test_ensemble_packet2.py tests\test_inference_model_loader.py tests\test_runtime_validate.py tests\test_inference_api.py -q` -> `65 passed`
+  - `python -m pylint app\training\autogluon.py app\training\dataset.py app\training\service.py app\training\compare.py app\training\promote.py app\training\registry.py tests\training_workflow_helpers.py tests\test_training_service.py tests\test_training_labels.py tests\test_training_compare.py tests\test_training_registry.py tests\test_ensemble_packet2.py tests\test_inference_model_loader.py tests\test_runtime_validate.py tests\test_inference_api.py` -> `10.00/10`
+- Targeted runtime-path truth check passed:
+  - `python -m app.training.retrain --config configs/training.m7.json` -> `artifacts\training\m7\20260401T043003Z`
+  - the live run produced a real `autogluon_tabular` artifact plus manifest/comparison truth on current repo data:
+    - `winner.model_name = autogluon_tabular`
+    - `winner.mean_long_only_net_value_proxy = -0.0005341925944267735`
+    - beats `persistence_3` after costs, does not beat `dummy_most_frequent`, and does not meet the acceptance target
+  - `python -m app.training.promote --run-dir artifacts\training\m7\20260401T043003Z` -> `artifacts\registry\models\m7-20260401T043003Z\model.joblib`
+  - `resolve_inference_model_metadata("")` and `load_model_artifact("")` now resolve the current registry champion as:
+    - `model_name = autogluon_tabular`
+    - `model_version = m7-20260401T043003Z`
+    - `model_version_source = REGISTRY_CURRENT`
+- Batch C conclusion:
+  - AutoGluon now counts as real present/trainable support in the authoritative path because there is real training, real artifact output, registry discoverability, and runtime usability
+  - the current authoritative proof is still negative after costs, so this batch improves truth and replaces the archived-path blockage, but it does not make M20 operationally strong
+
+### Batch D log
+- Scope for this pass is limited to M19, M20, and M21 truth from the current local state. The AutoGluon replacement batch remains frozen and is not being reopened.
+- Updated the M19 adaptation summary contract and runtime writer so:
+  - M19 may remain `IDLE` when no adaptive profile is active
+  - the summary now exposes whether persisted drift/performance evidence exists
+  - the runtime writer refreshes the configured drift/performance summary artifacts directly instead of waiting for read endpoints to be called
+- Updated the M21 continual-learning summary contract and runtime writer so:
+  - M21 may remain `IDLE` when no continual-learning profile is active
+  - the summary now exposes whether persisted drift-cap evidence exists
+  - the runtime writer refreshes the configured drift-cap and summary artifacts directly from persisted truth
+- Added explicit M20 current-state truth helpers so Packet 2 can now say:
+  - AutoGluon is real and counts for the generalist role
+  - overlapping tabular families are subsumed rather than counted as separate missing umbrella gaps
+  - M20 stays `ACTIVE_WEAK` when real trend/range specialists are still missing or regime-slice/economic proof is still insufficient
+- Updated `/health`, `/predict`, `/signal`, dashboard data sources, and dashboard operator views so they surface:
+  - evidence-backed idle adaptation and continual-learning status
+  - M20 roster truth as active-but-weak instead of implying active means strong

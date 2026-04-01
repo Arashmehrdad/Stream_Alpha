@@ -1,5 +1,6 @@
 aiokafka>=0.10,<0.11
 asyncpg>=0.29,<0.30
+autogluon.tabular[all]==1.5.0
 fastapi>=0.115,<1
 httpx>=0.28,<1
 scikit-learn>=1.6,<1.8

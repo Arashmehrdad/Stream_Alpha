@@ -122,6 +122,8 @@ class EnsembleContextPayload(BaseModel):
     probability_spread: float | None = None
     agreement_multiplier: float | None = None
     candidate_count: int = 0
+    roster_status: str | None = None
+    roster_reason_codes: list[str] = Field(default_factory=list)
     participating_candidates: list[ParticipatingCandidate] = Field(default_factory=list)
 
 
@@ -187,6 +189,8 @@ class EnsembleResult:
     probability_spread: float | None = None
     agreement_multiplier: float | None = None
     candidate_count: int = 0
+    roster_status: str | None = None
+    roster_reason_codes: tuple[str, ...] = field(default_factory=tuple)
     participating_candidates: tuple = field(default_factory=tuple)
     weighting_reason_codes: tuple[str, ...] = field(default_factory=tuple)
     fallback_reason: str | None = None
@@ -213,6 +217,8 @@ class EnsembleResult:
             probability_spread=self.probability_spread,
             agreement_multiplier=self.agreement_multiplier,
             candidate_count=self.candidate_count,
+            roster_status=self.roster_status,
+            roster_reason_codes=list(self.roster_reason_codes),
             participating_candidates=[
                 ParticipatingCandidate(**c) if isinstance(c, dict) else c
                 for c in self.participating_candidates

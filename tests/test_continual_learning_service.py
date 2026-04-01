@@ -334,6 +334,47 @@ def test_continual_learning_service_summary_writes_runtime_artifacts() -> None:
         assert drift_payload["items"][0]["status"] == "HEALTHY"
 
 
+def test_continual_learning_summary_reports_idle_but_evidence_backed_when_caps_exist() -> None:
+    drift_cap = ContinualLearningDriftCapRecord(
+        cap_id="cap-idle",
+        execution_mode_scope="paper",
+        symbol_scope="ALL",
+        regime_scope="ALL",
+        candidate_type="CALIBRATION_OVERLAY",
+        status="BREACHED",
+        observed_drift_score=0.22,
+        warning_threshold=0.10,
+        breach_threshold=0.20,
+        reason_code="DRIFT_BREACH",
+        created_at=datetime(2026, 4, 2, 3, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 4, 2, 3, tzinfo=timezone.utc),
+    )
+    with TemporaryDirectory() as tmp_dir:
+        service = ContinualLearningService(
+            repository=_FakeRepo(
+                active_profile=None,
+                fallback_profile=None,
+                drift_cap=drift_cap,
+                all_drift_caps=[drift_cap],
+            ),
+            config=_build_config(tmp_dir),
+        )
+
+        summary = asyncio.run(
+            service.summary(
+                execution_mode="paper",
+                symbol="ALL",
+                regime_label="ALL",
+            )
+        )
+
+        assert summary.continual_learning_status == "IDLE"
+        assert summary.evidence_backed is True
+        assert summary.latest_drift_cap_status == "BREACHED"
+        assert "NO_ACTIVE_CONTINUAL_LEARNING_PROFILE" in summary.reason_codes
+        assert "DRIFT_CAP_EVIDENCE_PRESENT" in summary.reason_codes
+
+
 def test_continual_learning_service_rollback_restores_target_and_writes_history() -> None:
     active, fallback = _build_profiles()
     drift_cap = ContinualLearningDriftCapRecord(
@@ -1048,31 +1089,39 @@ def test_write_runtime_drift_caps_persists_m21_caps_from_m19_drift_truth() -> No
         ),
         adaptive_drift_states=adaptive_drift_states,
     )
-    service = ContinualLearningService(
-        repository=repository,
-        config=_build_config("artifacts/tmp/m21-runtime-writer"),
-    )
-
-    asyncio.run(
-        service.write_runtime_drift_caps(
-            execution_mode="paper",
-            symbols=("BTC/USD", "ETH/USD"),
+    with TemporaryDirectory() as tmp_dir:
+        service = ContinualLearningService(
+            repository=repository,
+            config=_build_config(tmp_dir),
         )
-    )
 
-    cap_keys = {
-        (item.execution_mode_scope, item.symbol_scope, item.regime_scope, item.candidate_type)
-        for item in repository.saved_drift_caps
-    }
-    assert ("paper", "ALL", "ALL", "CALIBRATION_OVERLAY") in cap_keys
-    assert ("paper", "ALL", "ALL", "INCREMENTAL_SHADOW_CHALLENGER") in cap_keys
-    assert ("paper", "BTC/USD", "ALL", "CALIBRATION_OVERLAY") in cap_keys
-    assert ("paper", "BTC/USD", "ALL", "INCREMENTAL_SHADOW_CHALLENGER") in cap_keys
-    btc_overlay_cap = next(
-        item
-        for item in repository.saved_drift_caps
-        if item.symbol_scope == "BTC/USD"
-        and item.candidate_type == "CALIBRATION_OVERLAY"
-    )
-    assert btc_overlay_cap.status == "BREACHED"
-    assert btc_overlay_cap.reason_code == "DRIFT_BREACH"
+        asyncio.run(
+            service.write_runtime_drift_caps(
+                execution_mode="paper",
+                symbols=("BTC/USD", "ETH/USD"),
+            )
+        )
+
+        cap_keys = {
+            (
+                item.execution_mode_scope,
+                item.symbol_scope,
+                item.regime_scope,
+                item.candidate_type,
+            )
+            for item in repository.saved_drift_caps
+        }
+        assert ("paper", "ALL", "ALL", "CALIBRATION_OVERLAY") in cap_keys
+        assert ("paper", "ALL", "ALL", "INCREMENTAL_SHADOW_CHALLENGER") in cap_keys
+        assert ("paper", "BTC/USD", "ALL", "CALIBRATION_OVERLAY") in cap_keys
+        assert ("paper", "BTC/USD", "ALL", "INCREMENTAL_SHADOW_CHALLENGER") in cap_keys
+        btc_overlay_cap = next(
+            item
+            for item in repository.saved_drift_caps
+            if item.symbol_scope == "BTC/USD"
+            and item.candidate_type == "CALIBRATION_OVERLAY"
+        )
+        assert btc_overlay_cap.status == "BREACHED"
+        assert btc_overlay_cap.reason_code == "DRIFT_BREACH"
+        assert Path(service.config.artifacts.summary_path).exists()
+        assert Path(service.config.artifacts.drift_caps_summary_path).exists()

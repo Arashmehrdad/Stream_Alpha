@@ -1453,6 +1453,10 @@ def build_model_reference_rows(
             "latest_model_version": (
                 None if not traces else traces[0].model_version
             ),
+            "ensemble_status": snapshot.api_health.ensemble_status,
+            "ensemble_profile_id": snapshot.api_health.ensemble_profile_id,
+            "ensemble_candidate_count": snapshot.api_health.ensemble_candidate_count,
+            "ensemble_roster_status": snapshot.api_health.ensemble_roster_status,
             "regime_loaded": snapshot.api_health.regime_loaded,
             "regime_run_id": snapshot.api_health.regime_run_id,
             "model_artifact_path": snapshot.api_health.model_artifact_path,

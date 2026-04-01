@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,8 @@ from app.ensemble.research import (
     GENERALIST,
     RANGE_SPECIALIST,
     TREND_SPECIALIST,
+    build_m20_candidate_inventory_truth,
+    build_profile_truth_refresh,
     evaluate_registry_candidates,
     load_registry_research_candidates,
     select_runtime_roster,
@@ -35,7 +38,6 @@ from app.ensemble.schemas import (
 )
 from app.training.dataset import (
     DatasetSample,
-    ModelHyperparameters,
     TrainingConfig,
     TrainingDataset,
 )
@@ -107,7 +109,7 @@ def test_packet2_research_selects_the_canonical_three_role_roster(tmp_path: Path
         tmp_path,
         registry_root=registry_root,
         model_version="m3-incumbent-generalist-v1",
-        model_name="hist_gradient_boosting",
+        model_name="incumbent_generalist_fixture",
         model_family="AUTOGLUON",
         candidate_role=GENERALIST,
         mapping={1.0: 0.80, 2.0: 0.20, 3.0: 0.55, 4.0: 0.45, 5.0: 0.65},
@@ -199,7 +201,7 @@ def test_packet2_profile_lifecycle_persists_draft_activation_and_rollback() -> N
                 "model_version": "m3-incumbent-generalist-v1",
                 "scope_regimes": ["TREND_UP", "TREND_DOWN", "RANGE", "HIGH_VOL"],
                 "enabled": True,
-                "expected_model_name": "hist_gradient_boosting",
+                "expected_model_name": "incumbent_generalist_fixture",
             }
         ],
         created_at=datetime(2026, 3, 20, tzinfo=timezone.utc),
@@ -264,6 +266,76 @@ def test_packet2_profile_lifecycle_persists_draft_activation_and_rollback() -> N
     assert rollback.decision == "ROLLBACK"
 
 
+def test_packet2_runtime_truth_stays_active_but_weak_when_specialists_are_missing() -> None:
+    active_profile = EnsembleProfileRecord(
+        profile_id="m20-paper-all-minimal-20260331T205941Z",
+        status="ACTIVE",
+        approval_stage="ACTIVATED",
+        execution_mode_scope="paper",
+        symbol_scope="ALL",
+        regime_scope="ALL",
+        candidate_roster_json=[
+            {
+                "candidate_id": "generalist:m7-20260401T043003Z",
+                "candidate_role": GENERALIST,
+                "model_version": "m7-20260401T043003Z",
+                "scope_regimes": ["TREND_UP", "TREND_DOWN", "RANGE", "HIGH_VOL"],
+                "enabled": True,
+                "expected_model_name": "autogluon_tabular",
+            }
+        ],
+    )
+    candidate_results = [
+        _candidate_result(
+            model_version="m7-20260401T043003Z",
+            model_name="autogluon_tabular",
+            model_family="AUTOGLUON",
+            candidate_role=GENERALIST,
+            net_all=0.10,
+            net_primary=0.10,
+            entry_metadata={
+                "winner_metrics": {
+                    "mean_long_only_net_value_proxy": -0.0005341925944267735,
+                }
+            },
+        )
+    ]
+
+    runtime_truth = build_m20_candidate_inventory_truth(
+        candidate_results,
+        active_profile=active_profile,
+    )
+    refreshed_profile = build_profile_truth_refresh(
+        active_profile=active_profile,
+        candidate_results=candidate_results,
+    )
+
+    current_truth = runtime_truth["current_truth"]
+
+    assert current_truth["roster_status"] == "ACTIVE_WEAK"
+    assert current_truth["stronger_specialist_roster_supported"] is False
+    assert current_truth["economic_acceptance_complete"] is False
+    assert "GENERALIST_ROLE_PRESENT" in current_truth["reason_codes"]
+    assert "TREND_SPECIALIST_ROLE_MISSING" in current_truth["reason_codes"]
+    assert "RANGE_SPECIALIST_ROLE_MISSING" in current_truth["reason_codes"]
+    assert "GENERALIST_ECONOMICS_NEGATIVE_AFTER_COSTS" in current_truth["reason_codes"]
+    assert current_truth["generalist_packet2_all_slice_net_pnl_after_fees_slippage"] == 0.10
+    assert (
+        current_truth["generalist_authoritative_net_metric"]
+        == -0.0005341925944267735
+    )
+    assert (
+        refreshed_profile.evidence_summary_json["runtime_truth"]["current_truth"][
+            "roster_status"
+        ]
+        == "ACTIVE_WEAK"
+    )
+    assert (
+        "missing_umbrella_model_support"
+        not in json.dumps(runtime_truth).lower()
+    )
+
+
 def _selection_for_profile_tests() -> Any:
     candidates = [
         _candidate_result(
@@ -302,6 +374,7 @@ def _candidate_result(  # pylint: disable=too-many-arguments
     candidate_role: str,
     net_all: float,
     net_primary: float,
+    entry_metadata: dict[str, Any] | None = None,
 ) -> EnsembleResearchResult:
     primary_slice = "ALL" if candidate_role == GENERALIST else (
         "TREND_COMBINED" if candidate_role == TREND_SPECIALIST else "RANGE"
@@ -315,7 +388,7 @@ def _candidate_result(  # pylint: disable=too-many-arguments
             artifact_path=f"artifacts/registry/models/{model_version}/model.joblib",
             trained_at="2026-03-22T00:00:00Z",
             scope_regimes=["TREND_UP", "TREND_DOWN", "RANGE", "HIGH_VOL"],
-            entry_metadata={},
+            entry_metadata={} if entry_metadata is None else dict(entry_metadata),
         ),
         metrics_by_slice={
             "ALL": EnsembleEvaluationSliceMetrics(
@@ -452,10 +525,7 @@ def _training_config() -> TrainingConfig:
         test_fraction=0.2,
         round_trip_fee_bps=20.0,
         artifact_root="artifacts/training/m7",
-        models=ModelHyperparameters(
-            logistic_regression={"max_iter": 100},
-            hist_gradient_boosting={"max_iter": 10},
-        ),
+        models={},
     )
 
 
