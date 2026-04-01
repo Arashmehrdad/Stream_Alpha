@@ -1,6 +1,7 @@
 """Focused tests for the Stream Alpha M21 continual-learning layer."""
 
 # pylint: disable=missing-function-docstring,too-many-arguments
+# pylint: disable=too-many-lines,too-many-instance-attributes
 
 from __future__ import annotations
 
@@ -10,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from app.adaptation.schemas import AdaptiveDriftRecord
 from app.continual_learning.config import ArtifactConfig, ContinualLearningConfig
 from app.continual_learning.schemas import (
     CalibrationOverlayProfile,
@@ -34,11 +36,15 @@ class _FakeRepo:
         experiments: list | None = None,
         extra_profiles: list | None = None,
         all_drift_caps: list | None = None,
+        adaptive_drift_states: list | None = None,
         latest_decision: ContinualLearningDecisionType | None = None,
     ) -> None:
         self._active_profile = active_profile
         self._drift_cap = drift_cap
         self._all_drift_caps = [drift_cap] if all_drift_caps is None else list(all_drift_caps)
+        self._adaptive_drift_states = (
+            [] if adaptive_drift_states is None else list(adaptive_drift_states)
+        )
         self._profiles = {}
         if active_profile is not None:
             self._profiles[active_profile.profile_id] = active_profile
@@ -49,6 +55,7 @@ class _FakeRepo:
                 self._profiles[profile.profile_id] = profile
         self._experiments = [] if experiments is None else list(experiments)
         self._promotion_decisions = []
+        self._saved_drift_caps = []
         if latest_decision is not None:
             self._promotion_decisions.append(
                 ContinualLearningPromotionDecisionRecord(
@@ -99,6 +106,26 @@ class _FakeRepo:
 
     async def load_all_continual_learning_drift_caps(self, *, limit: int):
         return list(self._all_drift_caps)[:limit]
+
+    async def load_latest_adaptive_drift_state(self, *, symbol: str, regime_label: str):
+        matches = [
+            item
+            for item in self._adaptive_drift_states
+            if item.symbol == symbol and item.regime_label == regime_label
+        ]
+        if not matches:
+            return None
+        return matches[-1]
+
+    async def save_continual_learning_drift_cap(self, record) -> None:
+        self._saved_drift_caps.append(record)
+        self._drift_cap = record
+        self._all_drift_caps = [
+            item
+            for item in self._all_drift_caps
+            if item.cap_id != record.cap_id
+        ]
+        self._all_drift_caps.insert(0, record)
 
     async def load_continual_learning_profile(self, *, profile_id: str):
         return self._profiles.get(profile_id)
@@ -171,6 +198,10 @@ class _FakeRepo:
     @property
     def saved_events(self):
         return list(self._events)
+
+    @property
+    def saved_drift_caps(self):
+        return list(self._saved_drift_caps)
 
 
 def _build_config(root_dir: str) -> ContinualLearningConfig:
@@ -964,3 +995,84 @@ def test_profiles_and_experiments_apply_scope_filtering() -> None:
 
     assert all(item.symbol_scope in {"BTC/USD", "ALL"} for item in profiles.items)
     assert [item.experiment_id for item in experiments.items] == ["exp-all"]
+
+
+def test_write_runtime_drift_caps_persists_m21_caps_from_m19_drift_truth() -> None:
+    active, fallback = _build_profiles()
+    adaptive_drift_states = [
+        AdaptiveDriftRecord(
+            symbol="ALL",
+            regime_label="ALL",
+            detector_name="psi",
+            window_id="rolling_50_vs_50",
+            reference_window_start=datetime(2026, 4, 1, 0, tzinfo=timezone.utc),
+            reference_window_end=datetime(2026, 4, 1, 1, tzinfo=timezone.utc),
+            live_window_start=datetime(2026, 4, 1, 1, 5, tzinfo=timezone.utc),
+            live_window_end=datetime(2026, 4, 1, 2, tzinfo=timezone.utc),
+            drift_score=0.18,
+            warning_threshold=0.10,
+            breach_threshold=0.20,
+            status="WATCH",
+            reason_code="DRIFT_WATCH",
+        ),
+        AdaptiveDriftRecord(
+            symbol="BTC/USD",
+            regime_label="ALL",
+            detector_name="psi",
+            window_id="rolling_50_vs_50",
+            reference_window_start=datetime(2026, 4, 1, 0, tzinfo=timezone.utc),
+            reference_window_end=datetime(2026, 4, 1, 1, tzinfo=timezone.utc),
+            live_window_start=datetime(2026, 4, 1, 1, 5, tzinfo=timezone.utc),
+            live_window_end=datetime(2026, 4, 1, 2, tzinfo=timezone.utc),
+            drift_score=0.22,
+            warning_threshold=0.10,
+            breach_threshold=0.20,
+            status="BREACHED",
+            reason_code="DRIFT_BREACH",
+        ),
+    ]
+    repository = _FakeRepo(
+        active_profile=active,
+        fallback_profile=fallback,
+        drift_cap=ContinualLearningDriftCapRecord(
+            cap_id="cap-placeholder",
+            execution_mode_scope="paper",
+            symbol_scope="ALL",
+            regime_scope="ALL",
+            candidate_type="CALIBRATION_OVERLAY",
+            status="HEALTHY",
+            observed_drift_score=0.01,
+            warning_threshold=0.10,
+            breach_threshold=0.20,
+            reason_code="DRIFT_HEALTHY",
+        ),
+        adaptive_drift_states=adaptive_drift_states,
+    )
+    service = ContinualLearningService(
+        repository=repository,
+        config=_build_config("artifacts/tmp/m21-runtime-writer"),
+    )
+
+    asyncio.run(
+        service.write_runtime_drift_caps(
+            execution_mode="paper",
+            symbols=("BTC/USD", "ETH/USD"),
+        )
+    )
+
+    cap_keys = {
+        (item.execution_mode_scope, item.symbol_scope, item.regime_scope, item.candidate_type)
+        for item in repository.saved_drift_caps
+    }
+    assert ("paper", "ALL", "ALL", "CALIBRATION_OVERLAY") in cap_keys
+    assert ("paper", "ALL", "ALL", "INCREMENTAL_SHADOW_CHALLENGER") in cap_keys
+    assert ("paper", "BTC/USD", "ALL", "CALIBRATION_OVERLAY") in cap_keys
+    assert ("paper", "BTC/USD", "ALL", "INCREMENTAL_SHADOW_CHALLENGER") in cap_keys
+    btc_overlay_cap = next(
+        item
+        for item in repository.saved_drift_caps
+        if item.symbol_scope == "BTC/USD"
+        and item.candidate_type == "CALIBRATION_OVERLAY"
+    )
+    assert btc_overlay_cap.status == "BREACHED"
+    assert btc_overlay_cap.reason_code == "DRIFT_BREACH"

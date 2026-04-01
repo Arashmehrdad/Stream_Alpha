@@ -607,6 +607,18 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
             )
         return self.model_artifact.model_name, self.model_artifact.model_version
 
+    def _resolve_health_model_fields(
+        self,
+        *,
+        ensemble_result: EnsembleResult,
+    ) -> tuple[str | None, str | None]:
+        """Return truthful top-level health identity fields for model name and path."""
+        if self.model_artifact is None:
+            return None, None
+        if ensemble_result.active and ensemble_result.ensemble_profile_id is not None:
+            return "dynamic_ensemble", None
+        return self.model_artifact.model_name, self.model_artifact.model_artifact_path
+
     def record_request(self, *, path: str, status_code: int, latency_ms: float) -> None:
         """Record one completed HTTP request."""
         self.metrics.record(path=path, status_code=status_code, latency_ms=latency_ms)
@@ -677,6 +689,9 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
                     "symbols": [],
                 },
             )
+        health_model_name, health_model_artifact_path = self._resolve_health_model_fields(
+            ensemble_result=ensemble_health.result,
+        )
         return (
             status_code,
             HealthResponse(
@@ -687,10 +702,8 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
                 startup_validation_passed=runtime_metadata["startup_validation_passed"],
                 startup_report_path=runtime_metadata["startup_report_path"],
                 model_loaded=model_loaded,
-                model_name=self.model_artifact.model_name if model_loaded else None,
-                model_artifact_path=(
-                    self.model_artifact.model_artifact_path if model_loaded else None
-                ),
+                model_name=health_model_name if model_loaded else None,
+                model_artifact_path=health_model_artifact_path if model_loaded else None,
                 regime_loaded=self.regime_runtime is not None,
                 regime_run_id=self.regime_runtime.run_id,
                 regime_artifact_path=self.regime_runtime.artifact_path,

@@ -16,11 +16,13 @@ from typing import Any
 
 import httpx
 
+from app.adaptation.service import AdaptationService
 from app.alerting.config import default_alerting_config_path, load_alerting_config
 from app.alerting.repository import OperationalAlertRepository
 from app.alerting.service import OperationalAlertService
 from app.common.serialization import make_json_safe
 from app.common.time import to_rfc3339, utc_now
+from app.continual_learning.service import ContinualLearningService
 from app.reliability.artifacts import append_jsonl_artifact
 from app.reliability.config import default_reliability_config_path, load_reliability_config
 from app.reliability.schemas import (
@@ -114,6 +116,10 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
         self.alerting_service = OperationalAlertService(
             config=self.alerting_config,
             repository=self.alert_repository,
+        )
+        self.adaptation_service = AdaptationService(repository=self.repository)
+        self.continual_learning_service = ContinualLearningService(
+            repository=self.repository
         )
         self.live_safety_state = None
         self._signal_client_component = "signal_client"
@@ -503,6 +509,8 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
             )
 
         await self._write_summaries(available_cash)
+        await self._evaluate_adaptation_cycle()
+        await self._evaluate_continual_learning_cycle()
         await self._evaluate_alerting_cycle(service_risk_state=service_risk_state)
         await self._write_runner_heartbeat(
             health_overall_status=(
@@ -835,6 +843,22 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
             startup_safety_report=self._startup_safety_report,
         )
 
+    async def _evaluate_adaptation_cycle(self) -> None:
+        await self.adaptation_service.write_runtime_persisted_truth(
+            service_name=self.config.service_name,
+            execution_mode=self.config.execution.mode,
+            source_exchange=self.config.source_exchange,
+            interval_minutes=self.config.interval_minutes,
+            symbols=self.config.symbols,
+            system_reliability=self._last_system_reliability_snapshot,
+        )
+
+    async def _evaluate_continual_learning_cycle(self) -> None:
+        await self.continual_learning_service.write_runtime_drift_caps(
+            execution_mode=self.config.execution.mode,
+            symbols=self.config.symbols,
+        )
+
     async def _refresh_live_reconciliation(
         self,
         *,
@@ -1074,6 +1098,7 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
         state: ReliabilityState,
         evaluated_at: datetime,
     ) -> ReliabilityState:
+        del evaluated_at
         observed_at = utc_now()
         transitioned = transition_circuit_breaker(
             state=_to_breaker_state(state),
@@ -1114,6 +1139,7 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
         state: ReliabilityState,
         evaluated_at: datetime,
     ) -> ReliabilityState:
+        del evaluated_at
         observed_at = utc_now()
         transitioned = transition_circuit_breaker(
             state=_to_breaker_state(state),
@@ -1156,6 +1182,7 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
         evaluated_at: datetime,
         detail: str,
     ) -> ReliabilityState:
+        del evaluated_at
         observed_at = utc_now()
         transitioned = transition_circuit_breaker(
             state=_to_breaker_state(state),

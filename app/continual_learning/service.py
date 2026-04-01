@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from app.adaptation.schemas import AdaptiveDriftRecord
 from app.common.time import to_rfc3339, utc_now
 from app.continual_learning.artifacts import (
     append_jsonl_artifact,
@@ -353,6 +354,46 @@ class ContinualLearningService:
             items=items,
         )
         return ContinualLearningDriftCapsResponse(items=items)
+
+    async def write_runtime_drift_caps(
+        self,
+        *,
+        execution_mode: str,
+        symbols: tuple[str, ...],
+    ) -> None:
+        """Persist additive M21 drift-cap truth from existing M19 runtime drift states only."""
+        if not self.config.enabled or not await self._ensure_repository_ready():
+            return
+        if self.repository is None:
+            return
+        if not all(
+            hasattr(self.repository, attribute)
+            for attribute in (
+                "load_latest_adaptive_drift_state",
+                "save_continual_learning_drift_cap",
+            )
+        ):
+            return
+        seen_scopes: set[tuple[str, str]] = set()
+        for symbol_scope in ("ALL", *symbols):
+            scope = (execution_mode, symbol_scope)
+            if scope in seen_scopes:
+                continue
+            seen_scopes.add(scope)
+            drift_state = await self.repository.load_latest_adaptive_drift_state(
+                symbol=symbol_scope,
+                regime_label="ALL",
+            )
+            if drift_state is None:
+                continue
+            for candidate_type in self.config.candidate_types:
+                await self.repository.save_continual_learning_drift_cap(
+                    self._drift_cap_from_adaptive_state(
+                        drift_state=drift_state,
+                        execution_mode=execution_mode,
+                        candidate_type=candidate_type,
+                    )
+                )
 
     async def promotions(self, *, limit: int = 50) -> ContinualLearningPromotionsResponse:
         """Return the read-only continual-learning promotions payload."""
@@ -865,6 +906,37 @@ class ContinualLearningService:
         append_jsonl_artifact(
             self.config.artifacts.events_history_path,
             event.model_dump(mode="json"),
+        )
+
+    def _drift_cap_from_adaptive_state(
+        self,
+        *,
+        drift_state: AdaptiveDriftRecord,
+        execution_mode: str,
+        candidate_type: str,
+    ) -> ContinualLearningDriftCapRecord:
+        return ContinualLearningDriftCapRecord(
+            cap_id=(
+                "runtime:"
+                f"{execution_mode}:{drift_state.symbol}:{drift_state.regime_label}:"
+                f"{candidate_type}:{drift_state.detector_name}:{drift_state.window_id}"
+            ),
+            execution_mode_scope=execution_mode,
+            symbol_scope=drift_state.symbol,
+            regime_scope=drift_state.regime_label,
+            candidate_type=candidate_type,
+            status=drift_state.status,
+            observed_drift_score=drift_state.drift_score,
+            warning_threshold=drift_state.warning_threshold,
+            breach_threshold=drift_state.breach_threshold,
+            reason_code=drift_state.reason_code,
+            detail=(
+                "Derived from persisted M19 adaptive drift state only. "
+                f"detector={drift_state.detector_name}; "
+                f"window_id={drift_state.window_id}; "
+                f"source_symbol={drift_state.symbol}; "
+                f"source_regime_label={drift_state.regime_label}"
+            ),
         )
 
     async def _persist_blocked_workflow(

@@ -1826,6 +1826,8 @@ def test_health_reports_real_active_ensemble_runtime(tmp_path: Path, monkeypatch
     assert payload["ensemble_status"] == "ACTIVE"
     assert payload["ensemble_profile_id"] == "ens-profile-active-1"
     assert payload["ensemble_candidate_count"] == 2
+    assert payload["model_name"] == "dynamic_ensemble"
+    assert payload["model_artifact_path"] is None
 
 
 def test_predict_returns_ensemble_backed_output_when_active(

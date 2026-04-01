@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from pathlib import Path
 
 from app.adaptation.artifacts import (
@@ -17,6 +18,8 @@ from app.adaptation.config import (
     default_adaptation_config_path,
     load_adaptation_config,
 )
+from app.adaptation.drift import classify_drift, population_stability_index
+from app.adaptation.performance import build_rolling_performance_windows
 from app.adaptation.schemas import (
     AdaptationContextPayload,
     AdaptationDriftResponse,
@@ -36,6 +39,7 @@ from app.adaptation.sizing import bounded_size_multiplier
 from app.adaptation.thresholds import bounded_effective_thresholds
 from app.common.time import to_rfc3339, utc_now
 from app.trading.repository import TradingRepository
+from app.trading.schemas import DecisionTraceRecord, PaperPosition, TradeLedgerEntry
 
 
 class AdaptationService:
@@ -361,6 +365,46 @@ class AdaptationService:
         )
         return decision
 
+    async def write_runtime_persisted_truth(
+        self,
+        *,
+        service_name: str,
+        execution_mode: str,
+        source_exchange: str,
+        interval_minutes: int,
+        symbols: tuple[str, ...],
+        system_reliability=None,
+    ) -> None:
+        """Persist additive M19 runtime truth from existing feature, trade, and trace evidence."""
+        if not self.config.enabled or not await self._ensure_repository_ready():
+            return
+        if self.repository is None:
+            return
+        if not all(
+            hasattr(self.repository, attribute)
+            for attribute in (
+                "load_feature_rows_for_adaptation",
+                "save_adaptive_drift_state",
+                "load_positions",
+                "load_trade_ledger_entries",
+                "load_decision_traces_since",
+                "save_adaptive_performance_window",
+            )
+        ):
+            return
+        evaluated_at = utc_now()
+        await self._persist_runtime_drift_states(
+            source_exchange=source_exchange,
+            interval_minutes=interval_minutes,
+            symbols=symbols,
+        )
+        await self._persist_runtime_performance_windows(
+            service_name=service_name,
+            execution_mode=execution_mode,
+            system_reliability=system_reliability,
+            evaluated_at=evaluated_at,
+        )
+
     def write_profile_artifacts(
         self,
         *,
@@ -460,6 +504,451 @@ class AdaptationService:
             adaptive_size_multiplier=applied.adaptive_size_multiplier,
             effective_thresholds=applied.effective_thresholds,
         )
+
+    async def _persist_runtime_drift_states(
+        self,
+        *,
+        source_exchange: str,
+        interval_minutes: int,
+        symbols: tuple[str, ...],
+    ) -> None:
+        reference_count = self.config.drift.minimum_reference_samples
+        live_count = self.config.drift.minimum_live_samples
+        required_rows = reference_count + live_count
+        aggregate_reference: dict[str, list[float]] = defaultdict(list)
+        aggregate_live: dict[str, list[float]] = defaultdict(list)
+        reference_starts = []
+        reference_ends = []
+        live_starts = []
+        live_ends = []
+        included_symbols: list[str] = []
+
+        for symbol in symbols:
+            rows = await self.repository.load_feature_rows_for_adaptation(
+                symbol=symbol,
+                source_exchange=source_exchange,
+                interval_minutes=interval_minutes,
+                feature_columns=self.config.drift.features,
+                limit=required_rows,
+            )
+            split_windows = self._split_drift_windows(
+                rows=rows,
+                reference_count=reference_count,
+                live_count=live_count,
+            )
+            if split_windows is None:
+                continue
+            reference_rows, live_rows = split_windows
+            reference_series = self._feature_series(
+                rows=reference_rows,
+                feature_names=self.config.drift.features,
+            )
+            live_series = self._feature_series(
+                rows=live_rows,
+                feature_names=self.config.drift.features,
+            )
+            drift_record = self._build_drift_record_from_series(
+                symbol=symbol,
+                regime_label="ALL",
+                reference_window_start=reference_rows[0]["interval_begin"],
+                reference_window_end=reference_rows[-1]["interval_begin"],
+                live_window_start=live_rows[0]["interval_begin"],
+                live_window_end=live_rows[-1]["interval_begin"],
+                reference_series=reference_series,
+                live_series=live_series,
+                included_symbols=(symbol,),
+            )
+            if drift_record is None:
+                continue
+            await self.repository.save_adaptive_drift_state(drift_record)
+            for feature_name, values in reference_series.items():
+                aggregate_reference[feature_name].extend(values)
+            for feature_name, values in live_series.items():
+                aggregate_live[feature_name].extend(values)
+            reference_starts.append(reference_rows[0]["interval_begin"])
+            reference_ends.append(reference_rows[-1]["interval_begin"])
+            live_starts.append(live_rows[0]["interval_begin"])
+            live_ends.append(live_rows[-1]["interval_begin"])
+            included_symbols.append(symbol)
+
+        if not included_symbols:
+            return
+        aggregate_record = self._build_drift_record_from_series(
+            symbol="ALL",
+            regime_label="ALL",
+            reference_window_start=min(reference_starts),
+            reference_window_end=max(reference_ends),
+            live_window_start=min(live_starts),
+            live_window_end=max(live_ends),
+            reference_series=dict(aggregate_reference),
+            live_series=dict(aggregate_live),
+            included_symbols=tuple(sorted(included_symbols)),
+        )
+        if aggregate_record is not None:
+            await self.repository.save_adaptive_drift_state(aggregate_record)
+
+    async def _persist_runtime_performance_windows(
+        self,
+        *,
+        service_name: str,
+        execution_mode: str,
+        system_reliability,
+        evaluated_at,
+    ) -> None:
+        positions = await self.repository.load_positions(
+            service_name=service_name,
+            execution_mode=execution_mode,
+        )
+        closed_positions = [
+            position
+            for position in positions
+            if position.status == "CLOSED"
+            and position.realized_pnl is not None
+            and self._position_event_time(position) is not None
+        ]
+        if not closed_positions:
+            return
+        earliest_event_time = min(
+            self._position_event_time(position) for position in closed_positions
+        )
+        decision_traces = await self.repository.load_decision_traces_since(
+            service_name=service_name,
+            execution_mode=execution_mode,
+            since=earliest_event_time,
+        )
+        ledger_entries = await self.repository.load_trade_ledger_entries(
+            service_name=service_name,
+            execution_mode=execution_mode,
+            since=earliest_event_time,
+        )
+        for symbol_scope, regime_scope, scoped_positions in self._performance_scopes(
+            closed_positions
+        ):
+            position_rows = self._performance_rows_from_positions(
+                positions=scoped_positions,
+                ledger_entries=ledger_entries,
+            )
+            for window in build_rolling_performance_windows(
+                execution_mode=execution_mode,
+                symbol=symbol_scope,
+                regime_label=regime_scope,
+                rows=position_rows,
+                trade_counts=self.config.rolling_windows.trade_counts,
+                day_windows=self.config.rolling_windows.day_windows,
+                now=evaluated_at,
+            ):
+                scoped_traces = self._decision_traces_in_window(
+                    traces=decision_traces,
+                    symbol_scope=symbol_scope,
+                    regime_scope=regime_scope,
+                    window_start=window.window_start,
+                    window_end=window.window_end,
+                )
+                comparable_count, positive_count = self._precision_counts(
+                    traces=scoped_traces,
+                    positions=scoped_positions,
+                )
+                blocked_count = sum(1 for trace in scoped_traces if self._trace_blocked(trace))
+                decision_count = len(scoped_traces)
+                slippage_sample_count = sum(
+                    1
+                    for row in position_rows
+                    if window.window_start <= row["event_time"] <= window.window_end
+                    and row["slippage_sample_count"] > 0
+                )
+                await self.repository.save_adaptive_performance_window(
+                    window.model_copy(
+                        update={
+                            "precision": (
+                                0.0
+                                if comparable_count == 0
+                                else positive_count / comparable_count
+                            ),
+                            "blocked_trade_rate": (
+                                0.0 if decision_count == 0 else blocked_count / decision_count
+                            ),
+                            "shadow_divergence_rate": 0.0,
+                            "health_context": self._performance_health_context(
+                                system_reliability=system_reliability,
+                                decision_count=decision_count,
+                                blocked_count=blocked_count,
+                                comparable_count=comparable_count,
+                                positive_count=positive_count,
+                                slippage_sample_count=slippage_sample_count,
+                            ),
+                        }
+                    )
+                )
+
+    def _split_drift_windows(
+        self,
+        *,
+        rows: list[dict[str, object]],
+        reference_count: int,
+        live_count: int,
+    ) -> tuple[list[dict[str, object]], list[dict[str, object]]] | None:
+        if len(rows) < reference_count + live_count:
+            return None
+        reference_rows = rows[-(reference_count + live_count) : -live_count]
+        live_rows = rows[-live_count:]
+        if len(reference_rows) < reference_count or len(live_rows) < live_count:
+            return None
+        return reference_rows, live_rows
+
+    def _feature_series(
+        self,
+        *,
+        rows: list[dict[str, object]],
+        feature_names: tuple[str, ...],
+    ) -> dict[str, list[float]]:
+        series: dict[str, list[float]] = {}
+        for feature_name in feature_names:
+            values = [
+                float(value)
+                for row in rows
+                for value in (row.get(feature_name),)
+                if isinstance(value, (int, float))
+            ]
+            series[feature_name] = values
+        return series
+
+    def _build_drift_record_from_series(
+        self,
+        *,
+        symbol: str,
+        regime_label: str,
+        reference_window_start,
+        reference_window_end,
+        live_window_start,
+        live_window_end,
+        reference_series: dict[str, list[float]],
+        live_series: dict[str, list[float]],
+        included_symbols: tuple[str, ...],
+    ) -> AdaptiveDriftRecord | None:
+        scored_features: list[tuple[str, float, float, float]] = []
+        unavailable_features: list[str] = []
+        for feature_name in self.config.drift.features:
+            reference_values = reference_series.get(feature_name, [])
+            live_values = live_series.get(feature_name, [])
+            if (
+                len(reference_values) < self.config.drift.minimum_reference_samples
+                or len(live_values) < self.config.drift.minimum_live_samples
+            ):
+                unavailable_features.append(feature_name)
+                continue
+            thresholds = self.config.drift.feature_thresholds.get(
+                feature_name,
+                self.config.drift.feature_default,
+            )
+            scored_features.append(
+                (
+                    feature_name,
+                    population_stability_index(reference_values, live_values),
+                    thresholds.warning,
+                    thresholds.breach,
+                )
+            )
+        if not scored_features:
+            return None
+        dominant_feature, drift_score, warning_threshold, breach_threshold = max(
+            scored_features,
+            key=lambda item: item[1],
+        )
+        status, reason_code = classify_drift(
+            drift_score,
+            warning_threshold=warning_threshold,
+            breach_threshold=breach_threshold,
+        )
+        return AdaptiveDriftRecord(
+            symbol=symbol,
+            regime_label=regime_label,
+            detector_name=self.config.drift.detector_name,
+            window_id=(
+                f"rolling_{self.config.drift.minimum_reference_samples}"
+                f"_vs_{self.config.drift.minimum_live_samples}"
+            ),
+            reference_window_start=reference_window_start,
+            reference_window_end=reference_window_end,
+            live_window_start=live_window_start,
+            live_window_end=live_window_end,
+            drift_score=drift_score,
+            warning_threshold=warning_threshold,
+            breach_threshold=breach_threshold,
+            status=status,
+            reason_code=reason_code,
+            detail=(
+                "Feature PSI drift from persisted runtime feature rows. "
+                f"dominant_feature={dominant_feature}; "
+                f"scored_features={len(scored_features)}; "
+                f"included_symbols={list(included_symbols)}; "
+                f"unavailable_features={unavailable_features}"
+            ),
+        )
+
+    def _performance_scopes(
+        self,
+        positions: list[PaperPosition],
+    ) -> list[tuple[str, str, list[PaperPosition]]]:
+        scopes: list[tuple[str, str, list[PaperPosition]]] = [("ALL", "ALL", positions)]
+        symbols = sorted({position.symbol for position in positions})
+        regimes = sorted({self._regime_key(position.entry_regime_label) for position in positions})
+        for symbol in symbols:
+            scopes.append(
+                (
+                    symbol,
+                    "ALL",
+                    [position for position in positions if position.symbol == symbol],
+                )
+            )
+        for regime_label in regimes:
+            scopes.append(
+                (
+                    "ALL",
+                    regime_label,
+                    [
+                        position
+                        for position in positions
+                        if self._regime_key(position.entry_regime_label) == regime_label
+                    ],
+                )
+            )
+        for symbol in symbols:
+            for regime_label in regimes:
+                scoped_positions = [
+                    position
+                    for position in positions
+                    if position.symbol == symbol
+                    and self._regime_key(position.entry_regime_label) == regime_label
+                ]
+                if scoped_positions:
+                    scopes.append((symbol, regime_label, scoped_positions))
+        return [scope for scope in scopes if scope[2]]
+
+    def _performance_rows_from_positions(
+        self,
+        *,
+        positions: list[PaperPosition],
+        ledger_entries: list[TradeLedgerEntry],
+    ) -> list[dict[str, object]]:
+        ledger_by_position_id: dict[int, list[TradeLedgerEntry]] = defaultdict(list)
+        for entry in ledger_entries:
+            if entry.position_id is not None:
+                ledger_by_position_id[entry.position_id].append(entry)
+        rows: list[dict[str, object]] = []
+        for position in positions:
+            event_time = self._position_event_time(position)
+            if event_time is None:
+                continue
+            position_ledger = (
+                []
+                if position.position_id is None
+                else ledger_by_position_id.get(position.position_id, [])
+            )
+            slippage_values = [entry.slippage_bps for entry in position_ledger]
+            rows.append(
+                {
+                    "event_time": event_time,
+                    "realized_pnl": position.realized_pnl or 0.0,
+                    "slippage_bps": (
+                        0.0
+                        if not slippage_values
+                        else sum(slippage_values) / len(slippage_values)
+                    ),
+                    "predicted_positive": True,
+                    "true_positive": (position.realized_pnl or 0.0) > 0.0,
+                    "blocked": False,
+                    "shadow_diverged": False,
+                    "health_context": {},
+                    "slippage_sample_count": len(slippage_values),
+                }
+            )
+        return rows
+
+    def _decision_traces_in_window(
+        self,
+        *,
+        traces: list[DecisionTraceRecord],
+        symbol_scope: str,
+        regime_scope: str,
+        window_start,
+        window_end,
+    ) -> list[DecisionTraceRecord]:
+        return [
+            trace
+            for trace in traces
+            if window_start <= trace.signal_as_of_time <= window_end
+            and symbol_scope in ("ALL", trace.symbol)
+            and regime_scope in ("ALL", self._trace_regime_label(trace))
+        ]
+
+    def _precision_counts(
+        self,
+        *,
+        traces: list[DecisionTraceRecord],
+        positions: list[PaperPosition],
+    ) -> tuple[int, int]:
+        positive_by_trace_id = {
+            position.entry_decision_trace_id: (position.realized_pnl or 0.0) > 0.0
+            for position in positions
+            if position.entry_decision_trace_id is not None
+        }
+        comparable = 0
+        positive = 0
+        for trace in traces:
+            if trace.signal != "BUY":
+                continue
+            outcome = positive_by_trace_id.get(trace.decision_trace_id)
+            if outcome is None:
+                continue
+            comparable += 1
+            if outcome:
+                positive += 1
+        return comparable, positive
+
+    def _performance_health_context(
+        self,
+        *,
+        system_reliability,
+        decision_count: int,
+        blocked_count: int,
+        comparable_count: int,
+        positive_count: int,
+        slippage_sample_count: int,
+    ) -> dict[str, object]:
+        return {
+            "system_reliability_available": system_reliability is not None,
+            "system_health_overall_status": (
+                None
+                if system_reliability is None
+                else system_reliability.health_overall_status
+            ),
+            "system_reason_codes": (
+                []
+                if system_reliability is None
+                else list(system_reliability.reason_codes)
+            ),
+            "decision_trace_count": decision_count,
+            "blocked_decision_count": blocked_count,
+            "precision_comparable_count": comparable_count,
+            "precision_positive_count": positive_count,
+            "slippage_sample_count": slippage_sample_count,
+        }
+
+    def _position_event_time(self, position: PaperPosition):
+        return position.exit_fill_time or position.closed_at or position.entry_fill_time
+
+    def _trace_regime_label(self, trace: DecisionTraceRecord) -> str:
+        if trace.payload.regime_reason is None:
+            return "UNKNOWN"
+        return self._regime_key(trace.payload.regime_reason.regime_label)
+
+    def _trace_blocked(self, trace: DecisionTraceRecord) -> bool:
+        return trace.payload.blocked_trade is not None or trace.risk_outcome == "BLOCKED"
+
+    def _regime_key(self, value: str | None) -> str:
+        if value is None or not value.strip():
+            return "UNKNOWN"
+        return value
 
     def _is_frozen_by_health_gate(
         self,

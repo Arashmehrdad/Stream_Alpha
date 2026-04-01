@@ -4,11 +4,11 @@ Stream Alpha is a local-first crypto trading research and operator stack built a
 
 The project started as a market-data and feature pipeline, then grew into a bounded trading system with explicit authority layers for prediction, risk, execution, reliability, explainability, adaptation, ensemble behavior, and guarded continual learning.
 
-This README is a cleaned canonical guide for the accepted **Second Foundation v2** baseline, which is complete through **M21**.
+This README is a cleaned canonical guide for the accepted **Second Foundation v2** baseline, with honest status notes for the currently implemented M19-M21 surfaces.
 
 ## Current Status
 
-Accepted milestones:
+Accepted milestones and current higher-foundation status:
 
 * M1 through M7
 * M8 foundation
@@ -22,11 +22,11 @@ Accepted milestones:
 * M16 deployment and environment foundation
 * M17 operational alerting foundation
 * M18 usability and strategy evaluation foundation
-* M19 adaptive intelligence foundation
-* M20 dynamic ensemble foundation
-* M21 safe continual learning foundation
+* M19 bounded adaptation now has runtime-generated persisted drift/performance truth, without invented active adaptive profiles or promotions beyond real persisted state
+* M20 dynamic ensemble is active, but limited and candidate-pool constrained by the actual trained registry-backed artifacts available today
+* M21 guarded continual learning now has runtime-generated persisted drift-cap truth, without invented active profiles, experiments, or promotions beyond real persisted state
 
-Second Foundation v2 is complete.
+Second Foundation v2 is not honestly complete through M21 yet. The repo now exposes truthful M19-M21 runtime surfaces without overclaiming stronger model diversity, profile activity, or promotion evidence than currently exists.
 
 ## What Stream Alpha Is
 
@@ -110,9 +110,55 @@ These boundaries are part of the accepted design and should be treated as stable
 ### M18 to M21: evaluation, bounded intelligence, and guarded learning
 
 * **M18** adds usability and strategy evaluation truth, divergence reporting, and realistic promotion evidence.
-* **M19** adds bounded adaptation with explicit drift, recalibration, promotion evidence, and rollback.
-* **M20** adds dynamic ensemble behavior with regime-aware weighting, agreement truth, and controlled promotion and rollback.
-* **M21** adds safe continual learning as a guarded operator workflow with explicit promotion and rollback truth, strict drift caps, measurable before/after evidence, and no uncontrolled live self-retraining.
+* **M19** now writes runtime-generated persisted drift/performance truth. It should be read as bounded adaptation evidence, not as proof of stronger adaptive profile or promotion activity than the real persisted state supports.
+* **M20** is active in runtime, but still limited and candidate-pool constrained by the actual trained registry-backed artifacts available today.
+* **M21** now writes runtime-generated persisted drift-cap truth. Guarded workflow/read surfaces exist, but the repo does not invent active continual-learning profiles, experiments, or promotions beyond real persisted truth.
+
+## Corrected model-stack judgment
+
+### Present and trained now
+
+* `logistic_regression`
+* `hist_gradient_boosting`
+* simple baselines only where they are actually produced by the committed training/evaluation flow
+
+### Supported indirectly via real AutoGluon only if actually real
+
+* none today
+
+AutoGluon does **not** currently receive credit in this repo because there is no proven end-to-end training or import workflow that produces real registry-backed, runtime-usable AutoGluon artifacts in the current baseline.
+
+### Referenced in design but not actually trained / registry-backed / runtime-usable
+
+* AutoGluon
+* NeuralForecast NHITS
+* NeuralForecast NBEATSx
+* NeuralForecast TFT
+* NeuralForecast PatchTST
+* River
+* other advanced specialist families mentioned in design or research targeting hooks without real committed trained artifacts and runtime-usable registry truth
+
+### Not needed separately if AutoGluon becomes real later
+
+* XGBoost
+* LightGBM
+* CatBoost
+* tabular MLP-like learners managed under a real AutoGluon Tabular workflow
+
+### Impact on M19
+
+* M19 now has real runtime-generated persisted drift/performance truth.
+* M19 should still be judged as bounded and evidence-led rather than strong autonomous adaptation, because the upstream trained model pool remains limited and no stronger adaptive profile/promotion state has been invented.
+
+### Impact on M20
+
+* M20 is active, but it is only as strong as the actual trained candidate pool.
+* The current ensemble should not be described as richly specialist or strongly diverse; it is constrained by the limited registry-backed candidates actually available at runtime.
+
+### Impact on M21
+
+* M21 now has real runtime-generated persisted drift-cap truth.
+* M21 should not be described as strong continual learning yet, because guarded persisted truth exists without a broad, proven, runtime-usable specialist candidate ecosystem or invented promotion activity.
 
 ## High-Level Repository Layout
 
@@ -288,7 +334,7 @@ streamlit run dashboards/streamlit_app.py
 
 ## M21 Guarded Continual-Learning Workflow
 
-M21 is finalized as a **manual, guarded, evidence-based** continual-learning workflow.
+M21 currently exposes a **manual, guarded, evidence-based** continual-learning workflow surface. The runtime now persists drift-cap truth, but active profiles, experiments, and promotions should only be treated as present when they exist in real persisted state.
 
 It is designed to be:
 
@@ -430,7 +476,7 @@ Guarded live still does not mean fully autonomous live trading. Broker-truth mis
 
 ## Operator Console
 
-The Streamlit operator console now reflects the accepted **M15 through M21** foundations.
+The Streamlit operator console now reflects the accepted **M15 through M18** foundations plus the currently available M19-M21 runtime truth surfaces.
 
 Main views:
 
@@ -548,7 +594,7 @@ Current intentional limits include:
 
 ## Closeout
 
-Second Foundation v2 is complete through accepted M21.
+Second Foundation v2 is mostly aligned through accepted M18, with active but still limited M19-M21 runtime truth surfaces.
 
 That means:
 
@@ -557,3 +603,5 @@ That means:
 * continual-learning changes are measurable and reversible
 * there is no uncontrolled live self-retraining
 * GitHub Actions baseline validation now protects the accepted v2 branch, while local-first validation remains primary
+
+The honest current limitation is that M20 remains candidate-pool constrained, and M19/M21 should be judged from the real persisted truth now generated at runtime rather than stronger profile, promotion, or specialist-model diversity that does not yet exist.

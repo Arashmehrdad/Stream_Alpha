@@ -1,0 +1,132 @@
+
+    StreamAlpha - Real-Time Crypto Feature Pipeline Project Plan
+    Project objective
+    Build a production-style crypto intelligence system that ingests live market data, computes streaming features, serves short-horizon forecasts and BUY/SELL/HOLD signals, paper-trades those signals, and monitors latency, drift, and PnL.
+    Core principle: - Build a real-time intelligence and paper-trading platform first. - Delay live trading and RL until the system is stable and measurable.
+    Why this project is strong
+    Aligns with your crypto interest and prior forecasting work.
+    Adds streaming systems and production engineering to your portfolio.
+    Gives you a strong interview story across data engineering, ML, APIs, monitoring, and trading logic.
+    Scope for v1
+    Focus on a realistic first version: - Assets: BTC, ETH, SOL - Market type: spot - Timeframe: 5-minute candles - Prediction target: next 3-candle direction - Outputs: prediction, confidence score, BUY/SELL/HOLD signal - Trading mode: paper only
+    System architecture
+    Exchange WebSocket / REST    -&gt; Producer Service    -&gt; Redpanda or Kafka Topics        -&gt; Feature Consumer        -&gt; Postgres / TimescaleDB        -&gt; Inference API        -&gt; Signal Engine        -&gt; Paper Trader        -&gt; Monitoring Stack        -&gt; Streamlit Dashboard
+    Recommended stack
+    Core
+    Python
+    Redpanda or Kafka
+    FastAPI
+    Postgres or TimescaleDB
+    pandas or polars
+    scikit-learn
+    XGBoost or LightGBM
+    Streamlit
+    Docker
+    pytest
+    Nice additions later
+    MLflow
+    Prometheus
+    Grafana
+    Prefect
+    DVC
+    Build order
+    Phase 1 - System specification
+    Define the boundaries before writing too much code.
+    Decisions: - exchange source - candle interval - assets - target definition - signal thresholds - fee and slippage assumptions - paper-trading rules
+    Deliverables: - project spec - architecture diagram - topic and table schema draft - success metrics
+    Phase 2 - Streaming ingestion
+    Build reliable live data ingestion.
+    Inputs: - trades - candles - optionally order book snapshots later
+    Tasks: - connect to exchange WebSocket - publish raw events into Redpanda/Kafka topics - add fallback REST poller if needed - validate event schema - persist essential raw data for replay/debugging
+    Deliverables: - live producer service - raw topics working - basic logging and reconnect handling
+    Phase 3 - Feature engineering service
+    Consume the stream and compute rolling features in near real time.
+    Initial features: - log returns - rolling mean and rolling std - momentum - RSI - MACD-style differences - rolling volume stats - realized volatility - z-scores - lagged features - spread / imbalance if market depth is available
+    Rules: - no data leakage - features must only use information known at prediction time - feature timestamps must align with inference windows
+    Deliverables: - feature consumer service - feature table in Postgres/TimescaleDB - feature tests for correctness
+    Phase 4 - Offline model training
+    Start with strong baselines, not complex hype.
+    Models: - naive baseline - logistic regression - XGBoost or LightGBM - small MLP - optional lightweight Transformer later
+    Target: - next 3-candle direction classification
+    Evaluation: - walk-forward validation - directional accuracy - precision/recall by class - calibration / confidence analysis - net value proxy after fees
+    Deliverables: - training pipeline - saved model artifacts - evaluation report / notebook - benchmark table
+    Phase 5 - Real-time inference API
+    Serve model predictions from the latest feature vector.
+    Endpoints: - /predict - /signal - /health - /metrics - /latest-features
+    Signal logic example: - BUY when confidence is above threshold and expected move exceeds estimated fees/slippage - SELL when bearish confidence exceeds threshold - HOLD otherwise
+    Deliverables: - FastAPI inference service - structured response schema - request and latency logging
+    Phase 6 - Paper trading engine
+    Translate signals into simulated trades.
+    Engine rules: - position sizing - transaction fees - slippage - stop loss - take profit - cooldown window - max open positions - max exposure per asset
+    Metrics: - cumulative PnL - win rate - max drawdown - average trade return - turnover - hit rate by asset - Sharpe-like risk metric
+    Deliverables: - event-driven paper trader - trade ledger - performance summary tables
+    Phase 7 - Monitoring and observability
+    This makes the project look serious.
+    Monitor: - ingestion lag - dropped messages - consumer lag - API latency - model confidence drift - feature drift - prediction distribution drift - signal frequency - PnL and drawdown
+    Deliverables: - live dashboard - metric collection - alertable thresholds
+    Phase 8 - Retraining workflow
+    Add a controlled retraining loop.
+    Tasks: - schedule retraining - compare challenger vs champion - store metrics and artifacts - deploy only if the new model is better - support rollback
+    Deliverables: - retraining workflow - model version tracking - comparison report
+    Phase 9 - Advanced branch
+    Only after the full pipeline works.
+    Best next upgrades: 1. regime classifier 2. sentiment/news stream 3. portfolio allocation logic 4. RL execution policy 5. anomaly detection on market microstructure
+    Recommended order: - regime detection first - RL much later
+    Repo structure
+    streamalpha/├─ app/│  ├─ ingestion/│  ├─ features/│  ├─ training/│  ├─ inference/│  ├─ trading/│  ├─ monitoring/│  └─ common/├─ configs/├─ dashboards/├─ notebooks/├─ tests/├─ docker/├─ scripts/├─ data_samples/├─ docs/├─ docker-compose.yml├─ README.md└─ requirements.txt
+    Milestones
+    Milestone 1
+    Live ingestion works for BTC, ETH, and SOL.
+    Milestone 2
+    Feature pipeline computes rolling features and stores them correctly.
+    Milestone 3
+    Baseline training pipeline beats naive benchmark.
+    Milestone 4
+    FastAPI serves real-time predictions and signals.
+    Milestone 5
+    Paper trader records trades and performance.
+    Milestone 6
+    Dashboard shows live system health, signals, and PnL.
+    Milestone 7
+    Retraining and model comparison workflow added.
+    Milestone 8
+    Advanced module added, preferably regime detection.
+    Success metrics
+    For the system: - stable ingestion - low consumer lag - consistent API latency - clean logs and recoverability
+    For the model: - better than naive directional baseline - stable performance across assets - well-calibrated confidence
+    For the trading layer: - positive paper-trading expectancy after fees in selected regimes - controlled drawdown - sensible trade frequency
+    Risks to avoid
+    jumping into RL too early
+    optimizing only for accuracy instead of PnL and drawdown
+    using too many coins at once
+    adding sentiment before core market data works
+    leaking future information into features
+    ignoring fees and slippage
+    Best first version
+    This is the strongest first build: - BTC, ETH, SOL - 5-minute candles - Redpanda - Postgres - rolling technical/statistical features - XGBoost classifier for next 3-candle direction - FastAPI signal service - paper trader - Streamlit dashboard
+    Good GitHub proof points
+    Make the repo visibly show: - architecture diagram - clean README - Docker setup - screenshots of dashboard - sample prediction JSON - paper-trading summary - tests - releases and milestone history
+    CV bullets
+    Built a real-time crypto forecasting pipeline using streaming market data, online feature engineering, FastAPI inference, and paper-trading evaluation.
+    Designed an event-driven architecture with Redpanda/Kafka, Postgres, and monitoring for latency, drift, and PnL tracking.
+    Implemented short-horizon prediction models and transaction-cost-aware signal logic with walk-forward evaluation and model versioning.
+    First build sprint
+    Week 1
+    set repo structure
+    docker-compose for broker + database
+    connect exchange WebSocket
+    stream raw candles/trades into topics
+    Week 2
+    build feature consumer
+    store feature table
+    add basic dashboard showing latest prices and features
+    Week 3
+    train first baseline models offline
+    evaluate with walk-forward validation
+    save best model
+    Week 4
+    build inference API and signal logic
+    connect paper trader
+    expose PnL and signal history on dashboard
+    Final rule
+    Do not ask this project to make real money at the beginning. Ask it to become measurable, robust, and honest first. That is how systems survive long enough to become useful.

@@ -1,6 +1,6 @@
 """PostgreSQL persistence for the Stream Alpha M5 paper trader."""
 
-# pylint: disable=duplicate-code,too-many-lines
+# pylint: disable=duplicate-code,too-many-lines,line-too-long
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import json
 import re
 from collections.abc import Sequence
 from datetime import date, datetime
+from typing import Any
 
 import asyncpg
 
@@ -2478,6 +2479,49 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
             return None
         return _candle_from_row(row)
 
+    async def load_feature_rows_for_adaptation(  # pylint: disable=too-many-arguments
+        self,
+        *,
+        symbol: str,
+        source_exchange: str,
+        interval_minutes: int,
+        feature_columns: Sequence[str],
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """Load recent finalized feature rows with explicit drift columns for M19."""
+        if limit <= 0:
+            return []
+        pool = self._require_pool()
+        ordered_feature_columns = tuple(dict.fromkeys(str(column) for column in feature_columns))
+        selected_columns = [
+            "symbol",
+            "interval_begin",
+            "as_of_time",
+            *(_quote_identifier(column) for column in ordered_feature_columns),
+        ]
+        rows = await pool.fetch(
+            f"""
+            SELECT {", ".join(selected_columns)}
+            FROM {self._source_table}
+            WHERE source_exchange = $1
+              AND symbol = $2
+              AND interval_minutes = $3
+            ORDER BY as_of_time DESC, interval_begin DESC
+            LIMIT $4
+            """,
+            source_exchange,
+            symbol,
+            interval_minutes,
+            limit,
+        )
+        return [
+            {
+                key: row[key]
+                for key in ("symbol", "interval_begin", "as_of_time", *ordered_feature_columns)
+            }
+            for row in reversed(rows)
+        ]
+
     async def load_open_positions(
         self,
         service_name: str,
@@ -2710,6 +2754,43 @@ class TradingRepository:  # pylint: disable=too-many-instance-attributes,too-man
             entry.cash_flow,
             entry.realized_pnl,
         )
+
+    async def load_trade_ledger_entries(
+        self,
+        *,
+        service_name: str,
+        execution_mode: str,
+        since: datetime | None = None,
+    ) -> list[TradeLedgerEntry]:
+        """Load persisted ledger rows for one execution mode, optionally since one time."""
+        pool = self._require_pool()
+        if since is None:
+            rows = await pool.fetch(
+                f"""
+                SELECT *
+                FROM {self._ledger_table}
+                WHERE service_name = $1
+                  AND execution_mode = $2
+                ORDER BY fill_time ASC, id ASC
+                """,
+                service_name,
+                execution_mode,
+            )
+        else:
+            rows = await pool.fetch(
+                f"""
+                SELECT *
+                FROM {self._ledger_table}
+                WHERE service_name = $1
+                  AND execution_mode = $2
+                  AND fill_time >= $3
+                ORDER BY fill_time ASC, id ASC
+                """,
+                service_name,
+                execution_mode,
+                since,
+            )
+        return [_ledger_entry_from_row(row) for row in rows]
 
     async def load_cash_balance(
         self,
@@ -4627,6 +4708,56 @@ def _recovery_event_from_row(row: asyncpg.Record) -> RecoveryEvent:
         ),
         detail=None if row["details"] is None else str(row["details"]),
         event_id=int(row["id"]),
+        created_at=row["created_at"],
+    )
+
+
+def _ledger_entry_from_row(row: asyncpg.Record) -> TradeLedgerEntry:
+    return TradeLedgerEntry(
+        service_name=str(row["service_name"]),
+        symbol=str(row["symbol"]),
+        action=str(row["action"]),
+        reason=str(row["reason"]),
+        fill_interval_begin=row["fill_interval_begin"],
+        fill_time=row["fill_time"],
+        fill_price=float(row["fill_price"]),
+        quantity=float(row["quantity"]),
+        notional=float(row["notional"]),
+        fee=float(row["fee"]),
+        slippage_bps=float(row["slippage_bps"]),
+        cash_flow=float(row["cash_flow"]),
+        execution_mode=str(row["execution_mode"]),
+        position_id=None if row["position_id"] is None else int(row["position_id"]),
+        order_request_id=(
+            None if row["order_request_id"] is None else int(row["order_request_id"])
+        ),
+        decision_trace_id=(
+            None
+            if row["decision_trace_id"] is None
+            else int(row["decision_trace_id"])
+        ),
+        signal_interval_begin=row["signal_interval_begin"],
+        signal_as_of_time=row["signal_as_of_time"],
+        signal_row_id=(
+            None if row["signal_row_id"] is None else str(row["signal_row_id"])
+        ),
+        model_name=None if row["model_name"] is None else str(row["model_name"]),
+        prob_up=None if row["prob_up"] is None else float(row["prob_up"]),
+        prob_down=None if row["prob_down"] is None else float(row["prob_down"]),
+        confidence=None if row["confidence"] is None else float(row["confidence"]),
+        regime_label=(
+            None if row["regime_label"] is None else str(row["regime_label"])
+        ),
+        approved_notional=(
+            None if row["approved_notional"] is None else float(row["approved_notional"])
+        ),
+        risk_outcome=(
+            None if row["risk_outcome"] is None else str(row["risk_outcome"])
+        ),
+        risk_reason_codes=_text_array_to_tuple(row["risk_reason_codes"]),
+        realized_pnl=(
+            None if row["realized_pnl"] is None else float(row["realized_pnl"])
+        ),
         created_at=row["created_at"],
     )
 

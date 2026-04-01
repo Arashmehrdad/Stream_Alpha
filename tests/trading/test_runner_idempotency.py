@@ -12,6 +12,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from app.adaptation.config import default_adaptation_config_path, load_adaptation_config
 from app.alerting.config import (
     AlertingArtifactConfig,
     AlertingConfig,
@@ -129,6 +130,9 @@ class FakeRepository:  # pylint: disable=too-many-instance-attributes
         self.open_positions = {}
         self.positions = []
         self.ledger = []
+        self.saved_adaptive_drift_states = []
+        self.saved_adaptive_performance_windows = []
+        self.saved_continual_learning_drift_caps = []
         self.risk_state = None
         self.risk_decisions = []
         self.reliability_states = {}
@@ -318,6 +322,59 @@ class FakeRepository:  # pylint: disable=too-many-instance-attributes
     async def load_latest_prices(self, *, source_exchange: str, interval_minutes: int, symbols: tuple[str, ...]):
         del source_exchange, interval_minutes, symbols
         return {"BTC/USD": self.candles[-1].close_price}
+
+    async def load_feature_rows_for_adaptation(
+        self,
+        *,
+        symbol: str,
+        source_exchange: str,
+        interval_minutes: int,
+        feature_columns,
+        limit: int,
+    ):
+        del source_exchange, interval_minutes
+        rows = []
+        for candle in self.candles:
+            if candle.symbol != symbol:
+                continue
+            row = {
+                "symbol": candle.symbol,
+                "interval_begin": candle.interval_begin,
+                "as_of_time": candle.as_of_time,
+            }
+            for feature_name in feature_columns:
+                row[feature_name] = getattr(candle, feature_name, None)
+            rows.append(row)
+        return rows[-limit:]
+
+    async def save_adaptive_drift_state(self, record) -> None:
+        self.saved_adaptive_drift_states.append(record)
+
+    async def load_trade_ledger_entries(
+        self,
+        *,
+        service_name: str,
+        execution_mode: str,
+        since,
+    ):
+        del service_name, execution_mode
+        return [entry for entry in self.ledger if entry.fill_time >= since]
+
+    async def save_adaptive_performance_window(self, record) -> None:
+        self.saved_adaptive_performance_windows.append(record)
+
+    async def load_latest_adaptive_drift_state(self, *, symbol: str, regime_label: str):
+        matches = [
+            item
+            for item in self.saved_adaptive_drift_states
+            if item.symbol == symbol and item.regime_label == regime_label
+        ]
+        if not matches:
+            return None
+        return matches[-1]
+
+    async def save_continual_learning_drift_cap(self, record) -> None:
+        self.saved_continual_learning_drift_caps.append(record)
 
 
 class FakeSignalClient:
@@ -757,3 +814,151 @@ def test_runner_alerting_smoke_writes_daily_summary_and_alert_events(
     summary_payload = json.loads(summary_path.read_text(encoding="utf-8"))
     assert summary_payload["counts_by_category"]["SIGNAL_FLOOD"] == 1
     assert summary_payload["startup_safety_status"]["startup_safety_passed"] is True
+
+
+def test_runner_persists_runtime_m19_drift_and_performance_truth(tmp_path: Path) -> None:
+    candles = [
+        replace(
+            _candle(index),
+            realized_vol_12=(0.02 if index < 3 else 0.11),
+        )
+        for index in range(6)
+    ]
+    repository = FakeRepository(candles)
+    signal_client = StaticSignalClient(signal="HOLD")
+
+    async def _fetch_signal(*, symbol: str, interval_begin):
+        del symbol
+        if interval_begin == candles[0].interval_begin:
+            signal = "BUY"
+        elif interval_begin == candles[1].interval_begin:
+            signal = "SELL"
+        else:
+            signal = "HOLD"
+        return SignalDecision(
+            symbol="BTC/USD",
+            signal=signal,
+            reason=signal.lower(),
+            prob_up=0.7 if signal == "BUY" else 0.3 if signal == "SELL" else 0.5,
+            prob_down=0.3 if signal == "BUY" else 0.7 if signal == "SELL" else 0.5,
+            confidence=0.7 if signal != "HOLD" else 0.5,
+            predicted_class="UP" if signal == "BUY" else "DOWN",
+            row_id=f"BTC/USD|{interval_begin.isoformat().replace('+00:00', 'Z')}",
+            as_of_time=interval_begin + timedelta(minutes=5),
+            model_name="logistic_regression",
+            model_version="m3-20260320T090000Z",
+            regime_label="RANGE",
+        )
+
+    signal_client.fetch_signal = _fetch_signal  # type: ignore[method-assign]
+    runner = PaperTradingRunner(
+        config=_config(tmp_path),
+        repository=repository,
+        signal_client=signal_client,
+    )
+    base_adaptation_config = load_adaptation_config(default_adaptation_config_path())
+    runner.adaptation_service.config = replace(
+        base_adaptation_config,
+        rolling_windows=replace(
+            base_adaptation_config.rolling_windows,
+            trade_counts=(1,),
+            day_windows=(30,),
+        ),
+        drift=replace(
+            base_adaptation_config.drift,
+            minimum_reference_samples=3,
+            minimum_live_samples=3,
+            features=("realized_vol_12",),
+        ),
+    )
+    runner._last_system_reliability_snapshot = _system_reliability(candles[-1].as_of_time)  # pylint: disable=protected-access
+
+    asyncio.run(runner.run_once())
+
+    drift_keys = {
+        (item.symbol, item.regime_label)
+        for item in repository.saved_adaptive_drift_states
+    }
+    performance_keys = {
+        (item.execution_mode, item.symbol, item.regime_label, item.window_id)
+        for item in repository.saved_adaptive_performance_windows
+    }
+
+    assert ("BTC/USD", "ALL") in drift_keys
+    assert ("ALL", "ALL") in drift_keys
+    assert ("paper", "ALL", "ALL", "last_1_trades") in performance_keys
+    assert ("paper", "ALL", "ALL", "last_30d") in performance_keys
+    aggregate_window = next(
+        item
+        for item in repository.saved_adaptive_performance_windows
+        if item.execution_mode == "paper"
+        and item.symbol == "ALL"
+        and item.regime_label == "ALL"
+        and item.window_id == "last_30d"
+    )
+    assert aggregate_window.health_context["system_reliability_available"] is True
+
+
+def test_runner_persists_runtime_m21_drift_caps_from_adaptive_drift_truth(
+    tmp_path: Path,
+) -> None:
+    candles = [
+        replace(
+            _candle(index),
+            realized_vol_12=(0.02 if index < 3 else 0.11),
+        )
+        for index in range(6)
+    ]
+    repository = FakeRepository(candles)
+    signal_client = StaticSignalClient(signal="HOLD")
+
+    async def _fetch_signal(*, symbol: str, interval_begin):
+        del symbol
+        signal = "BUY" if interval_begin == candles[0].interval_begin else "HOLD"
+        return SignalDecision(
+            symbol="BTC/USD",
+            signal=signal,
+            reason=signal.lower(),
+            prob_up=0.7 if signal == "BUY" else 0.5,
+            prob_down=0.3 if signal == "BUY" else 0.5,
+            confidence=0.7 if signal == "BUY" else 0.5,
+            predicted_class="UP" if signal == "BUY" else "DOWN",
+            row_id=f"BTC/USD|{interval_begin.isoformat().replace('+00:00', 'Z')}",
+            as_of_time=interval_begin + timedelta(minutes=5),
+            model_name="logistic_regression",
+            model_version="m3-20260320T090000Z",
+            regime_label="RANGE",
+        )
+
+    signal_client.fetch_signal = _fetch_signal  # type: ignore[method-assign]
+    runner = PaperTradingRunner(
+        config=_config(tmp_path),
+        repository=repository,
+        signal_client=signal_client,
+    )
+    base_adaptation_config = load_adaptation_config(default_adaptation_config_path())
+    runner.adaptation_service.config = replace(
+        base_adaptation_config,
+        rolling_windows=replace(
+            base_adaptation_config.rolling_windows,
+            trade_counts=(1,),
+            day_windows=(30,),
+        ),
+        drift=replace(
+            base_adaptation_config.drift,
+            minimum_reference_samples=3,
+            minimum_live_samples=3,
+            features=("realized_vol_12",),
+        ),
+    )
+
+    asyncio.run(runner.run_once())
+
+    cap_keys = {
+        (item.execution_mode_scope, item.symbol_scope, item.regime_scope, item.candidate_type)
+        for item in repository.saved_continual_learning_drift_caps
+    }
+
+    assert ("paper", "ALL", "ALL", "CALIBRATION_OVERLAY") in cap_keys
+    assert ("paper", "ALL", "ALL", "INCREMENTAL_SHADOW_CHALLENGER") in cap_keys
+    assert ("paper", "BTC/USD", "ALL", "CALIBRATION_OVERLAY") in cap_keys

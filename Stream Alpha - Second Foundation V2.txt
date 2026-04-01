@@ -1,0 +1,320 @@
+
+    Stream Alpha - Second Foundation v2
+    Purpose
+    This plan starts after M1 to M8.
+    The first foundation proved that Stream Alpha can ingest live market data, compute features, train offline models, serve predictions, generate signals, paper-trade decisions, monitor the stack, retrain challengers, and classify regimes offline.
+    The second foundation turns Stream Alpha from a strong prototype into a controlled trading system that can be trusted under realistic conditions.
+    In this foundation, “usable” means:
+    it can run reliably for long periods
+    it can explain its decisions
+    it can block stale or unsafe trades
+    it can survive dependency failures and restart safely
+    it can move from backtest to paper to shadow to tightly guarded live mode using explicit promotion gates
+    it can produce honest evidence about whether paper behavior survives contact with reality
+    it can be operated safely through a clear console with visible health, risk, and execution state
+    This foundation is not about becoming aggressive. It is about becoming trustworthy.
+    Core product goal
+    Transform Stream Alpha into a regime-aware, risk-gated, execution-aware trading platform with:
+    live feed awareness
+    contextual signal generation
+    realistic cost-aware decision logic
+    controlled execution modes
+    operational recovery and monitoring
+    evidence-based adaptive behavior
+    explicit paper -&gt; shadow -&gt; live promotion discipline
+    At the end of this foundation, Stream Alpha should be able to say:
+    I ingest live market data, detect regime, score forecasts, adjust behavior based on confidence and market conditions, apply hard risk controls, generate explainable signals, simulate or place tightly guarded trades, reconcile execution state, and fail safely when market data or services degrade.
+    Non-negotiable principles
+    1. Safety before aggression
+    No live-trading ambition should override system control, auditability, execution correctness, or capital protection.
+    2. Adaptation without chaos
+    The system may adapt thresholds, sizing, and selection logic, but it must not mutate the production brain blindly in live conditions.
+    3. Context before confidence
+    A prediction alone is not a trade. Every decision must be conditioned on regime, volatility, costs, drift state, freshness, liquidity assumptions, and risk state.
+    4. Trustworthy state
+    The UI, API, and logs must reflect actual system state, actual execution mode, actual freshness, and actual risk posture.
+    5. Promotion by evidence
+    Nothing gets promoted to stronger control unless it proves itself under realistic cost-aware evaluation and survives paper-to-shadow checks.
+    6. Execution is part of the strategy
+    A good signal with poor execution is not a good strategy. Order handling, state reconciliation, fees, slippage, fills, and venue behavior are part of the edge.
+    7. Research discipline is mandatory
+    Repeated experimentation can create fake edge. Every promotion decision must account for search breadth, out-of-sample behavior, and degradation from offline to live-like modes.
+    Strategic model approach
+    Final recommendation
+    Do not rely on a single giant model.
+    Use a layered intelligence stack:
+    AutoGluon
+    Role: - main offline champion/challenger workflow - benchmark comparison - ensembling - promotion candidate selection
+    NeuralForecast
+    Role: - advanced forecasting model lab - richer control over modern forecasting architectures - challenger source for slow, measured experiments
+    Recommended candidate models: - NHITS - NBEATSx - TFT - PatchTST
+    River
+    Role: - online adaptive support layer - drift detection - calibration support - threshold tuning support - lightweight updates that do not replace the core model impulsively
+    Stream Alpha native modules
+    Role: - regime engine - risk engine - execution engine - monitoring and recovery - operator console - audit and evaluation stack
+    How they work together
+    AutoGluon remains the main offline champion/challenger engine.
+    NeuralForecast remains the advanced forecasting lab, not the default production brain.
+    River supports safe adaptation around the edges.
+    Stream Alpha orchestration decides what is allowed in backtest, paper, shadow, and live modes.
+    Learning philosophy
+    The system should not rewrite itself every time the market moves.
+    Instead it should:
+    detect regime changes
+    detect concept drift
+    track recent performance by asset and regime
+    adapt thresholds and sizing faster than core weights
+    retrain challengers offline or in shadow workflows
+    promote only after evidence
+    preserve rollback paths
+    That is the correct version of “learning with the market.”
+    Target metrics and performance philosophy
+    Do not optimize for raw accuracy alone
+    The main target is not a vanity accuracy figure.
+    Primary objective
+    Net PnL after fees and slippage
+    Primary safety constraint
+    Max drawdown
+    Best single summary score
+    Calmar ratio
+    Secondary diagnostic metrics
+    profit factor
+    expectancy
+    turnover
+    exposure
+    win rate by regime
+    precision by regime
+    confidence calibration
+    paper vs shadow divergence
+    shadow vs live divergence
+    slippage distribution
+    fill quality
+    rejection rate
+    latency distribution
+    operational uptime
+    Promotion metrics
+    A model, policy, or threshold set should only be promoted when it:
+    beats the incumbent after costs
+    does not worsen drawdown beyond tolerance
+    remains stable across assets and regimes
+    holds up in walk-forward testing
+    survives out-of-sample evaluation
+    survives shadow mode without unacceptable degradation
+    Research integrity requirements
+    Every serious experiment should track:
+    exact data window used
+    exact features used
+    exact labels used
+    exact fee and slippage assumptions
+    exact model version and hyperparameters
+    number of trials attempted
+    walk-forward and out-of-sample results
+    paper-to-shadow degradation
+    reasons for promotion or rejection
+    The purpose is simple: prevent false confidence from search overuse.
+    Architecture target
+    Current state after first foundation
+    Feed -&gt; Broker -&gt; Features -&gt; Model -&gt; Signal -&gt; Paper Trader -&gt; Dashboard
+    Target state after second foundation
+    Feed -&gt; Ingestion Health + Replay Buffer -&gt; Features -&gt; Freshness Guards -&gt; Regime Engine -&gt; Model Stack -&gt; Calibration Layer -&gt; Risk Engine -&gt; Signal Engine -&gt; Execution Layer (backtest/paper/shadow/live)
+    And then:
+    Order State Store
+    Audit Logs
+    Metrics Store
+    Drift Monitor
+    Incident Timeline
+    Operator Console
+    Alerts and Daily Summaries
+    Promotion and Evaluation Registry
+    Key architecture rules
+    strategy logic and broker plumbing must stay separated
+    order lifecycle must be explicit and stateful
+    every decision must carry timestamps, mode, model version, regime, and risk result
+    stale inputs must hard-block execution
+    recovery logic must favor safety over continuity
+    broker truth must override local assumptions after reconciliation
+    Explicit operating modes
+    Stream Alpha must support four visible modes:
+    1. Backtest mode
+    Historical replay only.
+    2. Paper mode
+    Live feed, simulated execution.
+    3. Shadow mode
+    Live feed, full execution pathway, order-intent generation, broker-style validations where possible, but no real order placement.
+    4. Live mode
+    Real order placement with strict safeguards, tiny size first, explicit arming, and hard rollback discipline.
+    The current mode must always be visible in the UI, API, logs, and alerts.
+    Promotion gates between modes
+    No model or policy should move upward automatically.
+    Backtest -&gt; Paper gate
+    Required: - cost-aware walk-forward evidence - out-of-sample stability - realistic turnover - no obvious leakage or timestamp violations
+    Paper -&gt; Shadow gate
+    Required: - stable paper behavior - healthy runtime stability - clear explanations and audit trail - risk engine and rejection logging working correctly
+    Shadow -&gt; Live gate
+    Required: - order lifecycle state machine proven - stale-data protections proven - failure hard-stop proven - live account validation proven - paper vs shadow divergence measured - shadow execution path stable across repeated sessions - explicit human approval
+    Live scale-up gate
+    Required: - tiny-live fill quality understood - rejection rate understood - live slippage tracked - no unresolved reconciliation defects - no unresolved stale-input incidents - no unresolved recovery defects
+    Safety controls required before live mode
+    These are mandatory, not optional:
+    kill-switch
+    hard max notional per order
+    hard max daily loss
+    hard max open positions
+    hard max exposure by asset
+    hard total exposure cap
+    stale feed block
+    stale feature block
+    stale regime block
+    stale signal block
+    repeated order failure block
+    dependency circuit breakers
+    explicit symbol whitelist
+    explicit environment confirmation
+    explicit account confirmation
+    visible mode banner
+    full audit trail
+    startup safety checklist
+    manual disable switch
+    automatic downgrade to HOLD on unsafe state
+    Execution realism rules
+    This foundation must treat execution as first-class.
+    Order handling requirements
+    idempotent order requests
+    explicit client order IDs
+    order lifecycle state machine
+    pending, accepted, partially filled, filled, canceled, rejected, expired states
+    timeout handling
+    retry policy with safety rules
+    duplicate prevention
+    Reconciliation requirements
+    reconcile local state to broker truth at startup
+    reconcile after reconnects
+    reconcile after order errors
+    detect orphan orders and orphan positions
+    log state mismatches explicitly
+    Cross-venue rule
+    If market data and execution venue differ, Stream Alpha must treat that as a measured risk factor, not an invisible assumption.
+    At minimum it must:
+    flag the mismatch visibly
+    track price basis drift between research and execution venue
+    track fill drift and rejection behavior
+    avoid pretending paper results are directly portable across venues
+    Same-venue data and execution is preferred whenever practical.
+    Definition of usable
+    Stream Alpha should only be called actually usable when:
+    I can tell if data is fresh immediately
+    I can tell why a signal happened
+    I can tell why a trade was blocked, modified, or approved
+    I can see risk state instantly
+    the app can run for long periods and recover safely from faults
+    paper mode is reliable
+    shadow mode is reliable
+    live mode, if enabled, is tightly restricted and auditable
+    execution state is reconcilable
+    paper-to-shadow degradation is measured honestly
+    Revised milestone map
+    Core usability and execution truth phase
+    M9 - Regime integration foundation
+    Objective Load regime into the real decision path.
+    Scope - load current regime state into live inference flow - attach regime labels to predictions, signals, trades, and evaluations - add regime-dependent thresholds - add regime-dependent no-trade rules - expose regime in API and dashboard - compute regime-conditioned PnL and hit rate
+    Exit criteria - signals visibly change by regime - trade history stores regime labels - dashboard shows regime-conditioned performance
+    M10 - Risk engine and portfolio control foundation
+    Objective Move from signal execution to explicit risk-controlled approval.
+    Scope - position sizing framework - max daily loss - max drawdown rule - max exposure per asset - max total exposure - cooldown after loss streaks - kill-switch support - regime-dependent position caps - volatility-adjusted sizing - confidence-weighted sizing where appropriate - pre-trade approval checks - rejection reason logging
+    Exit criteria - every signal is approved, modified, or blocked by explicit risk checks - every rejection has a recorded reason
+    M11 - Execution abstraction and shadow execution foundation
+    Objective Bridge the gap between paper trading and real execution plumbing.
+    Scope - broker and exchange abstraction layer - paper adapter - shadow execution adapter - idempotent order requests - explicit order lifecycle state machine - order audit log - clear separation between trading logic and venue plumbing - simulated partial-fill pathways where live partial fills are not yet available
+    Exit criteria - the same signal path can run in paper and shadow modes - all intended orders are recorded and traceable - order states are explicit and testable
+    M13 - Reliability and recovery foundation
+    Objective Make the system survive real-world faults safely.
+    Scope - websocket reconnect with backoff - stale-data detection - stale-feature detection - stale-regime detection - heartbeat checks - health aggregation - consumer lag alarms - safe state restoration - replay and catch-up where possible - automatic downgrade to HOLD on stale or missing inputs - dependency circuit breakers - startup reconciliation hooks
+    Exit criteria - stale inputs do not silently poison trading decisions - restart paths are safe - failure domains are visible quickly - unsafe recovery states hard-block execution
+    M14 - Explainability and decision trace foundation
+    Objective Make every signal and trade understandable.
+    Scope - explanation payload for each signal - top contributing features or explanation summary - model version attached to every decision - threshold snapshot stored with each signal - risk outcome and regime reason logged - downloadable trade rationale report - explicit rejection reason display
+    Exit criteria - each signal shows why it happened - each blocked trade shows why it was blocked - model and threshold provenance are visible
+    M15 - Operator console foundation
+    Objective Make the application genuinely trustworthy to operate.
+    Scope - separate views for market, signals, trades, risk, health, models, and incidents - persistent mode banner: backtest / paper / shadow / live - freshness timestamps everywhere - trade journal with filtering - clear error panel - config summary panel - operator-friendly summaries instead of raw internals - visible venue and environment summary
+    Exit criteria - the operator can understand current system state in seconds - critical state is never hidden - unsafe state is visually obvious
+    Guarded live enablement phase
+    M12 - Guarded live trading foundation
+    Objective Enable tightly controlled live execution only after the core usability and recovery layers are in place.
+    Scope - explicit live-mode toggle - secret handling and account validation - startup safety checklist - tiny-size live orders only at first - symbol whitelist - hard stop on repeated order failures - manual disable switch - visible mode banner and audit records - explicit live arming workflow
+    Exit criteria - live mode cannot be enabled accidentally - every live trade is fully auditable - kill-switch and hard caps work instantly - account and environment mismatches hard-fail
+    Operational maturity phase
+    M16 - Deployment and environment foundation
+    Objective Make the stack reproducible and easy to run.
+    Scope - Docker Compose for local full stack where practical - environment profiles: dev, paper, shadow, live - config validation at startup - secrets template - one-command startup - deployment guide - persistent volumes and retention rules
+    Exit criteria - a new machine can start the stack cleanly - invalid config fails fast and clearly
+    M17 - Operational alerting foundation
+    Objective Upgrade monitoring from passive observation to actionable operations.
+    Scope - stale feed alerts - consumer lag alerts - order failure spike alerts - drawdown breach alerts - signal silence and flood alerts - live mode activation alerts - incident timeline - daily operations summary - startup safety report
+    Exit criteria - major operational failures are visible without manual digging - reason categories are meaningful and actionable
+    M18 - Usability and strategy evaluation foundation
+    Objective Measure whether the system is truly useful as a trading application.
+    Scope - performance by asset - performance by regime - paper vs shadow divergence - shadow vs tiny-live divergence - cost-aware signal precision - slippage distribution - latency distribution - uptime metrics - failure and recovery stats - comparison of model-only vs regime-aware vs risk-gated behavior - promotion registry and experiment registry - paper-to-live degradation report
+    Exit criteria - the app can prove whether added complexity improved real decision quality - paper, shadow, and tiny-live behavior can be compared honestly
+    Adaptive intelligence phase
+    M19 - Adaptive intelligence foundation
+    Objective Add safe adaptation to market change.
+    Scope - concept drift detection - rolling performance tracker by regime and asset - adaptive threshold tuning - adaptive position sizing within guardrails - confidence recalibration - challenger retraining on recent windows in shadow workflows - promotion rules tied to realistic evaluation
+    Exit criteria - the system adapts without uncontrolled live model mutation - adaptation decisions are auditable - rollback remains available
+    M20 - Dynamic ensemble foundation
+    Objective Make prediction quality depend on market context rather than a single static brain.
+    Scope - multiple specialized candidate models - regime-aware ensemble weighting - trend vs range behavior comparison - ensemble agreement as a confidence input - champion/challenger ensemble experiments
+    Exit criteria - ensemble selection improves regime-conditioned performance or reduces drawdown
+    M21 - Safe continual learning foundation
+    Objective Introduce controlled continual learning only after operational maturity is proven.
+    Scope - online or incremental updates in shadow mode first - strict drift caps - rollback support - guarded promotion into live pathways
+    Exit criteria - no uncontrolled live self-retraining of the production model - continual learning is measurable and reversible
+    Recommended build order
+    Best practical path:
+    M9
+    M10
+    M11
+    M13
+    M14
+    M15
+    M12
+    M16
+    M17
+    M18
+    M19
+    M20
+    M21
+    This order keeps ambition high without destroying control.
+    What belongs in this foundation vs later
+    Must be solved in this foundation
+    regime-aware decisioning
+    hard risk controls
+    shadow execution
+    stale-data protection
+    dependency circuit breakers
+    startup and reconnect reconciliation
+    live arming discipline
+    paper-to-shadow-to-live evaluation
+    audit trails and explanations
+    honest promotion criteria
+    Should stay out until this foundation is stable
+    sentiment or news-driven trading
+    RL-based execution or policy learning
+    aggressive continual learning
+    rapid live self-retraining
+    highly complex microstructure trading
+    market making
+    The purpose of this boundary is simple: Foundation 3 should extend a stable machine, not rescue a weak one.
+    Final recommendation
+    The best second foundation target is not “a bot that trades live fast.” It is:
+    a measurable system
+    a regime-aware system
+    a risk-gated system
+    an execution-aware system
+    a recoverable system
+    an auditable system
+    a system that can prove whether reality matches the research
+    If that is achieved, later intelligence layers will have somewhere safe to stand.
+    One-line rule
+    Do not use Foundation 3 to repair Foundation 2.
+    Foundation 2 must establish execution truth, safety, and evaluation honesty first.
