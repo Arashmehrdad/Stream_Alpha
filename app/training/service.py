@@ -156,6 +156,10 @@ def run_training(config_path: Path) -> Path:  # pylint: disable=too-many-locals
         model_factories=model_factories,
         samples=dataset.samples,
     )
+    winner_training_config = _extract_training_model_config(
+        winner_name=winner_name,
+        fitted_model=saved_model,
+    )
     model_path = artifact_dir / "model.joblib"
     _save_model_artifact(
         model_path=model_path,
@@ -163,6 +167,7 @@ def run_training(config_path: Path) -> Path:  # pylint: disable=too-many-locals
         fitted_model=saved_model,
         feature_columns=dataset.feature_columns,
         expanded_feature_names=expanded_features,
+        training_model_config=winner_training_config,
     )
     _write_json(
         artifact_dir / "feature_columns.json",
@@ -180,6 +185,7 @@ def run_training(config_path: Path) -> Path:  # pylint: disable=too-many-locals
         regime_context=regime_context,
         winner_name=winner_name,
         model_path=model_path,
+        winner_training_config=winner_training_config,
     )
     _write_json(artifact_dir / "summary.json", summary)
     return artifact_dir
@@ -540,12 +546,14 @@ def _save_model_artifact(
     fitted_model: Any,
     feature_columns: tuple[str, ...],
     expanded_feature_names: list[str],
+    training_model_config: dict[str, Any] | None,
 ) -> None:
     payload = {
         "model_name": model_name,
         "trained_at": to_rfc3339(utc_now()),
         "feature_columns": list(feature_columns),
         "expanded_feature_names": expanded_feature_names,
+        "training_model_config": training_model_config,
         "model": fitted_model,
     }
     joblib.dump(payload, model_path)
@@ -562,6 +570,7 @@ def _build_summary_payload(
     regime_context: TrainingRegimeContext,
     winner_name: str,
     model_path: Path,
+    winner_training_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     winner_metrics = aggregate_summary[winner_name]
     learned_model_names = tuple(
@@ -629,6 +638,7 @@ def _build_summary_payload(
         "winner": {
             "model_name": winner_name,
             "model_path": str(model_path),
+            "training_config": winner_training_config,
             "selection_rule": {
                 "primary": "mean_long_only_net_value_proxy",
                 "tie_break_1": "directional_accuracy",
@@ -649,6 +659,25 @@ def _build_summary_payload(
             "meets_acceptance_target": meets_acceptance_target,
         },
     }
+
+
+def _extract_training_model_config(
+    *,
+    winner_name: str,
+    fitted_model: Any,
+) -> dict[str, Any] | None:
+    """Return stable winner training config metadata when the model exposes it."""
+    if winner_name != "autogluon_tabular":
+        return None
+    if not hasattr(fitted_model, "get_training_config"):
+        return None
+    training_config = fitted_model.get_training_config()
+    if not isinstance(training_config, dict):
+        raise ValueError(
+            "Authoritative AutoGluon artifacts must expose a dictionary "
+            "training config for auditability",
+        )
+    return dict(training_config)
 
 
 def _build_training_regime_context(

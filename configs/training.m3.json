@@ -9,17 +9,15 @@
   "label_horizon_candles": 3,
   "models": {
     "autogluon_tabular": {
+      "calibrate_decision_threshold": false,
       "eval_metric": "log_loss",
       "fit_weighted_ensemble": true,
-      "hyperparameters": {
-        "CAT": {},
-        "GBM": {},
-        "XGB": {}
-      },
-      "num_bag_folds": 0,
-      "num_stack_levels": 0,
-      "presets": "medium_quality",
-      "time_limit": 120,
+      "hyperparameters": null,
+      "num_bag_folds": 5,
+      "num_bag_sets": 1,
+      "num_stack_levels": 1,
+      "presets": "high",
+      "time_limit": 900,
       "verbosity": 0
     }
   },

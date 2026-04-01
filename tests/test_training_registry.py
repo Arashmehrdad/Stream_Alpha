@@ -150,6 +150,43 @@ def test_run_manifest_carries_economics_contract_and_acceptance(tmp_path: Path) 
     assert manifest["acceptance"]["meets_acceptance_target"] is False
 
 
+def test_run_manifest_and_registry_entry_record_autogluon_training_config(
+    tmp_path: Path,
+) -> None:
+    """The existing run-manifest and registry metadata path should carry fit config truth."""
+    training_model_config = {
+        "presets": "high",
+        "time_limit": 900,
+        "eval_metric": "log_loss",
+        "hyperparameters": None,
+        "fit_weighted_ensemble": True,
+        "num_bag_folds": 5,
+        "num_stack_levels": 1,
+        "num_bag_sets": 1,
+        "calibrate_decision_threshold": False,
+        "verbosity": 0,
+    }
+    run_dir = write_run_dir(
+        tmp_path / "m7",
+        "20260401T120000Z",
+        model_name="autogluon_tabular",
+        mean_long_only_net_value_proxy=0.002,
+        directional_accuracy=0.58,
+        brier_score=0.22,
+        training_model_config=training_model_config,
+    )
+
+    manifest = build_run_manifest(run_dir)
+    current = promote_run(
+        run_dir,
+        model_version="m7-20260401T120000Z",
+        registry_root=tmp_path / "registry",
+    )
+
+    assert manifest["winner"]["training_config"] == training_model_config
+    assert current["training_model_config"] == training_model_config
+
+
 def test_promote_run_rejects_legacy_archived_sklearn_winner(tmp_path: Path) -> None:
     """Legacy sklearn winners must not promote into the authoritative registry."""
     run_dir = write_run_dir(

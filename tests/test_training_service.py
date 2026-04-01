@@ -239,3 +239,67 @@ def test_training_config_accepts_autogluon_tabular_authoritative_model(
     config = load_training_config(config_path)
 
     assert tuple(config.models) == ("autogluon_tabular",)
+
+
+def test_summary_records_winner_autogluon_training_config() -> None:
+    """Evaluation summary artifacts should expose the winner fit config for auditability."""
+    regime_economics = {
+        "TREND_UP": {
+            "after_cost_positive": True,
+            "mean_long_only_gross_value_proxy": 0.004,
+            "mean_long_only_net_value_proxy": 0.002,
+            "prediction_count": 2,
+            "trade_count": 1,
+            "trade_rate": 0.5,
+        }
+    }
+    summary = _build_summary_payload(
+        config=_config(),
+        dataset_manifest={"eligible_rows": 2, "unique_timestamps": 2},
+        aggregate_summary={
+            "autogluon_tabular": {
+                "directional_accuracy": 0.58,
+                "brier_score": 0.22,
+                "mean_long_only_net_value_proxy": 0.002,
+                "economics_by_regime": regime_economics,
+            },
+            "persistence_3": {
+                "directional_accuracy": 0.53,
+                "brier_score": 0.26,
+                "mean_long_only_net_value_proxy": 0.001,
+                "economics_by_regime": regime_economics,
+            },
+            "dummy_most_frequent": {
+                "directional_accuracy": 0.50,
+                "brier_score": 0.28,
+                "mean_long_only_net_value_proxy": 0.0005,
+                "economics_by_regime": regime_economics,
+            },
+        },
+        regime_context=TrainingRegimeContext(
+            config_path="configs/regime.m8.json",
+            high_vol_percentile=75.0,
+            trend_abs_momentum_percentile=60.0,
+            thresholds_by_symbol={},
+            labels_by_row_id={},
+        ),
+        winner_name="autogluon_tabular",
+        model_path=Path("artifacts/training/m3/model.joblib"),
+        winner_training_config={
+            "presets": "high",
+            "time_limit": 900,
+            "eval_metric": "log_loss",
+            "hyperparameters": None,
+            "fit_weighted_ensemble": True,
+            "num_bag_folds": 5,
+            "num_stack_levels": 1,
+            "num_bag_sets": 1,
+            "calibrate_decision_threshold": False,
+            "verbosity": 0,
+        },
+    )
+
+    assert summary["winner"]["training_config"]["presets"] == "high"
+    assert summary["winner"]["training_config"]["hyperparameters"] is None
+    assert summary["winner"]["training_config"]["num_bag_sets"] == 1
+    assert summary["winner"]["training_config"]["calibrate_decision_threshold"] is False

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import io
 import shutil
 import tempfile
@@ -13,13 +14,6 @@ import pandas as pd
 from autogluon.tabular import TabularPredictor
 
 
-_DEFAULT_HYPERPARAMETERS: dict[str, Any] = {
-    "GBM": {},
-    "CAT": {},
-    "XGB": {},
-}
-
-
 class AutoGluonTabularClassifier:  # pylint: disable=too-many-instance-attributes
     """Serializable AutoGluon binary classifier with a self-contained artifact bundle."""
 
@@ -29,23 +23,23 @@ class AutoGluonTabularClassifier:  # pylint: disable=too-many-instance-attribute
         presets: str = "medium_quality",
         time_limit: int | None = 120,
         eval_metric: str = "log_loss",
-        hyperparameters: dict[str, Any] | None = None,
+        hyperparameters: Any | None = None,
         fit_weighted_ensemble: bool = True,
         num_bag_folds: int = 0,
         num_stack_levels: int = 0,
+        num_bag_sets: int | None = 1,
+        calibrate_decision_threshold: bool = False,
         verbosity: int = 0,
     ) -> None:
         self.presets = str(presets)
         self.time_limit = None if time_limit is None else int(time_limit)
         self.eval_metric = str(eval_metric)
-        self.hyperparameters = (
-            dict(_DEFAULT_HYPERPARAMETERS)
-            if hyperparameters is None
-            else dict(hyperparameters)
-        )
+        self.hyperparameters = _copy_optional_value(hyperparameters)
         self.fit_weighted_ensemble = bool(fit_weighted_ensemble)
         self.num_bag_folds = int(num_bag_folds)
         self.num_stack_levels = int(num_stack_levels)
+        self.num_bag_sets = None if num_bag_sets is None else int(num_bag_sets)
+        self.calibrate_decision_threshold = bool(calibrate_decision_threshold)
         self.verbosity = int(verbosity)
         self._feature_columns: tuple[str, ...] = ()
         self._predictor_archive: bytes | None = None
@@ -77,14 +71,18 @@ class AutoGluonTabularClassifier:  # pylint: disable=too-many-instance-attribute
         fit_kwargs: dict[str, Any] = {
             "train_data": training_frame,
             "presets": self.presets,
-            "hyperparameters": self.hyperparameters,
             "fit_weighted_ensemble": self.fit_weighted_ensemble,
             "num_bag_folds": self.num_bag_folds,
             "num_stack_levels": self.num_stack_levels,
+            "calibrate_decision_threshold": self.calibrate_decision_threshold,
             "verbosity": self.verbosity,
         }
         if self.time_limit is not None:
             fit_kwargs["time_limit"] = self.time_limit
+        if self.hyperparameters is not None:
+            fit_kwargs["hyperparameters"] = _copy_optional_value(self.hyperparameters)
+        if self.num_bag_sets is not None and self.num_bag_folds > 0:
+            fit_kwargs["num_bag_sets"] = self.num_bag_sets
         predictor.fit(**fit_kwargs)
         self._predictor_archive = _archive_predictor_dir(predictor_dir)
         shutil.rmtree(fit_root, ignore_errors=True)
@@ -117,16 +115,33 @@ class AutoGluonTabularClassifier:  # pylint: disable=too-many-instance-attribute
         """Return stable feature names for artifact metadata and explainability contracts."""
         return list(self._feature_columns)
 
+    def get_training_config(self) -> dict[str, Any]:
+        """Return the effective AutoGluon fit config stored in this artifact."""
+        return {
+            "presets": self.presets,
+            "time_limit": self.time_limit,
+            "eval_metric": self.eval_metric,
+            "hyperparameters": _copy_optional_value(self.hyperparameters),
+            "fit_weighted_ensemble": self.fit_weighted_ensemble,
+            "num_bag_folds": self.num_bag_folds,
+            "num_stack_levels": self.num_stack_levels,
+            "num_bag_sets": self.num_bag_sets,
+            "calibrate_decision_threshold": self.calibrate_decision_threshold,
+            "verbosity": self.verbosity,
+        }
+
     def __getstate__(self) -> dict[str, Any]:
         """Serialize only the self-contained predictor bundle and stable config."""
         return {
             "presets": self.presets,
             "time_limit": self.time_limit,
             "eval_metric": self.eval_metric,
-            "hyperparameters": self.hyperparameters,
+            "hyperparameters": _copy_optional_value(self.hyperparameters),
             "fit_weighted_ensemble": self.fit_weighted_ensemble,
             "num_bag_folds": self.num_bag_folds,
             "num_stack_levels": self.num_stack_levels,
+            "num_bag_sets": self.num_bag_sets,
+            "calibrate_decision_threshold": self.calibrate_decision_threshold,
             "verbosity": self.verbosity,
             "feature_columns": list(self._feature_columns),
             "predictor_archive": self._predictor_archive,
@@ -137,10 +152,19 @@ class AutoGluonTabularClassifier:  # pylint: disable=too-many-instance-attribute
         self.presets = str(state["presets"])
         self.time_limit = state["time_limit"]
         self.eval_metric = str(state["eval_metric"])
-        self.hyperparameters = dict(state["hyperparameters"])
+        self.hyperparameters = _copy_optional_value(state.get("hyperparameters"))
         self.fit_weighted_ensemble = bool(state["fit_weighted_ensemble"])
         self.num_bag_folds = int(state["num_bag_folds"])
         self.num_stack_levels = int(state["num_stack_levels"])
+        if "num_bag_sets" not in state:
+            self.num_bag_sets = 1
+        else:
+            self.num_bag_sets = (
+                None if state["num_bag_sets"] is None else int(state["num_bag_sets"])
+            )
+        self.calibrate_decision_threshold = bool(
+            state.get("calibrate_decision_threshold", False)
+        )
         self.verbosity = int(state["verbosity"])
         self._feature_columns = tuple(str(column) for column in state["feature_columns"])
         self._predictor_archive = state["predictor_archive"]
@@ -181,6 +205,20 @@ def build_autogluon_tabular_classifier(
     model_config: dict[str, Any],
 ) -> AutoGluonTabularClassifier:
     """Build the authoritative AutoGluon tabular classifier from checked-in config."""
+    hyperparameters = (
+        None
+        if "hyperparameters" not in model_config
+        or model_config.get("hyperparameters") is None
+        else _copy_optional_value(model_config["hyperparameters"])
+    )
+    if "num_bag_sets" not in model_config:
+        num_bag_sets = 1
+    else:
+        num_bag_sets = (
+            None
+            if model_config.get("num_bag_sets") is None
+            else int(model_config["num_bag_sets"])
+        )
     return AutoGluonTabularClassifier(
         presets=str(model_config.get("presets", "medium_quality")),
         time_limit=(
@@ -189,12 +227,14 @@ def build_autogluon_tabular_classifier(
             else int(model_config["time_limit"])
         ),
         eval_metric=str(model_config.get("eval_metric", "log_loss")),
-        hyperparameters=dict(
-            model_config.get("hyperparameters", _DEFAULT_HYPERPARAMETERS)
-        ),
+        hyperparameters=hyperparameters,
         fit_weighted_ensemble=bool(model_config.get("fit_weighted_ensemble", True)),
         num_bag_folds=int(model_config.get("num_bag_folds", 0)),
         num_stack_levels=int(model_config.get("num_stack_levels", 0)),
+        num_bag_sets=num_bag_sets,
+        calibrate_decision_threshold=bool(
+            model_config.get("calibrate_decision_threshold", False)
+        ),
         verbosity=int(model_config.get("verbosity", 0)),
     )
 
@@ -242,3 +282,8 @@ def _lookup_probability(record: dict[Any, Any], *, label: int) -> float:
         if key in record:
             return float(record[key])
     raise ValueError(f"AutoGluon probability output is missing class {label}")
+
+
+def _copy_optional_value(value: Any | None) -> Any | None:
+    """Return a defensive copy for explicit config values while preserving None."""
+    return None if value is None else copy.deepcopy(value)

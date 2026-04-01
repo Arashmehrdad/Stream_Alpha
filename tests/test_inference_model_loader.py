@@ -171,18 +171,63 @@ def test_load_model_artifact_rejects_malformed_payload(tmp_path: Path) -> None:
         load_model_artifact(str(artifact_path))
 
 
-def test_load_model_artifact_supports_self_contained_autogluon_artifact(tmp_path: Path) -> None:
-    """The authoritative AutoGluon artifact should load after its fit directory is gone."""
+def test_load_model_artifact_supports_self_contained_autogluon_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The authoritative AutoGluon artifact should preserve predict contracts after reload."""
+
+    class _FakePredictionList:
+        def __init__(self, values: list[int]) -> None:
+            self._values = values
+
+        def tolist(self) -> list[int]:
+            return list(self._values)
+
+    class _FakeProbabilityTable:
+        def __init__(self, rows: list[dict[int, float]]) -> None:
+            self._rows = rows
+
+        def to_dict(self, orient: str) -> list[dict[int, float]]:
+            assert orient == "records"
+            return list(self._rows)
+
+    class _FakeLoadedPredictor:
+        def predict(self, frame) -> _FakePredictionList:
+            return _FakePredictionList([1 for _ in range(len(frame))])
+
+        def predict_proba(self, frame, *, as_multiclass: bool) -> _FakeProbabilityTable:
+            assert as_multiclass is True
+            return _FakeProbabilityTable([{0: 0.25, 1: 0.75} for _ in range(len(frame))])
+
+    archive_buffer = io.BytesIO()
+    with zipfile.ZipFile(archive_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("metadata.json", "{}")
+
+    monkeypatch.setattr(
+        autogluon_module.TabularPredictor,
+        "load",
+        staticmethod(lambda path, **kwargs: _FakeLoadedPredictor()),
+    )
     model = build_autogluon_tabular_classifier(
         {
-            "hyperparameters": {"RF": {}, "XT": {}},
-            "fit_weighted_ensemble": False,
-            "num_bag_folds": 0,
-            "num_stack_levels": 0,
-            "presets": "medium_quality",
-            "time_limit": 30,
+            "calibrate_decision_threshold": False,
+            "fit_weighted_ensemble": True,
+            "hyperparameters": None,
+            "num_bag_folds": 5,
+            "num_bag_sets": 1,
+            "num_stack_levels": 1,
+            "presets": "high",
+            "time_limit": 900,
             "verbosity": 0,
         }
+    )
+    model._predictor_archive = archive_buffer.getvalue()  # pylint: disable=protected-access
+    model._feature_columns = (  # pylint: disable=protected-access
+        "symbol",
+        "realized_vol_12",
+        "momentum_3",
+        "macd_line_12_26",
     )
     rows = [
         {
@@ -222,7 +267,6 @@ def test_load_model_artifact_supports_self_contained_autogluon_artifact(tmp_path
             "macd_line_12_26": -0.42,
         },
     ]
-    model.fit(rows, [1, 0, 1, 0, 1, 0])
     run_dir = tmp_path / "artifacts" / "training" / "m3" / "20260401T120000Z"
     run_dir.mkdir(parents=True, exist_ok=False)
     artifact_path = run_dir / "model.joblib"
@@ -242,18 +286,21 @@ def test_load_model_artifact_supports_self_contained_autogluon_artifact(tmp_path
                 "momentum_3",
                 "macd_line_12_26",
             ],
+            "training_model_config": model.get_training_config(),
             "model": model,
         },
         artifact_path,
     )
 
     loaded = load_model_artifact(str(artifact_path))
+    predictions = loaded.model.predict(rows[:2])
     probabilities = loaded.model.predict_proba(rows[:2])
 
     assert loaded.model_name == "autogluon_tabular"
     assert loaded.model_version == "m3-20260401T120000Z"
+    assert predictions == [1, 1]
     assert len(probabilities) == 2
-    assert len(probabilities[0]) == 2
+    assert probabilities == [[0.25, 0.75], [0.25, 0.75]]
 
 
 def test_autogluon_runtime_loader_relaxes_python_version_match(

@@ -68,6 +68,7 @@ def write_run_dir(
     protocol_overrides: dict[str, Any] | None = None,
     persistence_mean_long_only_net_value_proxy: float | None = None,
     dummy_mean_long_only_net_value_proxy: float | None = None,
+    training_model_config: dict[str, Any] | None = None,
 ) -> Path:
     """Create a minimal but valid training artifact directory for tests."""
     feature_columns = (
@@ -265,6 +266,7 @@ def write_run_dir(
             "trained_at": "2026-03-20T10:00:00Z",
             "feature_columns": feature_columns,
             "expanded_feature_names": expanded_feature_names,
+            "training_model_config": training_model_config,
             "model": SerializableProbabilityModel(),
         },
         run_dir / "model.joblib",

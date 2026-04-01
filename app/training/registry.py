@@ -116,6 +116,7 @@ def build_run_manifest(run_dir: Path) -> dict[str, Any]:
             "winner": {
                 "model_name": winner_name,
                 "trained_at": model_payload["trained_at"],
+                "training_config": model_payload["training_model_config"],
                 "metrics": winner_metrics,
                 "selection_rule": summary["winner"]["selection_rule"],
             },
@@ -320,6 +321,7 @@ def export_external_model_to_registry(
         "source_run_dir": None,
         "source_run_id": None,
         "source_run_kind": "external",
+        "training_model_config": payload["training_model_config"],
         "promoted_at": to_rfc3339(utc_now()),
         "metadata": metadata_payload,
     }
@@ -370,6 +372,7 @@ def copy_run_snapshot_to_registry(
         "source_run_dir": str(resolved_source_run_dir),
         "source_run_id": resolved_source_run_dir.name,
         "source_run_kind": manifest["source_run_kind"],
+        "training_model_config": manifest["winner"]["training_config"],
         "promoted_at": to_rfc3339(utc_now()),
     }
     write_json_atomic(model_dir / "registry_entry.json", entry)
@@ -459,6 +462,7 @@ def _load_model_payload(model_path: Path) -> dict[str, Any]:
         "expanded_feature_names": tuple(
             str(name) for name in payload["expanded_feature_names"]
         ),
+        "training_model_config": payload.get("training_model_config"),
     }
 
 

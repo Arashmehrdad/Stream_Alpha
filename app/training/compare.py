@@ -240,6 +240,7 @@ def _comparison_side(
         "run_dir": manifest["run_dir"],
         "model_name": manifest["winner"]["model_name"],
         "trained_at": manifest["winner"]["trained_at"],
+        "training_config": manifest["winner"].get("training_config"),
         "economics_contract": dict(manifest.get("economics_contract", {})),
         "acceptance": dict(manifest.get("acceptance", {})),
         "metrics": manifest["winner"]["metrics"],
