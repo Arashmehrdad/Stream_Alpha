@@ -259,6 +259,17 @@ Key scripts:
 * `./scripts/start-stack.ps1 -Profile paper`
 * `./scripts/start-stack.ps1 -Profile shadow`
 * `./scripts/start-stack.ps1 -Profile live`
+
+## Local M7 Training
+
+For local AutoGluon challenger training, use the repo-native operator flow instead of raw Docker profile reasoning:
+
+* `./scripts/prepare_m7_training.ps1`
+* `./scripts/start_m7_training.ps1`
+
+The prepare script checks the checked-in M7 config, AutoGluon availability, PostgreSQL reachability, and `feature_ohlc` readiness. If the training source is missing or not yet large enough for the configured walk-forward split, it starts the existing `dev` stack path to populate features and then prints the next recommended command.
+
+The start script runs the same readiness checks, then invokes the authoritative training command `python -m app.training --config .\configs\training.m7.json`. After the run it prints the newest artifact directory plus the `summary.json` winner and acceptance flags to inspect.
 * `./scripts/stop-stack.ps1`
 * `./scripts/reset-state.ps1`
 * `./scripts/prune-runtime-artifacts.ps1 -RetentionDays 14`

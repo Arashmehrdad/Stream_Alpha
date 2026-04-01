@@ -179,6 +179,25 @@ def test_startup_validation_passes_for_paper_with_artifacts(
     assert written_path == report_path.resolve()
 
 
+def test_startup_validation_passes_for_dev_without_trading_config(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Dev startup should not require a paper/shadow/live trading config path."""
+    report_path = tmp_path / "startup_report.json"
+    monkeypatch.setenv("STREAMALPHA_RUNTIME_PROFILE", "dev")
+    monkeypatch.setenv("STREAMALPHA_STARTUP_REPORT_PATH", str(report_path))
+    monkeypatch.delenv("STREAMALPHA_TRADING_CONFIG_PATH", raising=False)
+
+    report = build_startup_validation_report()
+    written_path = write_startup_validation_report(report)
+
+    assert report.startup_validation_passed is True
+    assert report.runtime_profile == "dev"
+    assert report.trading_config_path is None
+    assert written_path == report_path.resolve()
+
+
 def test_startup_validation_fails_fast_when_required_artifacts_are_missing(
     tmp_path: Path,
     monkeypatch,

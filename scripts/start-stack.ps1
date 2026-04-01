@@ -20,7 +20,7 @@ $tradingConfigPath = switch ($Profile) {
     "paper" { "configs/paper_trading.paper.yaml" }
     "shadow" { "configs/paper_trading.shadow.yaml" }
     "live" { "configs/paper_trading.live.yaml" }
-    default { "configs/paper_trading.yaml" }
+    default { "" }
 }
 
 New-Item -ItemType Directory -Force -Path (Join-Path $repoRoot "artifacts/runtime") | Out-Null
@@ -68,4 +68,3 @@ finally {
         $env:STREAMALPHA_STARTUP_REPORT_PATH = $previousStartupReportPath
     }
 }
-

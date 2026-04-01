@@ -1,64 +1,64 @@
-{
-  "artifact_root": "artifacts/training/m7",
-  "categorical_feature_columns": [
-    "symbol"
-  ],
-  "close_column": "close_price",
-  "comparison_policy": {
-    "max_brier_score_worsening": 0.01,
-    "max_directional_accuracy_regression": 0.01,
-    "primary_metric": "mean_long_only_net_value_proxy"
-  },
-  "first_train_fraction": 0.5,
-  "interval_column": "interval_begin",
-  "label_horizon_candles": 3,
-  "models": {
-    "autogluon_tabular": {
-      "calibrate_decision_threshold": false,
-      "eval_metric": "log_loss",
-      "fit_weighted_ensemble": true,
-      "hyperparameters": null,
-      "num_bag_folds": 5,
-      "num_bag_sets": 1,
-      "num_stack_levels": 1,
-      "presets": "high",
-      "time_limit": 900,
-      "verbosity": 0
-    }
-  },
-  "numeric_feature_columns": [
-    "open_price",
-    "high_price",
-    "low_price",
-    "close_price",
-    "vwap",
-    "trade_count",
-    "volume",
-    "log_return_1",
-    "log_return_3",
-    "momentum_3",
-    "return_mean_12",
-    "return_std_12",
-    "realized_vol_12",
-    "rsi_14",
-    "macd_line_12_26",
-    "volume_mean_12",
-    "volume_std_12",
-    "volume_zscore_12",
-    "close_zscore_12",
-    "lag_log_return_1",
-    "lag_log_return_2",
-    "lag_log_return_3"
-  ],
-  "purge_gap_candles": 3,
-  "round_trip_fee_bps": 20,
-  "source_table": "feature_ohlc",
-  "symbols": [
-    "BTC/USD",
-    "ETH/USD",
-    "SOL/USD"
-  ],
-  "test_folds": 5,
-  "test_fraction": 0.1,
-  "time_column": "as_of_time"
+﻿{
+    "artifact_root":  "artifacts/training/m7",
+    "categorical_feature_columns":  [
+                                        "symbol"
+                                    ],
+    "close_column":  "close_price",
+    "comparison_policy":  {
+                              "max_brier_score_worsening":  0.01,
+                              "max_directional_accuracy_regression":  0.01,
+                              "primary_metric":  "mean_long_only_net_value_proxy"
+                          },
+    "first_train_fraction":  0.5,
+    "interval_column":  "interval_begin",
+    "label_horizon_candles":  3,
+    "models":  {
+                   "autogluon_tabular":  {
+                                             "calibrate_decision_threshold":  false,
+                                             "eval_metric":  "log_loss",
+                                             "fit_weighted_ensemble":  true,
+                                             "hyperparameters":  null,
+                                             "num_bag_folds":  5,
+                                             "num_bag_sets":  1,
+                                             "num_stack_levels":  1,
+                                             "presets":  "high_quality",
+                                             "time_limit":  900,
+                                             "verbosity":  0
+                                         }
+               },
+    "numeric_feature_columns":  [
+                                    "open_price",
+                                    "high_price",
+                                    "low_price",
+                                    "close_price",
+                                    "vwap",
+                                    "trade_count",
+                                    "volume",
+                                    "log_return_1",
+                                    "log_return_3",
+                                    "momentum_3",
+                                    "return_mean_12",
+                                    "return_std_12",
+                                    "realized_vol_12",
+                                    "rsi_14",
+                                    "macd_line_12_26",
+                                    "volume_mean_12",
+                                    "volume_std_12",
+                                    "volume_zscore_12",
+                                    "close_zscore_12",
+                                    "lag_log_return_1",
+                                    "lag_log_return_2",
+                                    "lag_log_return_3"
+                                ],
+    "purge_gap_candles":  3,
+    "round_trip_fee_bps":  20,
+    "source_table":  "feature_ohlc",
+    "symbols":  [
+                    "BTC/USD",
+                    "ETH/USD",
+                    "SOL/USD"
+                ],
+    "test_folds":  5,
+    "test_fraction":  0.1,
+    "time_column":  "as_of_time"
 }

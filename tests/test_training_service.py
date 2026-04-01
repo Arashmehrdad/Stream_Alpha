@@ -241,6 +241,44 @@ def test_training_config_accepts_autogluon_tabular_authoritative_model(
     assert tuple(config.models) == ("autogluon_tabular",)
 
 
+def test_training_config_accepts_utf8_bom_json(
+    tmp_path: Path,
+) -> None:
+    """PowerShell-saved UTF-8 BOM JSON should still load in the training path."""
+    config_path = tmp_path / "training-with-bom.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "source_table": "feature_ohlc",
+                "symbols": ["BTC/USD"],
+                "time_column": "as_of_time",
+                "interval_column": "interval_begin",
+                "close_column": "close_price",
+                "categorical_feature_columns": ["symbol"],
+                "numeric_feature_columns": ["close_price"],
+                "label_horizon_candles": 3,
+                "purge_gap_candles": 3,
+                "test_folds": 2,
+                "first_train_fraction": 0.5,
+                "test_fraction": 0.1,
+                "round_trip_fee_bps": 20.0,
+                "artifact_root": "artifacts/training/m7",
+                "models": {
+                    "autogluon_tabular": {
+                        "presets": "high_quality",
+                        "time_limit": 900,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8-sig",
+    )
+
+    config = load_training_config(config_path)
+
+    assert tuple(config.models) == ("autogluon_tabular",)
+
+
 def test_summary_records_winner_autogluon_training_config() -> None:
     """Evaluation summary artifacts should expose the winner fit config for auditability."""
     regime_economics = {

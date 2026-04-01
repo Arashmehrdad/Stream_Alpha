@@ -113,6 +113,7 @@
 | C | Create a real authoritative AutoGluon training, promotion, and runtime path | training configs/service/registry/promote/compare, focused tests, README, PLANS.md | DONE | targeted tests plus live retrain/promote/runtime checks | One real authoritative AutoGluon family now exists, but it is still negative after costs and does not meet acceptance |
 | D | Re-rate M19/M20/M21 from current evidence and expose evidence-backed idle truth | adaptation/continual/ensemble/inference/dashboard surfaces, focused tests, README, PLANS.md, docker/app.Dockerfile | DONE | targeted service/API/dashboard checks plus live DB/artifact proof | M19 and M21 now read as evidence-backed idle states; M20 now runs on a current AutoGluon-only weak roster with explicit specialist/economic blockers |
 | E | Strengthen and de-bias the authoritative AutoGluon fit/config metadata path without changing runtime authority boundaries | AutoGluon wrapper/config/registry summary path, focused tests, PLANS.md | DONE | targeted wrapper/registry/loading checks | Omitted hyperparameters now stay truly omitted, manual-training controls are explicit, and the effective fit config is now audit-visible across the existing artifact chain |
+| F | Make local M7 AutoGluon training operationally one-step without weakening protected runtime modes | training config loader, dev startup script path, readiness helper, operator scripts, focused tests, README, PLANS.md | DONE | targeted pytest plus dry-run script checks | BOM-safe JSON loading, explicit dev prep flow, honest feature-table readiness checks, and a clean prepare/start operator workflow now exist without changing promotion or live safety semantics |
 
 ### Batch A log
 - Inspected only the M20-relevant files and runtime truth needed to answer the strengthening question:
@@ -317,5 +318,51 @@
   - `python -m pytest tests\test_training_autogluon.py tests\test_training_service.py tests\test_training_registry.py tests\test_inference_model_loader.py -q` -> `29 passed`
   - `python` config load smoke check for `configs/training.m7.json` -> `{'calibrate_decision_threshold': False, 'eval_metric': 'log_loss', 'fit_weighted_ensemble': True, 'hyperparameters': None, 'num_bag_folds': 5, 'num_bag_sets': 1, 'num_stack_levels': 1, 'presets': 'high', 'time_limit': 900, 'verbosity': 0}`
   - `python` config load smoke check for `configs/training.m3.json` -> `{'calibrate_decision_threshold': False, 'eval_metric': 'log_loss', 'fit_weighted_ensemble': True, 'hyperparameters': None, 'num_bag_folds': 5, 'num_bag_sets': 1, 'num_stack_levels': 1, 'presets': 'high', 'time_limit': 900, 'verbosity': 0}`
+- Blockers:
+  - none
+
+### Batch F log
+- Scope for this pass was limited to local M7 training UX and operational readiness. No training run, promotion decision, evaluation semantics, or protected runtime safety logic was weakened.
+- Updated `app/training/dataset.py` so `load_training_config(...)` now reads JSON with `utf-8-sig`, which keeps normal UTF-8 behavior but also accepts PowerShell-written UTF-8 BOM config files.
+- Updated `app/training/compare.py` to read the checked-in M7 workflow config with the same BOM-tolerant encoding so the local challenger workflow does not regress on the same operator issue.
+- Added `app/training/readiness.py` as a small reusable readiness helper that:
+  - loads the checked-in training config
+  - reports AutoGluon install/version truth
+  - resolves PostgreSQL connectivity using the existing settings/candidate-DSN pattern
+  - checks whether the configured training source table exists
+  - reports `feature_ohlc` row count
+  - uses the existing training dataset loader plus split math to say whether the table is actually ready for the configured walk-forward split
+- Updated `scripts/start-stack.ps1` so the intended `dev` startup path no longer injects a fake paper-trading config path. It still sets `STREAMALPHA_RUNTIME_PROFILE=dev`, and paper/shadow/live still keep their explicit trading config paths and protected validation behavior.
+- Added first-class operator scripts:
+  - `scripts/prepare_m7_training.ps1`
+  - `scripts/start_m7_training.ps1`
+- The new prepare script now:
+  - loads `.env` when present
+  - checks config loadability, AutoGluon version, PostgreSQL reachability, source-table existence, row count, and split readiness
+  - starts the existing `dev` stack path only when training data is missing or not ready
+  - prints a short operator summary plus the recommended next command
+- The new start script now:
+  - runs the same readiness checks
+  - fails clearly when config, AutoGluon, PostgreSQL, or `feature_ohlc` prerequisites are missing
+  - invokes the authoritative training command `python -m app.training --config .\configs\training.m7.json`
+  - reports the newest artifact directory and `summary.json` winner/acceptance fields after completion
+- Updated `README.md` with a minimal local M7 training section pointing operators to the two new scripts.
+- Updated focused tests:
+  - `tests/test_training_service.py`
+  - `tests/test_runtime_validate.py`
+  - `tests/test_training_readiness.py`
+- Targeted checks passed:
+  - `python -m pytest tests\test_training_service.py tests\test_runtime_validate.py tests\test_training_readiness.py -q` -> `15 passed`
+  - `.\scripts\prepare_m7_training.ps1 -DryRun` -> reported:
+    - `config ok: True`
+    - `autogluon version: 1.5.0`
+    - `postgres reachable: True`
+    - `feature_ohlc exists: yes`
+    - `feature_ohlc row count: 1146`
+    - `eligible unique timestamps: 376 / 9`
+    - `recommended next command: .\scripts\start_m7_training.ps1`
+  - `.\scripts\start_m7_training.ps1 -DryRun` -> reported:
+    - `Dry run: would run python -m app.training --config .\configs\training.m7.json`
+    - `Artifact root: artifacts/training/m7`
 - Blockers:
   - none

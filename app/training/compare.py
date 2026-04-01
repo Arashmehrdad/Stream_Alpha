@@ -54,7 +54,7 @@ class WorkflowConfig:
 
 def load_workflow_config(config_path: Path) -> WorkflowConfig:
     """Load the M7 JSON config plus explicit comparison policy fields."""
-    raw_config = json.loads(Path(config_path).read_text(encoding="utf-8"))
+    raw_config = json.loads(Path(config_path).read_text(encoding="utf-8-sig"))
     try:
         policy_block = dict(raw_config["comparison_policy"])
         policy = ComparisonPolicy(

@@ -160,7 +160,7 @@ class TrainingDataset:
 
 def load_training_config(config_path: Path) -> TrainingConfig:
     """Load and validate the checked-in JSON config for the offline training run."""
-    config_data = json.loads(config_path.read_text(encoding="utf-8"))
+    config_data = json.loads(config_path.read_text(encoding="utf-8-sig"))
     raw_models = dict(config_data.get("models", {}))
     models = {
         str(model_name): dict(model_config)
@@ -211,7 +211,7 @@ async def _load_training_dataset_with_fallback(
     config: TrainingConfig,
 ) -> TrainingDataset:
     last_error: Exception | None = None
-    for dsn in _candidate_dsns(settings.postgres):
+    for dsn in candidate_dsns(settings.postgres):
         try:
             return await _load_training_dataset(dsn, config)
         except (OSError, asyncpg.PostgresConnectionError) as error:
@@ -314,7 +314,7 @@ def _selected_source_columns(config: TrainingConfig) -> list[str]:
     )
 
 
-def _candidate_dsns(postgres: PostgresSettings) -> tuple[str, ...]:
+def candidate_dsns(postgres: PostgresSettings) -> tuple[str, ...]:
     primary_dsn = postgres.dsn
     if postgres.host in {"127.0.0.1", "localhost"}:
         return (primary_dsn,)
