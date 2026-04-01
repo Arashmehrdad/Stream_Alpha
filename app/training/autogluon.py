@@ -161,7 +161,11 @@ class AutoGluonTabularClassifier:  # pylint: disable=too-many-instance-attribute
             runtime_root = Path(tempfile.mkdtemp(prefix="streamalpha-autogluon-runtime-"))
             predictor_dir = runtime_root / "predictor"
             _restore_predictor_dir(self._predictor_archive, predictor_dir)
-            self._predictor = TabularPredictor.load(str(predictor_dir))
+            # Local-first runs can train on Windows and score inside Linux containers.
+            self._predictor = TabularPredictor.load(
+                str(predictor_dir),
+                require_py_version_match=False,
+            )
             self._runtime_dir = runtime_root
         return self._predictor
 

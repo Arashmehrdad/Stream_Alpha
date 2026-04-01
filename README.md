@@ -23,7 +23,7 @@ Accepted milestones and current higher-foundation status:
 * M17 operational alerting foundation
 * M18 usability and strategy evaluation foundation
 * M19 bounded adaptation now has runtime-generated persisted drift/performance truth, without invented active adaptive profiles or promotions beyond real persisted state
-* M20 dynamic ensemble surfaces and persisted profile truth exist, and the authoritative training/registry/runtime path now has one real AutoGluon candidate family, but the candidate ecosystem remains narrow and not economically accepted yet
+* M20 dynamic ensemble surfaces and persisted profile truth exist, and the current active roster is now aligned to the real registry-backed AutoGluon generalist only, but the candidate ecosystem remains narrow and not economically accepted yet
 * M21 guarded continual learning now has runtime-generated persisted drift-cap truth, without invented active profiles, experiments, or promotions beyond real persisted state
 
 Second Foundation v2 is not honestly complete through M21 yet. The repo now exposes truthful M19-M21 runtime surfaces without overclaiming stronger model diversity, profile activity, or promotion evidence than currently exists.
@@ -111,7 +111,7 @@ These boundaries are part of the accepted design and should be treated as stable
 
 * **M18** adds usability and strategy evaluation truth, divergence reporting, and realistic promotion evidence.
 * **M19** now writes runtime-generated persisted drift/performance truth. It should be read as bounded adaptation evidence, not as proof of stronger adaptive profile or promotion activity than the real persisted state supports.
-* **M20** still exposes ensemble surfaces and persisted profile truth, and the authoritative path now has one real AutoGluon candidate family, but it must now be judged on real candidate breadth, role diversity, regime-slice value, and economics after costs. On those terms it remains active but weak.
+* **M20** still exposes ensemble surfaces and persisted profile truth, and the active profile is now a current AutoGluon-only generalist roster. It must still be judged on real candidate breadth, role diversity, regime-slice value, and economics after costs. On those terms it remains active but weak.
 * **M21** now writes runtime-generated persisted drift-cap truth. Guarded workflow/read surfaces exist, but the repo does not invent active continual-learning profiles, experiments, or promotions beyond real persisted truth.
 
 ## Model stack after AutoGluon batch
@@ -164,6 +164,7 @@ AutoGluon now receives credit in this repo because there is proven end-to-end tr
 
 * M20 should now be judged from real candidate breadth, role diversity, regime-slice value, and economics after costs, not from missing umbrella-model plumbing.
 * One real registry-backed, runtime-usable AutoGluon family is now present and does provide honest generalist candidate truth.
+* The active runtime roster is now aligned to that current generalist only, rather than the stale archived-logistic roster that existed before this pass.
 * That does not yet create real trend or range specialists, and the current promoted AutoGluon proof remains negative after costs, so M20 should still not be described as richly specialist, strongly diverse, or operationally strong.
 
 ### Impact on M21

@@ -111,7 +111,7 @@
 | A | Determine the smallest honest M20 strengthening path from the current repo/runtime truth | PLANS.md | DONE | targeted training/registry/runtime checks | No immediate strengthening move exists without creating a new real registry-backed candidate artifact; the active roster already uses all currently available runtime-usable registry entries |
 | B | Demote legacy sklearn models from the authoritative training, registry, and runtime path | training configs/service/registry, focused tests, README, PLANS.md | DONE | targeted training/runtime checks | This batch intentionally breaks the old sklearn-first path instead of preserving it as the de facto main stack |
 | C | Create a real authoritative AutoGluon training, promotion, and runtime path | training configs/service/registry/promote/compare, focused tests, README, PLANS.md | DONE | targeted tests plus live retrain/promote/runtime checks | One real authoritative AutoGluon family now exists, but it is still negative after costs and does not meet acceptance |
-| D | Re-rate M19/M20/M21 from current evidence and expose evidence-backed idle truth | adaptation/continual/ensemble/inference/dashboard surfaces, focused tests, README, PLANS.md | IN PROGRESS | targeted service/API/dashboard checks plus live DB/artifact proof | M19 and M21 must stop reading as empty when persisted truth exists; M20 must read as active-but-weak when specialist breadth/economics stay insufficient |
+| D | Re-rate M19/M20/M21 from current evidence and expose evidence-backed idle truth | adaptation/continual/ensemble/inference/dashboard surfaces, focused tests, README, PLANS.md, docker/app.Dockerfile | DONE | targeted service/API/dashboard checks plus live DB/artifact proof | M19 and M21 now read as evidence-backed idle states; M20 now runs on a current AutoGluon-only weak roster with explicit specialist/economic blockers |
 
 ### Batch A log
 - Inspected only the M20-relevant files and runtime truth needed to answer the strengthening question:
@@ -245,7 +245,38 @@
 - Added explicit M20 current-state truth helpers so Packet 2 can now say:
   - AutoGluon is real and counts for the generalist role
   - overlapping tabular families are subsumed rather than counted as separate missing umbrella gaps
-  - M20 stays `ACTIVE_WEAK` when real trend/range specialists are still missing or regime-slice/economic proof is still insufficient
+  - M20 stays `ACTIVE_WEAK` when real trend/range specialists are still missing or authoritative after-cost proof is still insufficient
 - Updated `/health`, `/predict`, `/signal`, dashboard data sources, and dashboard operator views so they surface:
   - evidence-backed idle adaptation and continual-learning status
   - M20 roster truth as active-but-weak instead of implying active means strong
+- Tightened the M20 economics gate so the current-state truth now uses authoritative registry winner metrics for the generalist acceptance check instead of over-crediting Packet 2 slice PnL:
+  - current `autogluon_tabular` Packet 2 all-slice net value can be positive while the authoritative promoted run still has `mean_long_only_net_value_proxy = -0.0005341925944267735`
+  - M20 therefore remains blocked by economic weakness and specialist breadth, not by missing umbrella-model plumbing
+- Realigned the live M20 persisted state to current truth instead of the stale archived-logistic roster:
+  - superseded `m20-paper-all-minimal-20260331T205941Z`
+  - activated `m20-paper-all-autogluon-generalist-20260401T051733Z`
+  - persisted promotion decision `m20-realign-20260401T051733Z`
+  - wrote research artifact `artifacts/ensemble/research/20260401T051733Z/research_report.json`
+- Fixed the current deployed AutoGluon runtime path so the live Linux container can score the promoted Windows-trained artifact:
+  - `app/training/autogluon.py` now loads the bundled predictor with `require_py_version_match=False`
+  - `docker/app.Dockerfile` now installs `libgomp1` so LightGBM-backed AutoGluon submodels can load inside the container
+- Targeted checks passed:
+  - `python -m pytest tests\test_adaptation_service.py tests\test_continual_learning_service.py tests\test_ensemble_packet2.py tests\test_inference_api.py tests\test_dashboard_data_sources.py tests\test_inference_service.py tests\test_inference_model_loader.py -q` -> `82 passed, 1 warning`
+  - live DB truth refresh:
+    - `adaptive_drift_state` aggregate/symbol rows refreshed from `2026-04-01 05:13:41+00` to `2026-04-01 05:17:47+00`
+    - `adaptive_performance_windows` latest aggregate paper rows refreshed from `2026-04-01 05:13:41+00` to `2026-04-01 05:17:47+00`
+    - `continual_learning_drift_caps` scope rows refreshed from `2026-04-01 05:14:33+00` to `2026-04-01 05:17:47+00`
+  - live artifact refresh:
+    - `artifacts/adaptation/drift/latest_summary.json`
+    - `artifacts/adaptation/performance/latest_summary.json`
+    - `artifacts/continual_learning/summary/latest_summary.json`
+    - `artifacts/continual_learning/drift_caps/latest_summary.json`
+    - `artifacts/ensemble/research/20260401T051733Z/research_report.json`
+  - live API truth after inference rebuild:
+    - `/health` now returns `model_name = "dynamic_ensemble"`, `ensemble_profile_id = "m20-paper-all-autogluon-generalist-20260401T051733Z"`, `ensemble_status = "ACTIVE"`, `ensemble_candidate_count = 1`, `ensemble_roster_status = "ACTIVE_WEAK"`, `adaptation_evidence_backed = true`, and `continual_learning_evidence_backed = true`
+    - `/adaptation/summary` now returns `evidence_backed = true` plus `latest_drift_updated_at`, `latest_performance_window_id`, `latest_performance_trade_count`, and `latest_performance_created_at`
+    - `/continual-learning/summary` now returns `evidence_backed = true` plus `latest_drift_cap_updated_at`
+    - `/signal?symbol=BTC/USD` and `/predict?symbol=BTC/USD` now resolve the active weak ensemble instead of erroring, with `ensemble_roster_status = "ACTIVE_WEAK"` and explicit reason codes naming negative economics plus missing trend/range specialists
+- Targeted lint note:
+  - `python -m pylint ...` returned `9.82/10`
+  - remaining findings are non-behavioral mixed-line-ending warnings on already modified files plus one branch-count warning on the Packet 2 truth helper

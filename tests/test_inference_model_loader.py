@@ -4,12 +4,15 @@
 
 from __future__ import annotations
 
+import io
 from pathlib import Path
+import zipfile
 
 import joblib
 import pytest
 
 from app.inference.service import load_model_artifact
+from app.training import autogluon as autogluon_module
 from app.training import registry as registry_module
 from app.training.autogluon import build_autogluon_tabular_classifier
 from app.training.registry import write_json_atomic
@@ -251,3 +254,31 @@ def test_load_model_artifact_supports_self_contained_autogluon_artifact(tmp_path
     assert loaded.model_version == "m3-20260401T120000Z"
     assert len(probabilities) == 2
     assert len(probabilities[0]) == 2
+
+
+def test_autogluon_runtime_loader_relaxes_python_version_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Runtime loading should allow the deployed container to read local artifacts."""
+    recorded: dict[str, object] = {}
+
+    def _fake_load(path: str, **kwargs):
+        recorded["path"] = path
+        recorded["require_py_version_match"] = kwargs.get("require_py_version_match")
+        return object()
+
+    archive_buffer = io.BytesIO()
+    with zipfile.ZipFile(archive_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("metadata.json", "{}")
+
+    monkeypatch.setattr(
+        autogluon_module.TabularPredictor,
+        "load",
+        staticmethod(_fake_load),
+    )
+    classifier = build_autogluon_tabular_classifier({})
+    classifier._predictor_archive = archive_buffer.getvalue()  # pylint: disable=protected-access
+
+    classifier._ensure_predictor()  # pylint: disable=protected-access
+
+    assert recorded["require_py_version_match"] is False
