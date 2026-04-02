@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,74 @@ import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _POWERSHELL = shutil.which("powershell")
+
+
+def _write_research_config_for_script_test(config_path: Path, *, presets: str) -> None:
+    config_path.write_text(
+        json.dumps(
+            {
+                "artifact_root": "artifacts/training/m7",
+                "source_table": "feature_ohlc",
+                "symbols": ["BTC/USD", "ETH/USD", "SOL/USD"],
+                "time_column": "as_of_time",
+                "interval_column": "interval_begin",
+                "close_column": "close_price",
+                "categorical_feature_columns": ["symbol"],
+                "numeric_feature_columns": [
+                    "open_price",
+                    "high_price",
+                    "low_price",
+                    "close_price",
+                    "vwap",
+                    "trade_count",
+                    "volume",
+                    "log_return_1",
+                    "log_return_3",
+                    "momentum_3",
+                    "return_mean_12",
+                    "return_std_12",
+                    "realized_vol_12",
+                    "rsi_14",
+                    "macd_line_12_26",
+                    "volume_mean_12",
+                    "volume_std_12",
+                    "volume_zscore_12",
+                    "close_zscore_12",
+                    "lag_log_return_1",
+                    "lag_log_return_2",
+                    "lag_log_return_3",
+                ],
+                "label_horizon_candles": 3,
+                "purge_gap_candles": 3,
+                "test_folds": 5,
+                "first_train_fraction": 0.5,
+                "test_fraction": 0.1,
+                "round_trip_fee_bps": 20,
+                "comparison_policy": {
+                    "primary_metric": "mean_long_only_net_value_proxy",
+                    "max_directional_accuracy_regression": 0.01,
+                    "max_brier_score_worsening": 0.01,
+                },
+                "models": {
+                    "autogluon_tabular": {
+                        "presets": presets,
+                        "time_limit": 900,
+                        "eval_metric": "log_loss",
+                        "hyperparameters": None,
+                        "fit_weighted_ensemble": True,
+                        "num_bag_folds": 5,
+                        "num_stack_levels": 1,
+                        "num_bag_sets": 1,
+                        "fold_fitting_strategy": "sequential_local",
+                        "dynamic_stacking": False,
+                        "calibrate_decision_threshold": False,
+                        "verbosity": 0,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 def _write_fake_python_launcher(
@@ -340,3 +409,192 @@ def test_start_script_treats_complete_artifact_with_nonzero_exit_as_completed(
     assert "training stdout log:" in result.stdout
     assert "training stderr log:" in result.stdout
     assert "treating the run as completed" in (result.stdout + result.stderr)
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32" or _POWERSHELL is None,
+    reason="These operator-script dry-run tests are Windows-specific.",
+)
+def test_analyze_script_dry_run_resolves_newest_run_directory() -> None:
+    artifact_root = _REPO_ROOT / "artifacts" / "training" / "m7"
+    older_run = artifact_root / "20990101T000000Z-test-analyze-old"
+    newer_run = artifact_root / "20990101T000001Z-test-analyze-new"
+
+    try:
+        for run_dir in (older_run, newer_run):
+            run_dir.mkdir(parents=True, exist_ok=True)
+            (run_dir / "summary.json").write_text(
+                json.dumps({"winner": {"model_name": "autogluon_tabular"}}),
+                encoding="utf-8",
+            )
+            (run_dir / "oof_predictions.csv").write_text("model_name\n", encoding="utf-8")
+        os.utime(older_run, (time.time() - 10, time.time() - 10))
+        os.utime(newer_run, None)
+
+        result = subprocess.run(
+            [
+                _POWERSHELL,
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(_REPO_ROOT / "scripts" / "analyze_m7_thresholds.ps1"),
+                "-DryRun",
+            ],
+            cwd=_REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    finally:
+        for run_dir in (older_run, newer_run):
+            if run_dir.exists():
+                shutil.rmtree(run_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert f"Resolved M7 run dir: {newer_run}" in result.stdout
+    assert "Dry run: would run python -m app.training.threshold_analysis" in result.stdout
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32" or _POWERSHELL is None,
+    reason="These operator-script dry-run tests are Windows-specific.",
+)
+def test_policy_candidate_script_dry_run_resolves_newest_run_directory() -> None:
+    artifact_root = _REPO_ROOT / "artifacts" / "training" / "m7"
+    older_run = artifact_root / "20990101T000010Z-test-policy-old"
+    newer_run = artifact_root / "20990101T000011Z-test-policy-new"
+
+    try:
+        for run_dir in (older_run, newer_run):
+            run_dir.mkdir(parents=True, exist_ok=True)
+            (run_dir / "summary.json").write_text(
+                json.dumps({"winner": {"model_name": "autogluon_tabular"}}),
+                encoding="utf-8",
+            )
+            (run_dir / "oof_predictions.csv").write_text("model_name\n", encoding="utf-8")
+        os.utime(older_run, (time.time() - 10, time.time() - 10))
+        os.utime(newer_run, None)
+
+        result = subprocess.run(
+            [
+                _POWERSHELL,
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(_REPO_ROOT / "scripts" / "evaluate_m7_policy_candidates.ps1"),
+                "-DryRun",
+            ],
+            cwd=_REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    finally:
+        for run_dir in (older_run, newer_run):
+            if run_dir.exists():
+                shutil.rmtree(run_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert f"Resolved M7 run dir: {newer_run}" in result.stdout
+    assert "Dry run: would run python -m app.training.policy_candidate_analysis" in result.stdout
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32" or _POWERSHELL is None,
+    reason="These operator-script dry-run tests are Windows-specific.",
+)
+def test_multi_run_policy_candidate_script_dry_run_uses_artifact_root_scan(
+    tmp_path: Path,
+) -> None:
+    artifact_root = tmp_path / "m7-artifacts"
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    for run_name in ("20260401T000001Z", "20260401T000002Z"):
+        run_dir = artifact_root / run_name
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "summary.json").write_text(
+            json.dumps({"winner": {"model_name": "autogluon_tabular"}}),
+            encoding="utf-8",
+        )
+        (run_dir / "oof_predictions.csv").write_text("model_name\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            _POWERSHELL,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(_REPO_ROOT / "scripts" / "evaluate_m7_policy_candidates_multi_run.ps1"),
+            "-ArtifactRoot",
+            str(artifact_root),
+            "-DryRun",
+        ],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert f"Resolved M7 artifact root: {artifact_root}" in result.stdout
+    assert "Dry run: would run python -m app.training.multi_run_policy_analysis" in result.stdout
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32" or _POWERSHELL is None,
+    reason="These operator-script dry-run tests are Windows-specific.",
+)
+def test_research_experiment_script_dry_run_lists_discovered_configs(
+    tmp_path: Path,
+) -> None:
+    config_dir = tmp_path / "configs"
+    artifact_root = tmp_path / "artifacts" / "training" / "m7"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    _write_research_config_for_script_test(
+        config_dir / "training.m7.research.high_quality.json",
+        presets="high_quality",
+    )
+    _write_research_config_for_script_test(
+        config_dir / "training.m7.research.best_quality.json",
+        presets="best_quality",
+    )
+    _write_research_config_for_script_test(
+        config_dir / "training.m7.research.best_quality_v150.json",
+        presets="best_quality_v150",
+    )
+
+    result = subprocess.run(
+        [
+            _POWERSHELL,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(_REPO_ROOT / "scripts" / "run_m7_research_experiments.ps1"),
+            "-ConfigDirectory",
+            str(config_dir),
+            "-ArtifactRoot",
+            str(artifact_root),
+            "-DryRun",
+        ],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert f"Resolved research config directory: {config_dir}" in result.stdout
+    assert f"Resolved M7 artifact root: {artifact_root}" in result.stdout
+    assert "best_quality" in result.stdout
+    assert "best_quality_v150" in result.stdout
+    assert "high_quality" in result.stdout
+    assert "Dry run: would run .\\scripts\\start_m7_training.ps1 -ConfigPath" in result.stdout
+    assert "Dry run: would then run .\\scripts\\evaluate_m7_policy_candidates.ps1 -RunDir <new_run_for_best_quality>" in result.stdout

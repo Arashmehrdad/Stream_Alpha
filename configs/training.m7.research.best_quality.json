@@ -1,0 +1,66 @@
+{
+  "artifact_root": "artifacts/training/m7",
+  "source_table": "feature_ohlc",
+  "symbols": [
+    "BTC/USD",
+    "ETH/USD",
+    "SOL/USD"
+  ],
+  "time_column": "as_of_time",
+  "interval_column": "interval_begin",
+  "close_column": "close_price",
+  "categorical_feature_columns": [
+    "symbol"
+  ],
+  "numeric_feature_columns": [
+    "open_price",
+    "high_price",
+    "low_price",
+    "close_price",
+    "vwap",
+    "trade_count",
+    "volume",
+    "log_return_1",
+    "log_return_3",
+    "momentum_3",
+    "return_mean_12",
+    "return_std_12",
+    "realized_vol_12",
+    "rsi_14",
+    "macd_line_12_26",
+    "volume_mean_12",
+    "volume_std_12",
+    "volume_zscore_12",
+    "close_zscore_12",
+    "lag_log_return_1",
+    "lag_log_return_2",
+    "lag_log_return_3"
+  ],
+  "label_horizon_candles": 3,
+  "purge_gap_candles": 3,
+  "test_folds": 5,
+  "first_train_fraction": 0.5,
+  "test_fraction": 0.1,
+  "round_trip_fee_bps": 20,
+  "comparison_policy": {
+    "primary_metric": "mean_long_only_net_value_proxy",
+    "max_directional_accuracy_regression": 0.01,
+    "max_brier_score_worsening": 0.01
+  },
+  "models": {
+    "autogluon_tabular": {
+      "presets": "best_quality",
+      "time_limit": 900,
+      "eval_metric": "log_loss",
+      "hyperparameters": null,
+      "fit_weighted_ensemble": true,
+      "num_bag_folds": 5,
+      "num_stack_levels": 1,
+      "num_bag_sets": 1,
+      "fold_fitting_strategy": "sequential_local",
+      "dynamic_stacking": false,
+      "calibrate_decision_threshold": false,
+      "verbosity": 0
+    }
+  }
+}

@@ -595,3 +595,358 @@
   - `.\scripts\prepare_m7_training.ps1 -DryRun` -> still reports the same honest M7 readiness truth
 - Blockers:
   - none
+
+### Batch L log
+- Scope for this pass was limited to honest post-training analysis of completed M7 runs. No training infrastructure, promotion semantics, inference thresholds, paper/shadow/live behavior, risk authority, or runtime signal logic were changed.
+- Added a focused research-only analysis module:
+  - `app/training/threshold_analysis.py`
+  - loads one completed M7 artifact directory
+  - resolves the winner model from `summary.json` unless an explicit `model_name` is supplied
+  - reads `oof_predictions.csv`
+  - evaluates long-only threshold policies directly from `prob_up`
+  - preserves the existing classifier confidence analysis in training summaries and adds a separate long-only economic view instead of replacing it
+- Implemented threshold-policy evaluation for:
+  - `baseline_threshold_only`
+  - `no_long_in_trend_down`
+  - `no_long_in_trend_down_and_high_vol`
+  - optional explicit `per_regime_thresholds` overrides when the operator supplies them
+- Added threshold analysis outputs for each tested policy/threshold candidate:
+  - `threshold`
+  - `prediction_count`
+  - `trade_count`
+  - `trade_rate`
+  - `precision_on_trades`
+  - `directional_accuracy_on_trades`
+  - `mean_long_only_gross_value_proxy`
+  - `mean_long_only_net_value_proxy`
+  - cumulative gross/net proxy sums
+  - `after_cost_positive`
+  - per-fold breakdown
+  - per-regime breakdown
+- Added deterministic artifact writing under the completed run directory:
+  - `threshold_analysis/threshold_sweep.json`
+  - `threshold_analysis/threshold_sweep.csv`
+  - `threshold_analysis/regime_policy_comparison.json`
+  - `threshold_analysis/regime_policy_comparison.csv`
+  - `threshold_analysis/fold_policy_breakdown.csv`
+  - `threshold_analysis/summary.md`
+- Added a PowerShell-first operator wrapper:
+  - `scripts/analyze_m7_thresholds.ps1`
+  - defaults to the newest `artifacts/training/m7/*` run when no run path is supplied
+  - validates `summary.json` and `oof_predictions.csv`
+  - runs the authoritative Python analysis module
+  - prints:
+    - best global threshold by net proxy
+    - best threshold with `TREND_DOWN` blocked
+    - whether any tested policy becomes after-cost positive
+    - the weakest fold under the best overall tested policy
+    - saved analysis output paths
+- Added focused tests:
+  - `tests/test_training_threshold_analysis.py`
+    - threshold sweep calculations
+    - `TREND_DOWN` block behavior
+    - per-fold breakdown presence
+    - artifact writing
+    - deterministic best-policy selection that avoids choosing zero-trade rows when real traded candidates exist
+  - `tests/test_training_scripts.py`
+    - newest-run resolution for the new PowerShell analysis script
+- Updated operator docs:
+  - `README.md`
+- Ran the real analysis against the completed artifact:
+  - `artifacts/training/m7/20260401T213341Z`
+  - saved outputs under:
+    - `artifacts/training/m7/20260401T213341Z/threshold_analysis`
+- Real completed-run findings from the saved analysis:
+  - best global threshold by net proxy:
+    - `baseline_threshold_only @ 0.90`
+    - after-cost positive, but only on `1` executed trade, so it is too thin to treat as robust rescue evidence
+  - best `TREND_DOWN`-blocked threshold:
+    - `no_long_in_trend_down @ 0.85`
+    - still negative after costs
+  - best overall tested traded policy:
+    - `no_long_in_trend_down_and_high_vol @ 0.80`
+    - `trade_count = 11`
+    - `trade_rate = 0.0197`
+    - `mean_long_only_net_value_proxy = 0.0000107785`
+    - after-cost positive on OOF data
+  - weakest fold under that best overall policy:
+    - `fold 3`
+    - `trade_count = 5`
+    - `mean_long_only_net_value_proxy = -0.0000313094`
+  - latest fold `4` no longer collapses under the best overall tested policy because it takes no longs there, but that does not count as production rescue by itself
+- Targeted checks passed:
+  - `python -m pytest tests\test_training_threshold_analysis.py tests\test_training_scripts.py -q` -> `10 passed`
+  - `.\scripts\analyze_m7_thresholds.ps1 -DryRun` -> resolved the newest M7 run and printed the authoritative Python command
+  - `.\scripts\analyze_m7_thresholds.ps1` -> completed quickly against the real `20260401T213341Z` artifact and wrote the expected `threshold_analysis/` outputs
+- Blockers:
+  - none
+
+### Batch M log
+- Scope for this pass was limited to codifying the discovered positive threshold/regime rule as an explicit research-only named challenger policy for completed-run evaluation. No production inference behavior, paper/shadow/live policy, promotion semantics, or training behavior were changed.
+- Added a typed named-candidate definition module:
+  - `app/training/policy_candidates.py`
+  - supports explicit structured research-only long-only candidates with:
+    - `prob_up_min`
+    - `blocked_regimes`
+    - `allowed_regimes`
+    - `per_regime_thresholds`
+  - added the bounded built-in candidate set:
+    - `default_long_only_050`
+    - `m7_research_long_only_v1`
+  - `m7_research_long_only_v1` encodes the discovered research rule explicitly:
+    - `prob_up >= 0.80`
+    - block `TREND_DOWN`
+    - block `HIGH_VOL`
+  - added a simple low-trade caution helper with a factual threshold:
+    - warn when `trade_count < 20`
+- Added research-only named-candidate evaluation:
+  - `app/training/policy_candidate_analysis.py`
+  - evaluates completed M7 run artifacts using the winner model's OOF predictions
+  - computes, for each named candidate:
+    - `policy_name`
+    - `prediction_count`
+    - `trade_count`
+    - `trade_rate`
+    - `precision_on_trades`
+    - `directional_accuracy_on_trades`
+    - `mean_long_only_gross_value_proxy`
+    - `mean_long_only_net_value_proxy`
+    - cumulative gross/net proxy sums
+    - `after_cost_positive`
+    - `caution_text`
+    - per-fold breakdown
+    - per-regime breakdown
+  - persists deterministic outputs under:
+    - `policy_candidate_analysis/policy_candidate_summary.json`
+    - `policy_candidate_analysis/policy_candidate_summary.csv`
+    - `policy_candidate_analysis/policy_candidate_fold_breakdown.csv`
+    - `policy_candidate_analysis/summary.md`
+- Reused the existing completed-run threshold-analysis path honestly instead of inventing a parallel artifact format:
+  - `app/training/threshold_analysis.py`
+  - now exposes small public helper functions for:
+    - completed-run summary loading
+    - winner-model OOF loading
+    - fee-rate resolution
+    - fold/regime grouping
+    - policy-metric computation
+    - deterministic best-result selection
+    - JSON/CSV artifact writing
+  - generalized the shared deterministic best-result sorter so it can rank both threshold sweep rows and named policy-candidate rows
+- Added a PowerShell-first operator wrapper:
+  - `scripts/evaluate_m7_policy_candidates.ps1`
+  - defaults to the newest M7 run
+  - validates `summary.json` and `oof_predictions.csv`
+  - runs the authoritative Python candidate-evaluation module
+  - prints:
+    - best candidate by net proxy
+    - whether any named candidate is after-cost positive
+    - trade count for the best candidate
+    - weakest fold for the best candidate
+    - the low-trade caution when applicable
+    - output paths
+- Updated operator docs:
+  - `README.md`
+- Added focused tests:
+  - `tests/test_training_policy_candidate_analysis.py`
+    - named candidate evaluation
+    - blocked-regime behavior
+    - candidate summary writing
+    - low-trade caution
+  - `tests/test_training_scripts.py`
+    - newest-run resolution for `evaluate_m7_policy_candidates.ps1`
+- Ran the real named-candidate evaluation against the completed artifact:
+  - `artifacts/training/m7/20260401T213341Z`
+  - outputs written under:
+    - `artifacts/training/m7/20260401T213341Z/policy_candidate_analysis`
+- Real completed-run findings from the saved candidate analysis:
+  - best named candidate:
+    - `m7_research_long_only_v1`
+    - `trade_count = 11`
+    - `trade_rate = 0.0197`
+    - `mean_long_only_net_value_proxy = 0.0000107785`
+    - after-cost positive on OOF data
+  - baseline comparison:
+    - `default_long_only_050`
+    - `trade_count = 204`
+    - `mean_long_only_net_value_proxy = -0.0004006239`
+    - still negative after costs
+  - weakest fold for the best candidate:
+    - `fold 3`
+    - `trade_count = 5`
+    - `mean_long_only_net_value_proxy = -0.0000313094`
+  - the best candidate remains explicitly cautioned as too sparse:
+    - `Positive but too sparse to count as robust promotion evidence.`
+- Targeted checks passed:
+  - `python -m pytest tests\test_training_policy_candidate_analysis.py tests\test_training_scripts.py -q` -> `10 passed`
+  - `.\scripts\evaluate_m7_policy_candidates.ps1 -DryRun` -> resolved the newest M7 run and printed the authoritative Python command
+  - `.\scripts\evaluate_m7_policy_candidates.ps1 -RunDir .\artifacts\training\m7\20260401T213341Z` -> completed quickly and wrote the expected `policy_candidate_analysis/` outputs
+- Blockers:
+  - none
+
+### Batch N log
+- Scope for this pass was limited to multi-run aggregation for the existing research-only M7 policy candidates across completed artifact directories. No retraining, no production inference changes, no promotion semantics changes, and no live/paper/shadow policy changes were made.
+- Added a new authoritative multi-run analysis module:
+  - `app/training/multi_run_policy_analysis.py`
+  - scans completed M7 run directories under `artifacts/training/m7`
+  - requires `summary.json` and `oof_predictions.csv`
+  - evaluates the existing named research candidates across each analyzable run using the same single-run candidate-analysis path
+  - aggregates per candidate:
+    - `run_count`
+    - `complete_run_count`
+    - `total_prediction_count`
+    - `total_trade_count`
+    - `mean_trade_rate`
+    - `mean_net_value_proxy_across_runs`
+    - `median_net_value_proxy_across_runs`
+    - `positive_run_count`
+    - `positive_run_rate`
+    - `worst_run_net_value_proxy`
+    - `best_run_net_value_proxy`
+  - writes stable outputs under:
+    - `artifacts/training/m7/_analysis/policy_candidates/`
+    - `multi_run_policy_summary.json`
+    - `multi_run_policy_summary.csv`
+    - `multi_run_policy_run_breakdown.csv`
+    - `summary.md`
+- Added honest per-run breakdown output:
+  - per run and policy:
+    - `run_id`
+    - `run_dir`
+    - `policy_name`
+    - `prediction_count`
+    - `trade_count`
+    - `trade_rate`
+    - `mean_long_only_gross_value_proxy`
+    - `mean_long_only_net_value_proxy`
+    - `after_cost_positive`
+    - `weakest_fold`
+    - sparse-trade caution fields
+- Added a PowerShell-first operator wrapper:
+  - `scripts/evaluate_m7_policy_candidates_multi_run.ps1`
+  - defaults to `artifacts/training/m7`
+  - supports `-Candidate` filtering and `-MinRunCount`
+  - prints:
+    - best candidate by median net value proxy
+    - `positive_run_rate`
+    - `total_trade_count`
+    - whether evidence is still too sparse
+    - scanned/complete/analyzable/skipped run counts
+    - output paths
+- Hardened the multi-run path against older compatible-looking but non-analyzable runs:
+  - legacy runs with `summary.json` and `oof_predictions.csv` but missing the newer regime-aware cost-analysis columns are now skipped explicitly instead of breaking the whole batch
+  - skipped runs are persisted with reasons in the saved summary and markdown output
+- Updated operator docs:
+  - `README.md`
+  - now states that the multi-run evaluator skips incomplete runs and legacy runs whose OOF schema is too old for regime-aware cost analysis
+- Added focused tests:
+  - `tests/test_training_multi_run_policy_analysis.py`
+    - multi-run aggregation
+    - incomplete-run exclusion
+    - sparse-evidence warnings
+    - positive-run-rate calculation
+    - legacy incompatible-run exclusion
+  - `tests/test_training_scripts.py`
+    - dry-run resolution for `evaluate_m7_policy_candidates_multi_run.ps1`
+- Real current-artifact findings from the saved multi-run analysis:
+  - artifact root scanned:
+    - `8` run directories
+  - runs with required files:
+    - `5`
+  - analyzable runs:
+    - `4`
+  - skipped runs:
+    - `20260401T175643Z`
+    - `20260401T183537Z`
+    - `20260401T212141Z`
+    - `20260320T134537Z`
+  - best candidate across analyzable runs:
+    - `m7_research_long_only_v1`
+    - `median_net_value_proxy_across_runs = -0.0000017066`
+    - `mean_net_value_proxy_across_runs = -0.0000003726`
+    - `positive_run_rate = 0.50`
+    - `total_trade_count = 53`
+  - baseline comparison:
+    - `default_long_only_050`
+    - `median_net_value_proxy_across_runs = -0.0004445741`
+    - `positive_run_rate = 0.00`
+    - `total_trade_count = 806`
+  - conclusion:
+    - the research candidate remains better than the default baseline across analyzable runs
+    - but the evidence is still not robust enough, because only half of the analyzable runs are after-cost positive and the median net proxy remains slightly negative
+- Targeted checks passed:
+  - `python -m pytest tests\test_training_multi_run_policy_analysis.py tests\test_training_scripts.py -q` -> `12 passed`
+  - `.\scripts\evaluate_m7_policy_candidates_multi_run.ps1 -DryRun` -> resolved the M7 artifact root and printed the authoritative Python command
+  - `.\scripts\evaluate_m7_policy_candidates_multi_run.ps1` -> completed successfully against the current `artifacts/training/m7` set and wrote the expected `_analysis/policy_candidates/` outputs
+- Blockers:
+  - none
+
+### Batch O log
+- Scope for this pass was limited to adding a bounded research-only AutoGluon experiment layer for M7 so a small number of explicit training configs can be compared without changing production behavior. No production inference behavior, promotion semantics, live/paper/shadow policy, runtime thresholds, or training schedules were changed.
+- Added a bounded checked-in M7 research config set:
+  - `configs/training.m7.research.high_quality.json`
+  - `configs/training.m7.research.best_quality.json`
+  - `configs/training.m7.research.best_quality_v150.json`
+- All three research configs keep the current bounded Windows-safe training controls unchanged:
+  - `time_limit = 900`
+  - `dynamic_stacking = false`
+  - `fold_fitting_strategy = sequential_local`
+  - `num_bag_folds = 5`
+  - `num_stack_levels = 1`
+  - `num_bag_sets = 1`
+  - `fit_weighted_ensemble = true`
+- The only bounded preset differences across the research set are:
+  - `high_quality`
+  - `best_quality`
+  - `best_quality_v150`
+- Added a new authoritative research experiment helper module:
+  - `app/training/research_experiments.py`
+  - discovers the bounded checked-in research config set under `configs/training.m7.research.*.json`
+  - validates discovered configs with the existing training config loader
+  - summarizes completed research runs by reading:
+    - each run's `summary.json`
+    - each run's `policy_candidate_analysis/policy_candidate_summary.json`
+  - writes deterministic experiment summary artifacts under:
+    - `artifacts/training/m7/_analysis/research_experiments/`
+    - `experiment_summary.json`
+    - `experiment_summary.csv`
+    - `summary.md`
+  - ranks experiments deterministically by:
+    - best named policy candidate `mean_long_only_net_value_proxy`
+    - then best candidate `trade_count`
+    - then `winner_after_cost_positive`
+    - then config/run identity for a stable tie break
+- Reused the existing authoritative Windows-safe M7 training runner instead of inventing a parallel launch path:
+  - `scripts/start_m7_training.ps1`
+  - now accepts an optional `-ConfigPath` override while preserving the default `training.m7.json` behavior
+- Added a new PowerShell-first research runner:
+  - `scripts/run_m7_research_experiments.ps1`
+  - discovers the bounded config set
+  - runs each config one by one through the existing `start_m7_training.ps1`
+  - calls the existing `evaluate_m7_policy_candidates.ps1` after each completed run
+  - writes a compact batch summary under:
+    - `artifacts/training/m7/_analysis/research_experiments/`
+  - surfaces, per experiment:
+    - config name
+    - run id
+    - winner model
+    - `winner_after_cost_positive`
+    - `meets_acceptance_target`
+    - best named policy candidate
+    - best candidate mean net proxy
+    - best candidate trade count
+    - whether the best candidate is after-cost positive
+- Updated operator docs:
+  - `README.md`
+  - now documents the bounded research experiment runner and keeps the workflow explicitly research-only
+- Added focused tests:
+  - `tests/test_training_research_experiments.py`
+    - bounded config discovery
+    - deterministic experiment ranking
+    - experiment summary artifact writing
+  - `tests/test_training_scripts.py`
+    - dry-run coverage for `run_m7_research_experiments.ps1`
+- Targeted checks passed:
+  - `python -m pytest tests\test_training_research_experiments.py tests\test_training_scripts.py -q` -> `10 passed`
+  - `.\scripts\run_m7_research_experiments.ps1 -DryRun` -> discovered the bounded config set and printed the expected training/evaluation sequence plus the target `_analysis/research_experiments` summary path
+- Blockers:
+  - none

@@ -1,4 +1,5 @@
 param(
+    [string]$ConfigPath = ".\configs\training.m7.json",
     [switch]$DryRun,
     [ValidateRange(5, 120)]
     [int]$StatusSeconds = 15
@@ -9,7 +10,7 @@ $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $repoRoot
 $localTrainingTempRoot = Join-Path $repoRoot "artifacts\tmp\autogluon"
-$trainingConfigPath = ".\configs\training.m7.json"
+$trainingConfigPath = $ConfigPath
 
 function Import-StreamAlphaEnvFile {
     param([string]$Path)

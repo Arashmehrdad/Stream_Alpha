@@ -273,6 +273,30 @@ The prepare script also reports whether optional `fastai` breadth is actually us
 
 The start script runs the same readiness checks, forces the local training process onto a repo-local same-drive temp root for AutoGluon and Ray, then invokes the authoritative training command `python -m app.training --config .\configs\training.m7.json`. During the run it shows a PowerShell progress heartbeat with elapsed time, the configured AutoGluon time budget, the latest discovered model, and the current best model when available. After the run it prints the newest artifact directory plus the `summary.json` winner and acceptance flags to inspect.
 
+After a completed M7 run, use the post-training threshold research helper to inspect cost-aware long-only thresholds and regime blocks without changing runtime policy:
+
+* `./scripts/analyze_m7_thresholds.ps1`
+
+That script defaults to the newest M7 artifact, evaluates the winner model's OOF `prob_up` thresholds under cost-aware long-only policies, and writes a `threshold_analysis/` folder into the run directory with JSON, CSV, and Markdown summaries.
+
+To compare explicit named research candidates instead of ad hoc threshold sweeps, use:
+
+* `./scripts/evaluate_m7_policy_candidates.ps1`
+
+That script defaults to the newest M7 artifact, evaluates the bounded built-in named candidates against the winner model's OOF predictions, and writes a `policy_candidate_analysis/` folder into the run directory. This remains research support only and does not change production inference or promotion behavior.
+
+To judge whether those named candidates look robust across multiple completed M7 runs instead of one-run luck, use:
+
+* `./scripts/evaluate_m7_policy_candidates_multi_run.ps1`
+
+That script scans completed runs under `artifacts/training/m7`, excludes incomplete runs, skips legacy runs whose `oof_predictions.csv` schema is too old for regime-aware cost analysis, aggregates candidate performance across analyzable runs, and writes a stable `_analysis/policy_candidates/` summary under the M7 artifact root. This is still research support only and does not change runtime or promotion behavior.
+
+For a bounded stronger-config research pass, use:
+
+* `./scripts/run_m7_research_experiments.ps1`
+
+That runner discovers the small checked-in M7 AutoGluon research config set under `configs/training.m7.research.*.json`, runs each config through the existing Windows-safe M7 training path, evaluates the existing named policy candidates after each completed run, and writes a compact `_analysis/research_experiments/` summary under `artifacts/training/m7`. This remains research support only and does not change runtime or promotion behavior.
+
 * `./scripts/stop-stack.ps1`
 * `./scripts/reset-state.ps1`
 * `./scripts/prune-runtime-artifacts.ps1 -RetentionDays 14`
