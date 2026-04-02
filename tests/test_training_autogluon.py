@@ -11,6 +11,10 @@ from app.training.autogluon import (
     AutoGluonTabularClassifier,
     build_autogluon_tabular_classifier,
 )
+from app.training.workdirs import (
+    STREAMALPHA_LOCAL_TRAINING_TEMP_ROOT_ENV,
+    resolve_local_training_temp_root,
+)
 
 
 class _FakePredictionList:
@@ -103,6 +107,8 @@ def test_build_autogluon_tabular_classifier_preserves_none_hyperparameters() -> 
     explicit_null = build_autogluon_tabular_classifier({"hyperparameters": None})
 
     assert missing.hyperparameters is None
+    assert missing.fold_fitting_strategy is None
+    assert missing.dynamic_stacking is None
     assert missing.__getstate__()["hyperparameters"] is None
     assert explicit_null.hyperparameters is None
 
@@ -158,6 +164,8 @@ def test_fit_stores_serializes_restores_and_passes_new_controls(
     classifier = build_autogluon_tabular_classifier(
         {
             "calibrate_decision_threshold": True,
+            "dynamic_stacking": False,
+            "fold_fitting_strategy": "sequential_local",
             "num_bag_folds": 5,
             "num_bag_sets": 3,
             "num_stack_levels": 1,
@@ -176,6 +184,14 @@ def test_fit_stores_serializes_restores_and_passes_new_controls(
     assert classifier.num_bag_sets == 3
     assert restored.num_bag_sets == 3
     assert fit_kwargs["num_bag_sets"] == 3
+    assert classifier.fold_fitting_strategy == "sequential_local"
+    assert restored.fold_fitting_strategy == "sequential_local"
+    assert fit_kwargs["ag_args_ensemble"] == {
+        "fold_fitting_strategy": "sequential_local"
+    }
+    assert classifier.dynamic_stacking is False
+    assert restored.dynamic_stacking is False
+    assert fit_kwargs["dynamic_stacking"] is False
     assert classifier.calibrate_decision_threshold is True
     assert restored.calibrate_decision_threshold is True
     assert fit_kwargs["calibrate_decision_threshold"] is True
@@ -220,4 +236,44 @@ def test_older_artifact_state_without_new_keys_loads_safely() -> None:
 
     assert classifier.hyperparameters is None
     assert classifier.num_bag_sets == 1
+    assert classifier.fold_fitting_strategy is None
+    assert classifier.dynamic_stacking is None
     assert classifier.calibrate_decision_threshold is False
+
+
+def test_resolve_local_training_temp_root_uses_process_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The local temp root helper should honor an explicit same-drive override."""
+    override = tmp_path / "custom-autogluon-temp"
+    monkeypatch.setenv(STREAMALPHA_LOCAL_TRAINING_TEMP_ROOT_ENV, str(override))
+
+    assert resolve_local_training_temp_root() == override.resolve()
+
+
+def test_predict_contract_uses_local_temp_root_for_runtime_restore(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Runtime predictor restore should stay inside the authoritative local temp root."""
+    recorded = _install_fake_tabular_predictor(monkeypatch)
+    temp_root = tmp_path / "autogluon-temp-root"
+    monkeypatch.setenv(STREAMALPHA_LOCAL_TRAINING_TEMP_ROOT_ENV, str(temp_root))
+    classifier = build_autogluon_tabular_classifier(
+        {
+            "dynamic_stacking": False,
+            "num_bag_folds": 5,
+            "num_stack_levels": 1,
+            "presets": "high_quality",
+            "time_limit": 900,
+        }
+    )
+
+    classifier.fit(_rows(), [1, 0, 1])
+    predictions = classifier.predict(_rows())
+    probabilities = classifier.predict_proba(_rows())
+
+    assert Path(recorded["load_path"]).is_relative_to(temp_root.resolve())
+    assert predictions == [1, 1, 1]
+    assert probabilities == [[0.2, 0.8], [0.2, 0.8], [0.2, 0.8]]

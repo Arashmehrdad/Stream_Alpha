@@ -332,6 +332,8 @@ def test_summary_records_winner_autogluon_training_config() -> None:
             "num_bag_folds": 5,
             "num_stack_levels": 1,
             "num_bag_sets": 1,
+            "fold_fitting_strategy": "sequential_local",
+            "dynamic_stacking": False,
             "calibrate_decision_threshold": False,
             "verbosity": 0,
         },
@@ -340,4 +342,9 @@ def test_summary_records_winner_autogluon_training_config() -> None:
     assert summary["winner"]["training_config"]["presets"] == "high"
     assert summary["winner"]["training_config"]["hyperparameters"] is None
     assert summary["winner"]["training_config"]["num_bag_sets"] == 1
+    assert (
+        summary["winner"]["training_config"]["fold_fitting_strategy"]
+        == "sequential_local"
+    )
+    assert summary["winner"]["training_config"]["dynamic_stacking"] is False
     assert summary["winner"]["training_config"]["calibrate_decision_threshold"] is False

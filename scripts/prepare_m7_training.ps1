@@ -96,6 +96,12 @@ function Write-M7TrainingSummary {
     else {
         [string]$Status.row_count
     }
+    $fastaiStatus = if (-not $Status.fastai_installed) {
+        "missing (optional breadth only, not a blocker)"
+    }
+    else {
+        "$($Status.fastai_version) ($($Status.fastai_detail))"
+    }
 
     Write-Host ""
     Write-Host "M7 training prep status"
@@ -104,6 +110,7 @@ function Write-M7TrainingSummary {
         Write-Host "config detail: $($Status.config_error)"
     }
     Write-Host "autogluon version: $autogluonVersion"
+    Write-Host "fastai optional breadth: $fastaiStatus"
     Write-Host "postgres reachable: $($Status.postgres_reachable)"
     if (-not $Status.postgres_reachable -and $Status.postgres_error) {
         Write-Host "postgres detail: $($Status.postgres_error)"

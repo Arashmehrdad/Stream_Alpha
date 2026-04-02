@@ -5,13 +5,14 @@ from __future__ import annotations
 import copy
 import io
 import shutil
-import tempfile
 import zipfile
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 from autogluon.tabular import TabularPredictor
+
+from app.training.workdirs import create_local_training_work_dir
 
 
 class AutoGluonTabularClassifier:  # pylint: disable=too-many-instance-attributes
@@ -28,6 +29,8 @@ class AutoGluonTabularClassifier:  # pylint: disable=too-many-instance-attribute
         num_bag_folds: int = 0,
         num_stack_levels: int = 0,
         num_bag_sets: int | None = 1,
+        fold_fitting_strategy: str | None = None,
+        dynamic_stacking: Any | None = None,
         calibrate_decision_threshold: bool = False,
         verbosity: int = 0,
     ) -> None:
@@ -39,6 +42,12 @@ class AutoGluonTabularClassifier:  # pylint: disable=too-many-instance-attribute
         self.num_bag_folds = int(num_bag_folds)
         self.num_stack_levels = int(num_stack_levels)
         self.num_bag_sets = None if num_bag_sets is None else int(num_bag_sets)
+        self.fold_fitting_strategy = (
+            None
+            if fold_fitting_strategy is None
+            else str(fold_fitting_strategy)
+        )
+        self.dynamic_stacking = _copy_optional_value(dynamic_stacking)
         self.calibrate_decision_threshold = bool(calibrate_decision_threshold)
         self.verbosity = int(verbosity)
         self._feature_columns: tuple[str, ...] = ()
@@ -60,32 +69,46 @@ class AutoGluonTabularClassifier:  # pylint: disable=too-many-instance-attribute
             if column != "label"
         )
 
-        fit_root = Path(tempfile.mkdtemp(prefix="streamalpha-autogluon-fit-"))
-        predictor_dir = fit_root / "predictor"
-        predictor = TabularPredictor(
-            label="label",
-            problem_type="binary",
-            eval_metric=self.eval_metric,
-            path=str(predictor_dir),
+        fit_root = create_local_training_work_dir(
+            prefix="streamalpha-autogluon-fit-",
         )
-        fit_kwargs: dict[str, Any] = {
-            "train_data": training_frame,
-            "presets": self.presets,
-            "fit_weighted_ensemble": self.fit_weighted_ensemble,
-            "num_bag_folds": self.num_bag_folds,
-            "num_stack_levels": self.num_stack_levels,
-            "calibrate_decision_threshold": self.calibrate_decision_threshold,
-            "verbosity": self.verbosity,
-        }
-        if self.time_limit is not None:
-            fit_kwargs["time_limit"] = self.time_limit
-        if self.hyperparameters is not None:
-            fit_kwargs["hyperparameters"] = _copy_optional_value(self.hyperparameters)
-        if self.num_bag_sets is not None and self.num_bag_folds > 0:
-            fit_kwargs["num_bag_sets"] = self.num_bag_sets
-        predictor.fit(**fit_kwargs)
-        self._predictor_archive = _archive_predictor_dir(predictor_dir)
-        shutil.rmtree(fit_root, ignore_errors=True)
+        predictor_dir = fit_root / "predictor"
+        try:
+            predictor = TabularPredictor(
+                label="label",
+                problem_type="binary",
+                eval_metric=self.eval_metric,
+                path=str(predictor_dir),
+            )
+            fit_kwargs: dict[str, Any] = {
+                "train_data": training_frame,
+                "presets": self.presets,
+                "fit_weighted_ensemble": self.fit_weighted_ensemble,
+                "num_bag_folds": self.num_bag_folds,
+                "num_stack_levels": self.num_stack_levels,
+                "calibrate_decision_threshold": self.calibrate_decision_threshold,
+                "verbosity": self.verbosity,
+            }
+            if self.time_limit is not None:
+                fit_kwargs["time_limit"] = self.time_limit
+            if self.hyperparameters is not None:
+                fit_kwargs["hyperparameters"] = _copy_optional_value(
+                    self.hyperparameters
+                )
+            if self.num_bag_sets is not None and self.num_bag_folds > 0:
+                fit_kwargs["num_bag_sets"] = self.num_bag_sets
+            if self.fold_fitting_strategy is not None and self.num_bag_folds > 0:
+                fit_kwargs["ag_args_ensemble"] = {
+                    "fold_fitting_strategy": self.fold_fitting_strategy
+                }
+            if self.dynamic_stacking is not None:
+                fit_kwargs["dynamic_stacking"] = _copy_optional_value(
+                    self.dynamic_stacking
+                )
+            predictor.fit(**fit_kwargs)
+            self._predictor_archive = _archive_predictor_dir(predictor_dir)
+        finally:
+            shutil.rmtree(fit_root, ignore_errors=True)
         self._cleanup_runtime_dir()
         self._predictor = None
         self._ensure_predictor()
@@ -126,6 +149,8 @@ class AutoGluonTabularClassifier:  # pylint: disable=too-many-instance-attribute
             "num_bag_folds": self.num_bag_folds,
             "num_stack_levels": self.num_stack_levels,
             "num_bag_sets": self.num_bag_sets,
+            "fold_fitting_strategy": self.fold_fitting_strategy,
+            "dynamic_stacking": _copy_optional_value(self.dynamic_stacking),
             "calibrate_decision_threshold": self.calibrate_decision_threshold,
             "verbosity": self.verbosity,
         }
@@ -141,6 +166,8 @@ class AutoGluonTabularClassifier:  # pylint: disable=too-many-instance-attribute
             "num_bag_folds": self.num_bag_folds,
             "num_stack_levels": self.num_stack_levels,
             "num_bag_sets": self.num_bag_sets,
+            "fold_fitting_strategy": self.fold_fitting_strategy,
+            "dynamic_stacking": _copy_optional_value(self.dynamic_stacking),
             "calibrate_decision_threshold": self.calibrate_decision_threshold,
             "verbosity": self.verbosity,
             "feature_columns": list(self._feature_columns),
@@ -162,6 +189,12 @@ class AutoGluonTabularClassifier:  # pylint: disable=too-many-instance-attribute
             self.num_bag_sets = (
                 None if state["num_bag_sets"] is None else int(state["num_bag_sets"])
             )
+        self.fold_fitting_strategy = (
+            None
+            if state.get("fold_fitting_strategy") is None
+            else str(state["fold_fitting_strategy"])
+        )
+        self.dynamic_stacking = _copy_optional_value(state.get("dynamic_stacking"))
         self.calibrate_decision_threshold = bool(
             state.get("calibrate_decision_threshold", False)
         )
@@ -182,15 +215,21 @@ class AutoGluonTabularClassifier:  # pylint: disable=too-many-instance-attribute
                     "AutoGluon predictor archive is missing from the artifact"
                 )
             self._cleanup_runtime_dir()
-            runtime_root = Path(tempfile.mkdtemp(prefix="streamalpha-autogluon-runtime-"))
-            predictor_dir = runtime_root / "predictor"
-            _restore_predictor_dir(self._predictor_archive, predictor_dir)
-            # Local-first runs can train on Windows and score inside Linux containers.
-            self._predictor = TabularPredictor.load(
-                str(predictor_dir),
-                require_py_version_match=False,
+            runtime_root = create_local_training_work_dir(
+                prefix="streamalpha-autogluon-runtime-",
             )
-            self._runtime_dir = runtime_root
+            predictor_dir = runtime_root / "predictor"
+            try:
+                _restore_predictor_dir(self._predictor_archive, predictor_dir)
+                # Local-first runs can train on Windows and score inside Linux containers.
+                self._predictor = TabularPredictor.load(
+                    str(predictor_dir),
+                    require_py_version_match=False,
+                )
+                self._runtime_dir = runtime_root
+            except Exception:
+                shutil.rmtree(runtime_root, ignore_errors=True)
+                raise
         return self._predictor
 
     def _cleanup_runtime_dir(self) -> None:
@@ -219,6 +258,16 @@ def build_autogluon_tabular_classifier(
             if model_config.get("num_bag_sets") is None
             else int(model_config["num_bag_sets"])
         )
+    fold_fitting_strategy = (
+        None
+        if model_config.get("fold_fitting_strategy") is None
+        else str(model_config["fold_fitting_strategy"])
+    )
+    dynamic_stacking = (
+        None
+        if "dynamic_stacking" not in model_config
+        else _copy_optional_value(model_config.get("dynamic_stacking"))
+    )
     return AutoGluonTabularClassifier(
         presets=str(model_config.get("presets", "medium_quality")),
         time_limit=(
@@ -232,6 +281,8 @@ def build_autogluon_tabular_classifier(
         num_bag_folds=int(model_config.get("num_bag_folds", 0)),
         num_stack_levels=int(model_config.get("num_stack_levels", 0)),
         num_bag_sets=num_bag_sets,
+        fold_fitting_strategy=fold_fitting_strategy,
+        dynamic_stacking=dynamic_stacking,
         calibrate_decision_threshold=bool(
             model_config.get("calibrate_decision_threshold", False)
         ),

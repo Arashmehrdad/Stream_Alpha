@@ -13,6 +13,8 @@
                                              "eval_metric":  "log_loss",
                                              "fit_weighted_ensemble":  true,
                                              "hyperparameters":  null,
+                                             "dynamic_stacking":  false,
+                                             "fold_fitting_strategy":  "sequential_local",
                                              "num_bag_folds":  5,
                                              "num_bag_sets":  1,
                                              "num_stack_levels":  1,

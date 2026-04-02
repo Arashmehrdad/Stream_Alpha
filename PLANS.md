@@ -114,6 +114,10 @@
 | D | Re-rate M19/M20/M21 from current evidence and expose evidence-backed idle truth | adaptation/continual/ensemble/inference/dashboard surfaces, focused tests, README, PLANS.md, docker/app.Dockerfile | DONE | targeted service/API/dashboard checks plus live DB/artifact proof | M19 and M21 now read as evidence-backed idle states; M20 now runs on a current AutoGluon-only weak roster with explicit specialist/economic blockers |
 | E | Strengthen and de-bias the authoritative AutoGluon fit/config metadata path without changing runtime authority boundaries | AutoGluon wrapper/config/registry summary path, focused tests, PLANS.md | DONE | targeted wrapper/registry/loading checks | Omitted hyperparameters now stay truly omitted, manual-training controls are explicit, and the effective fit config is now audit-visible across the existing artifact chain |
 | F | Make local M7 AutoGluon training operationally one-step without weakening protected runtime modes | training config loader, dev startup script path, readiness helper, operator scripts, focused tests, README, PLANS.md | DONE | targeted pytest plus dry-run script checks | BOM-safe JSON loading, explicit dev prep flow, honest feature-table readiness checks, and a clean prepare/start operator workflow now exist without changing promotion or live safety semantics |
+| G | Fix Windows local AutoGluon training temp-root / DyStack path handling without weakening training truth | AutoGluon wrapper/workdir helper, local training scripts, readiness/configs/tests, README, PLANS.md | DONE | targeted pytest plus dry-run script checks | Local M7 training now forces AutoGluon and Ray temp work onto the repo drive, exposes dynamic_stacking explicitly, and reports optional fastai breadth honestly |
+| H | Keep Windows local bagged AutoGluon training off Ray while preserving honest stacking/bagging controls | AutoGluon wrapper/config/tests, PLANS.md | DONE | focused wrapper tests plus dry-run checks and synthetic smoke fit | Explicit fold_fitting_strategy now keeps checked-in local M3/M7 training on sequential_local bag-fold execution, which avoids the Windows Ray access-violation hang while keeping bagging and stacking enabled |
+| I | Fix the remaining local optional-model warning sources honestly instead of suppressing them | requirements, readiness/script truth, focused tests, README, PLANS.md | DONE | focused pytest plus dry-run checks and tiny FastAI/neural smoke fits | FastAI breadth now validates real usability, sklearn is pinned to the non-deprecated AutoGluon-compatible range, and the local environment proof no longer emits the previous fastai/sklearn/NVML warnings |
+| J | Make local M7 training visibly operable while staying Windows-safe and honest about budget/runtime | progress helper, start script, focused tests, README, PLANS.md | DONE | focused pytest plus dry-run checks and live-process inspection | The local operator path now shows a PowerShell heartbeat with elapsed time, budget ETA/overrun, current best model, latest model activity, and explicit CPU mode instead of leaving long Windows runs silent |
 
 ### Batch A log
 - Inspected only the M20-relevant files and runtime truth needed to answer the strengthening question:
@@ -364,5 +368,230 @@
   - `.\scripts\start_m7_training.ps1 -DryRun` -> reported:
     - `Dry run: would run python -m app.training --config .\configs\training.m7.json`
     - `Artifact root: artifacts/training/m7`
+- Blockers:
+  - none
+
+### Batch G log
+- Scope for this pass was limited to the local Windows M7 AutoGluon training failure path. No promotion semantics, runtime safety checks, live/paper/shadow behavior, or evaluation targets were changed.
+- Added `app/training/workdirs.py` as a small authoritative helper for repo-local training temp roots:
+  - default temp root is now `artifacts/tmp/autogluon`
+  - the helper honors `STREAMALPHA_LOCAL_TRAINING_TEMP_ROOT` when an operator script wants to force the training process onto a specific same-drive location
+- Updated `app/training/autogluon.py` so the authoritative wrapper now:
+  - creates fit and runtime-restore work directories under the repo-local temp root instead of the default system temp location
+  - cleans fit temp directories in `finally` blocks and cleans failed runtime restores immediately
+  - supports explicit `dynamic_stacking` config/state/fit kwargs with backward-compatible restore defaults for older artifacts
+  - keeps omitted `dynamic_stacking` unset and only passes it to `TabularPredictor.fit(...)` when the config explicitly supplies a value
+- Updated the checked-in local training configs:
+  - `configs/training.m3.json`
+  - `configs/training.m7.json`
+  - both now set `dynamic_stacking = false` while keeping bagging on, weighted ensemble on, and `num_stack_levels = 1`
+- Updated local operator/readiness surfaces:
+  - `app/training/readiness.py` now reports optional `fastai` install/version truth without turning missing `fastai` into a blocker
+  - `scripts/prepare_m7_training.ps1` now prints the optional fastai breadth status explicitly
+  - `scripts/start_m7_training.ps1` now sets `STREAMALPHA_LOCAL_TRAINING_TEMP_ROOT`, `TMP`, `TEMP`, `TMPDIR`, and `RAY_TMPDIR` to the repo-local temp root before the training process starts, and prints that temp root during dry-run and real-run output
+  - `README.md` now notes the optional fastai breadth and the repo-local same-drive temp-root behavior for local M7 training
+- Updated focused tests:
+  - `tests/test_training_autogluon.py`
+  - `tests/test_training_readiness.py`
+  - `tests/test_training_service.py`
+  - `tests/test_training_scripts.py`
+- Targeted checks passed:
+  - `python -m pytest tests\test_training_autogluon.py tests\test_training_readiness.py tests\test_training_service.py tests\test_training_scripts.py -q` -> `18 passed`
+  - `.\scripts\prepare_m7_training.ps1 -DryRun` -> reported:
+    - `config ok: True`
+    - `autogluon version: 1.5.0`
+    - `fastai optional breadth: 2.8.7 (optional breadth available)`
+    - `postgres reachable: True`
+    - `feature_ohlc exists: yes`
+    - `feature_ohlc row count: 1146`
+    - `eligible unique timestamps: 376 / 9`
+    - `recommended next command: .\scripts\start_m7_training.ps1`
+  - `.\scripts\start_m7_training.ps1 -DryRun` -> reported:
+    - `Local training temp root: D:\Github\Stream_Alpha\artifacts\tmp\autogluon`
+    - `Dry run: would run python -m app.training --config .\configs\training.m7.json`
+    - `Artifact root: artifacts/training/m7`
+  - same-drive smoke check:
+    - `python -` using `app.training.workdirs.resolve_local_training_temp_root()` -> `{'temp_root': 'D:\\Github\\Stream_Alpha\\artifacts\\tmp\\autogluon', 'repo_drive': 'D:', 'temp_drive': 'D:', 'same_drive': True}`
+- Blockers:
+  - none
+
+### Batch H log
+- Scope for this pass was limited to the remaining Windows-local AutoGluon hang discovered during a synthetic smoke fit after Batch G. The same-drive temp-root fix held, but AutoGluon 1.5.0 still chose Ray-backed `parallel_local` bag-fold execution under `fold_fitting_strategy=auto`, which produced a hanging local run after a Ray `access violation` on Windows.
+- Updated `app/training/autogluon.py` so the authoritative wrapper now exposes:
+  - `fold_fitting_strategy`
+  - serialized state, backward-compatible restore, and winner training-config metadata for that field
+  - explicit fit passthrough via `ag_args_ensemble={"fold_fitting_strategy": ...}` when bagging is enabled
+- Updated the checked-in local training configs:
+  - `configs/training.m3.json`
+  - `configs/training.m7.json`
+  - both now set `fold_fitting_strategy = "sequential_local"` while preserving:
+    - `presets = "high_quality"`
+    - `num_bag_folds = 5`
+    - `num_stack_levels = 1`
+    - `num_bag_sets = 1`
+    - `dynamic_stacking = false`
+    - weighted ensemble enabled
+- Updated focused tests:
+  - `tests/test_training_autogluon.py`
+  - `tests/test_training_service.py`
+  - coverage now asserts that:
+    - `fold_fitting_strategy` is preserved in config/state
+    - the wrapper passes it through to AutoGluon via `ag_args_ensemble`
+    - winner summary metadata records it honestly
+- Targeted checks passed:
+  - `python -m pytest tests\test_training_autogluon.py tests\test_training_service.py -q` -> `14 passed`
+  - `.\scripts\prepare_m7_training.ps1 -DryRun` -> config still loads and reports the same M7 readiness truth
+  - `.\scripts\start_m7_training.ps1 -DryRun` -> still reports the repo-local temp root and authoritative training command
+- Synthetic smoke proof:
+  - initial synthetic `high_quality` smoke fit with bagging+stacking and `dynamic_stacking=false` but no explicit `fold_fitting_strategy` still hung after the original `C:` vs `D:` issue was removed
+  - investigation found:
+    - all Ray temp/session paths were correctly on `D:\Github\Stream_Alpha\artifacts\tmp\autogluon_smoke`
+    - Ray no longer had the cross-drive mount error
+    - `raylet.err` showed `Windows fatal exception: access violation`
+    - the run stalled with Ray-backed `_ray_fit` workers and no completed trainer state
+  - after setting `fold_fitting_strategy = "sequential_local"` in the synthetic config, the same smoke training completed successfully:
+    - temp root: `D:\Github\Stream_Alpha\artifacts\tmp\autogluon_smoke`
+    - run dir: `D:\Github\Stream_Alpha\artifacts\training\smoke_autogluon\20260401T185644Z`
+    - summary path: `D:\Github\Stream_Alpha\artifacts\training\smoke_autogluon\20260401T185644Z\summary.json`
+    - winner model: `autogluon_tabular`
+    - winner training config now records `fold_fitting_strategy = "sequential_local"`
+    - no Ray or Python worker processes remained after completion
+- Blockers:
+  - none
+
+### Batch I log
+- Scope for this pass was limited to the remaining local warning sources exposed after the Windows/Ray hang was fixed. No promotion semantics, model search narrowing, live safety rules, or runtime authority boundaries were changed.
+- Root-caused the misleading optional FastAI warning to the real training-time dependency failure:
+  - `fastai 2.8.7` was installed locally
+  - AutoGluon `try_import_fastai()` still failed because `IPython` was missing from the environment
+  - this was the real reason `NeuralNetFastAI` breadth looked unavailable despite `fastai` itself being present
+- Root-caused the repeated sklearn warning to upstream compatibility behavior in AutoGluon 1.5.0:
+  - installed `scikit-learn 1.7.2` accepted `force_int_remainder_cols` but emitted the deprecation warning each time AutoGluon tabular neural preprocessing ran
+  - the honest repo-side fix was to pin sklearn back to the compatible non-warning range instead of filtering the warning text
+- Updated the repo so future environments match the clean local path:
+  - `requirements.txt`
+    - added `ipython>=8,<9`
+    - pinned `numpy>=1.26,<2`
+    - pinned `scikit-learn>=1.6,<1.7`
+  - `app/training/readiness.py`
+    - now distinguishes optional FastAI breadth being merely installed from being actually usable through AutoGluon
+    - records `fastai_usable` and `fastai_detail`
+    - surfaces the real blocker text when breadth is installed but broken, including the current `IPython` case
+  - `scripts/prepare_m7_training.ps1`
+    - now prints the actual optional FastAI breadth state instead of treating any install as automatically usable
+  - `tests/test_training_readiness.py`
+  - `tests/test_training_scripts.py`
+  - `README.md`
+- Repaired the current local Python environment to match the repo truth:
+  - installed `IPython 8.39.0`
+  - downgraded `scikit-learn` from `1.7.2` to `1.6.1`
+  - downgraded `numpy` from `2.3.5` to `1.26.4`
+  - removed the deprecated standalone `pynvml` package and reinstalled `nvidia-ml-py 13.590.48`
+- Targeted checks passed:
+  - `python -m pytest tests\test_training_readiness.py tests\test_training_scripts.py tests\test_training_autogluon.py tests\test_training_service.py -q` -> `20 passed`
+  - `.\scripts\prepare_m7_training.ps1 -DryRun` -> now reports `fastai optional breadth: 2.8.7 (optional breadth available)` with no misleading broken-breadth claim
+  - `.\scripts\start_m7_training.ps1 -DryRun` -> still reports the repo-local temp root and authoritative M7 command
+  - `python -` direct import smoke: `from autogluon.common.utils.try_import import try_import_fastai; try_import_fastai()` -> `try_import_fastai OK`
+  - `python -` direct import smoke: `import torch` -> `torch imported` with the prior deprecated `pynvml` warning gone
+  - tiny synthetic neural-model smoke fit using `FASTAI` + `NN_TORCH` hyperparameters on repo-local temp storage -> completed successfully without the prior:
+    - `Import fastai failed ...`
+    - `force_int_remainder_cols` sklearn deprecation warnings
+    - `pynvml package is deprecated` torch warning
+- Blockers:
+  - none
+
+### Batch J log
+- Scope for this pass was limited to the local operator experience around long-running M7 AutoGluon fits. No model semantics, promotion logic, live/paper/shadow safety, or Windows-safe non-Ray training choices were changed.
+- Investigated the live local M7 process that had been left running with no console updates:
+  - active process:
+    - `python -m app.training --config .\configs\training.m7.json`
+    - started at `2026-04-01 20:16:39` local time
+  - current process CPU was still rising above `28000` CPU-seconds, so the run was actively using multiple CPU cores rather than being a completely dead process
+  - the run artifact directory `artifacts/training/m7/20260401T191644Z` still contained only:
+    - `run_config.json`
+    - `dataset_manifest.json`
+  - this means the training job had not yet reached fold-metric export or summary writing, even though it was still consuming CPU
+  - the configured AutoGluon budget remained `time_limit = 900`, so a silent run extending far past that budget was not an acceptable operator experience even if AutoGluon was still working internally
+- Added a small reusable fit-progress helper:
+  - `app/training/progress.py`
+  - inspects a local AutoGluon fit work directory and reports:
+    - current best model from `trainer.pkl` when available
+    - total planned model-graph nodes when available
+    - discovered model directory count
+    - latest touched model directory and timestamp
+- Updated `scripts/start_m7_training.ps1` so the local operator path now:
+  - prints the repo-local temp root
+  - prints the safe CPU mode explicitly:
+    - `sequential_local` bagging remains enabled
+    - AutoGluon model-level multithreading still uses multiple logical CPUs
+    - Windows-unsafe Ray-style fold parallelism is still intentionally avoided
+  - prints the configured AutoGluon time budget up front
+  - launches the training process asynchronously and displays a PowerShell `Write-Progress` heartbeat while it runs
+  - shows:
+    - elapsed time
+    - time-budget ETA while still within budget
+    - over-budget duration once the configured budget is exceeded
+    - current best model when known
+    - latest discovered model activity
+    - discovered model-directory count vs model-graph count when available
+- Updated focused tests and docs:
+  - `tests/test_training_progress.py`
+  - `tests/test_training_scripts.py`
+  - `README.md`
+- Targeted checks passed:
+  - `python -m pytest tests\test_training_progress.py tests\test_training_scripts.py tests\test_training_readiness.py tests\test_training_autogluon.py tests\test_training_service.py -q` -> `22 passed`
+  - `.\scripts\start_m7_training.ps1 -DryRun` -> now reports:
+    - `Local training temp root: D:\Github\Stream_Alpha\artifacts\tmp\autogluon`
+    - `CPU mode: sequential_local bagging plus AutoGluon model-level multithreading on up to 20 logical CPUs`
+    - `AutoGluon time budget: 900 seconds`
+    - `Dry run: would run python -m app.training --config .\configs\training.m7.json`
+  - `.\scripts\prepare_m7_training.ps1 -DryRun` still reports the same honest readiness truth
+- Blockers:
+  - none
+
+### Batch K log
+- Scope for this pass was limited to the local M7 operator wrapper falsely reporting failure after a fully written training artifact. No training semantics, promotion logic, acceptance logic, or model-family behavior were changed.
+- Investigated the reported failed run and verified the artifact was actually complete:
+  - run directory:
+    - `artifacts/training/m7/20260401T213341Z`
+  - files present:
+    - `summary.json`
+    - `model.joblib`
+    - `fold_metrics.csv`
+    - `oof_predictions.csv`
+    - `feature_columns.json`
+    - plus the expected run metadata files
+  - `summary.json` recorded:
+    - `winner.model_name = "autogluon_tabular"`
+    - `winner.training_config.dynamic_stacking = false`
+    - `winner.training_config.fold_fitting_strategy = "sequential_local"`
+    - `acceptance.winner_after_cost_positive = false`
+    - `acceptance.meets_acceptance_target = false`
+- Root cause:
+  - the authoritative `python -m app.training` child process could still exit non-zero after writing a complete artifact
+  - `scripts/start_m7_training.ps1` treated any non-zero exit code as an operator-visible hard failure even when the artifact bundle was already complete and usable
+  - this made the local operator path claim `M7 training command failed` even though the real training result had already been persisted
+- Updated `scripts/start_m7_training.ps1` so the local launch path now:
+  - captures stdout and stderr into per-run log files via `Start-Process -RedirectStandardOutput/-RedirectStandardError`
+  - moves those logs into the winning artifact directory as:
+    - `training.stdout.log`
+    - `training.stderr.log`
+  - checks whether the newest artifact directory is complete before classifying the run as failed
+  - treats `non-zero exit code + complete artifact` as:
+    - completed with warning
+    - not a hard operator failure
+  - still treats `non-zero exit code + incomplete artifact` as a real failure and prints the tail of both logs to help the operator debug the actual problem
+  - always surfaces the training log paths in the completion summary
+- Added focused Windows operator-script coverage in `tests/test_training_scripts.py` for:
+  - the exact case where the child training process exits non-zero after writing a complete artifact
+  - expected behavior:
+    - script returns success
+    - completion summary is printed
+    - winner metadata is surfaced
+    - log paths are surfaced
+- Targeted checks passed:
+  - `python -m pytest tests\test_training_scripts.py tests\test_training_progress.py tests\test_training_readiness.py -q` -> `9 passed`
+  - `.\scripts\start_m7_training.ps1 -DryRun` -> still reports the same local temp root, CPU mode, budget, and authoritative training command
+  - `.\scripts\prepare_m7_training.ps1 -DryRun` -> still reports the same honest M7 readiness truth
 - Blockers:
   - none

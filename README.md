@@ -269,7 +269,10 @@ For local AutoGluon challenger training, use the repo-native operator flow inste
 
 The prepare script checks the checked-in M7 config, AutoGluon availability, PostgreSQL reachability, and `feature_ohlc` readiness. If the training source is missing or not yet large enough for the configured walk-forward split, it starts the existing `dev` stack path to populate features and then prints the next recommended command.
 
-The start script runs the same readiness checks, then invokes the authoritative training command `python -m app.training --config .\configs\training.m7.json`. After the run it prints the newest artifact directory plus the `summary.json` winner and acceptance flags to inspect.
+The prepare script also reports whether optional `fastai` breadth is actually usable for AutoGluon, not just installed. Missing or broken `fastai` breadth is still not treated as a blocker for the authoritative M7 AutoGluon path.
+
+The start script runs the same readiness checks, forces the local training process onto a repo-local same-drive temp root for AutoGluon and Ray, then invokes the authoritative training command `python -m app.training --config .\configs\training.m7.json`. During the run it shows a PowerShell progress heartbeat with elapsed time, the configured AutoGluon time budget, the latest discovered model, and the current best model when available. After the run it prints the newest artifact directory plus the `summary.json` winner and acceptance flags to inspect.
+
 * `./scripts/stop-stack.ps1`
 * `./scripts/reset-state.ps1`
 * `./scripts/prune-runtime-artifacts.ps1 -RetentionDays 14`

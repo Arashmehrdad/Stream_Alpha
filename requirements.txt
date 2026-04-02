@@ -3,7 +3,9 @@ asyncpg>=0.29,<0.30
 autogluon.tabular[all]==1.5.0
 fastapi>=0.115,<1
 httpx>=0.28,<1
-scikit-learn>=1.6,<1.8
+ipython>=8,<9
+numpy>=1.26,<2
+scikit-learn>=1.6,<1.7
 pytest>=8,<9
 PyYAML>=6,<7
 streamlit>=1.43,<2

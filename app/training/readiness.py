@@ -37,6 +37,10 @@ class TrainingReadinessReport:
     source_table: str | None
     autogluon_installed: bool
     autogluon_version: str | None
+    fastai_installed: bool
+    fastai_version: str | None
+    fastai_usable: bool
+    fastai_detail: str | None
     postgres_reachable: bool
     postgres_error: str | None
     feature_table_exists: bool | None
@@ -60,10 +64,19 @@ class _TrainingSourceProbe:
     row_count: int | None
 
 
+@dataclass(frozen=True, slots=True)
+class _OptionalBreadthStatus:
+    installed: bool
+    version: str | None
+    usable: bool
+    detail: str | None
+
+
 def build_training_readiness_report(config_path: Path) -> TrainingReadinessReport:
     """Inspect local M7 training readiness without starting a training run."""
     resolved_config_path = Path(config_path).resolve()
     autogluon_version = _resolve_autogluon_version()
+    fastai_status = _resolve_fastai_status()
     config: TrainingConfig | None = None
     config_error: str | None = None
     try:
@@ -80,6 +93,10 @@ def build_training_readiness_report(config_path: Path) -> TrainingReadinessRepor
             source_table=None,
             autogluon_installed=autogluon_version is not None,
             autogluon_version=autogluon_version,
+            fastai_installed=fastai_status.installed,
+            fastai_version=fastai_status.version,
+            fastai_usable=fastai_status.usable,
+            fastai_detail=fastai_status.detail,
             postgres_reachable=False,
             postgres_error="Training config must load before PostgreSQL readiness can be checked",
             feature_table_exists=None,
@@ -108,6 +125,10 @@ def build_training_readiness_report(config_path: Path) -> TrainingReadinessRepor
             source_table=config.source_table,
             autogluon_installed=autogluon_version is not None,
             autogluon_version=autogluon_version,
+            fastai_installed=fastai_status.installed,
+            fastai_version=fastai_status.version,
+            fastai_usable=fastai_status.usable,
+            fastai_detail=fastai_status.detail,
             postgres_reachable=False,
             postgres_error=str(error),
             feature_table_exists=None,
@@ -161,6 +182,10 @@ def build_training_readiness_report(config_path: Path) -> TrainingReadinessRepor
         source_table=config.source_table,
         autogluon_installed=autogluon_version is not None,
         autogluon_version=autogluon_version,
+        fastai_installed=fastai_status.installed,
+        fastai_version=fastai_status.version,
+        fastai_usable=fastai_status.usable,
+        fastai_detail=fastai_status.detail,
         postgres_reachable=probe.postgres_reachable,
         postgres_error=probe.postgres_error,
         feature_table_exists=probe.feature_table_exists,
@@ -246,11 +271,88 @@ async def _probe_training_source(
 def _resolve_autogluon_version() -> str | None:
     """Return the installed AutoGluon version when available."""
     for distribution_name in ("autogluon.tabular", "autogluon"):
-        try:
-            return importlib_metadata.version(distribution_name)
-        except importlib_metadata.PackageNotFoundError:
-            continue
+        version = _resolve_package_version(distribution_name)
+        if version is not None:
+            return version
     return None
+
+
+def _resolve_package_version(distribution_name: str) -> str | None:
+    """Return an installed package version when available."""
+    try:
+        return importlib_metadata.version(distribution_name)
+    except importlib_metadata.PackageNotFoundError:
+        return None
+
+
+def _resolve_fastai_status() -> _OptionalBreadthStatus:
+    """Return whether optional FastAI breadth is both installed and actually usable."""
+    fastai_version = _resolve_package_version("fastai")
+    if fastai_version is None:
+        return _OptionalBreadthStatus(
+            installed=False,
+            version=None,
+            usable=False,
+            detail="missing optional breadth only, not a blocker",
+        )
+    try:
+        from autogluon.common.utils.try_import import try_import_fastai
+
+        try_import_fastai()
+    except (ImportError, ModuleNotFoundError) as error:
+        return _OptionalBreadthStatus(
+            installed=True,
+            version=fastai_version,
+            usable=False,
+            detail=_summarize_fastai_failure(error),
+        )
+    return _OptionalBreadthStatus(
+        installed=True,
+        version=fastai_version,
+        usable=True,
+        detail="optional breadth available",
+    )
+
+
+def _summarize_fastai_failure(error: BaseException) -> str:
+    """Surface the real FastAI import blocker instead of a generic installed/missing guess."""
+    missing_module = _first_missing_module(error)
+    if missing_module == "IPython":
+        return "installed but unusable for AutoGluon because IPython is missing"
+    summary = _first_non_empty_message(error)
+    if summary is None:
+        return type(error).__name__
+    return f"installed but unusable for AutoGluon: {summary}"
+
+
+def _first_missing_module(error: BaseException) -> str | None:
+    """Return the first missing module name seen in the exception chain."""
+    current: BaseException | None = error
+    visited: set[int] = set()
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        if isinstance(current, ModuleNotFoundError) and current.name:
+            return current.name
+        current = _next_exception_in_chain(current)
+    return None
+
+
+def _first_non_empty_message(error: BaseException) -> str | None:
+    """Return the first non-empty message from the exception chain."""
+    current: BaseException | None = error
+    visited: set[int] = set()
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        message = str(current).strip()
+        if message:
+            return message
+        current = _next_exception_in_chain(current)
+    return None
+
+
+def _next_exception_in_chain(error: BaseException) -> BaseException | None:
+    """Walk the causal chain without looping forever."""
+    return error.__cause__ or error.__context__
 
 
 def _split_table_name(table_name: str) -> tuple[str, str]:
@@ -291,6 +393,10 @@ def main() -> None:
 
     print(f"config_ok={report.config_ok}")
     print(f"autogluon_version={report.autogluon_version or 'missing'}")
+    print(f"fastai_version={report.fastai_version or 'missing_optional'}")
+    print(f"fastai_usable={report.fastai_usable}")
+    if report.fastai_detail:
+        print(f"fastai_detail={report.fastai_detail}")
     print(f"postgres_reachable={report.postgres_reachable}")
     print(f"feature_table_exists={report.feature_table_exists}")
     print(f"row_count={report.row_count}")
