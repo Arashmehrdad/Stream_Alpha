@@ -57,7 +57,7 @@ Require-RunArtifactFiles -ResolvedRunDir $resolvedRunDir
 
 $analysisCommand = @(
     "-m",
-    "app.training.policy_candidate_analysis",
+    "app.training.policy_replay_analysis",
     "--run-dir",
     $resolvedRunDir,
     "--json"
@@ -72,51 +72,33 @@ if ($Candidate.Count -gt 0) {
 if ($DryRun) {
     Write-Host "Resolved M7 run dir: $resolvedRunDir"
     Write-Host "Dry run: would run python $($analysisCommand -join ' ')"
-    Write-Host "Expected analysis dir: $(Join-Path $resolvedRunDir 'policy_candidate_analysis')"
+    Write-Host "Expected analysis dir: $(Join-Path $resolvedRunDir 'policy_replay_analysis')"
     exit 0
 }
 
 $json = & python @analysisCommand
 if ($LASTEXITCODE -ne 0) {
-    throw "M7 policy-candidate analysis command failed."
+    throw "M7 policy replay analysis command failed."
 }
 $analysis = $json | ConvertFrom-Json
-
-function Format-CandidateLine {
-    param([object]$Policy)
-
-    if ($null -eq $Policy) {
-        return "none"
-    }
-    return (
-        "$($Policy.policy_name)" +
-        " (trade_count=$([int]$Policy.trade_count), " +
-        "trade_rate=$('{0:N4}' -f [double]$Policy.trade_rate), " +
-        "mean_net=$('{0:N6}' -f [double]$Policy.mean_long_only_net_value_proxy), " +
-        "after_cost_positive=$([bool]$Policy.after_cost_positive))"
-    )
-}
+$bestCandidate = $analysis.best_candidate
 
 Write-Host ""
-Write-Host "M7 policy-candidate evaluation completed"
+Write-Host "M7 policy replay analysis completed"
 Write-Host "run dir: $($analysis.run_dir)"
 Write-Host "analysis dir: $($analysis.analysis_dir)"
 Write-Host "model analyzed: $($analysis.model_name)"
-Write-Host "best candidate by mean_long_only_net_value_proxy: $(Format-CandidateLine -Policy $analysis.best_candidate)"
-Write-Host "any named candidate after-cost positive: $($analysis.any_after_cost_positive)"
-Write-Host "best candidate trade count: $($analysis.best_candidate.trade_count)"
-if ($analysis.worst_fold_for_best_candidate -ne $null) {
-    Write-Host (
-        "weakest fold for best candidate: fold $($analysis.worst_fold_for_best_candidate.fold_index) " +
-        "(trade_count=$($analysis.worst_fold_for_best_candidate.trade_count), " +
-        "trade_rate=$('{0:N4}' -f [double]$analysis.worst_fold_for_best_candidate.trade_rate), " +
-        "mean_net=$('{0:N6}' -f [double]$analysis.worst_fold_for_best_candidate.mean_long_only_net_value_proxy))"
-    )
-}
-if (-not [string]::IsNullOrWhiteSpace($analysis.best_candidate.caution_text)) {
-    Write-Host "caution: $($analysis.best_candidate.caution_text)"
+Write-Host (
+    "best candidate by cumulative net proxy: $($bestCandidate.policy_name) " +
+    "(cumulative_net=$('{0:N6}' -f [double]$bestCandidate.cumulative_net_proxy), " +
+    "trade_count=$([int]$bestCandidate.trade_count), " +
+    "max_drawdown=$('{0:N6}' -f [double]$bestCandidate.max_drawdown_proxy))"
+)
+Write-Host "evidence still thin: $([bool]$bestCandidate.evidence_still_thin)"
+if ($bestCandidate.warnings.Count -gt 0) {
+    Write-Host "warnings: $($bestCandidate.warnings -join ' | ')"
 }
 Write-Host "saved summary: $($analysis.output_files.summary_md)"
-Write-Host "saved policy_candidate_summary.json: $($analysis.output_files.policy_candidate_summary_json)"
-Write-Host "saved policy_candidate_summary.csv: $($analysis.output_files.policy_candidate_summary_csv)"
-Write-Host "saved policy_candidate_fold_breakdown.csv: $($analysis.output_files.policy_candidate_fold_breakdown_csv)"
+Write-Host "saved replay_summary.json: $($analysis.output_files.replay_summary_json)"
+Write-Host "saved replay_summary.csv: $($analysis.output_files.replay_summary_csv)"
+Write-Host "saved replay_trade_ledger.csv: $($analysis.output_files.replay_trade_ledger_csv)"

@@ -296,7 +296,11 @@ def resolve_completed_run_dir(run_dir: Path | None) -> Path:
     if not artifact_root.exists():
         raise ValueError(f"No M7 artifact root exists yet at {artifact_root}")
     run_dirs = sorted(
-        (path for path in artifact_root.iterdir() if path.is_dir()),
+        (
+            path
+            for path in artifact_root.iterdir()
+            if path.is_dir() and not path.name.startswith("_")
+        ),
         key=lambda path: path.stat().st_mtime,
         reverse=True,
     )

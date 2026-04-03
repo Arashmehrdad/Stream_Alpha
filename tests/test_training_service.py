@@ -14,6 +14,7 @@ from app.training.service import (
     _build_prediction_records,
     _build_regime_economics,
     _build_summary_payload,
+    run_training,
 )
 
 
@@ -348,3 +349,28 @@ def test_summary_records_winner_autogluon_training_config() -> None:
     )
     assert summary["winner"]["training_config"]["dynamic_stacking"] is False
     assert summary["winner"]["training_config"]["calibrate_decision_threshold"] is False
+
+
+def test_run_training_fails_early_when_readiness_gate_blocks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Training should stop at the shared readiness gate before loading the dataset."""
+    monkeypatch.setattr("app.training.service.load_training_config", lambda path: _config())
+    monkeypatch.setattr(
+        "app.training.service._validate_authoritative_model_stack",
+        lambda config: None,
+    )
+    monkeypatch.setattr(
+        "app.training.service.assert_training_data_ready",
+        lambda config, config_path=None: (_ for _ in ()).throw(
+            ValueError("feature_ohlc does not yet satisfy the configured walk-forward timestamp requirement (4/9).")
+        ),
+    )
+    monkeypatch.setattr(
+        "app.training.service.load_training_dataset",
+        lambda config: (_ for _ in ()).throw(AssertionError("dataset load should not run")),
+    )
+
+    with pytest.raises(ValueError, match="configured walk-forward timestamp requirement"):
+        run_training(tmp_path / "training.m7.json")

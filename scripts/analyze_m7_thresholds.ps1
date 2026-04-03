@@ -29,6 +29,7 @@ function Resolve-M7RunDirectory {
     }
 
     $newestRun = Get-ChildItem -Path $artifactRoot -Directory -ErrorAction Stop |
+        Where-Object { -not $_.Name.StartsWith("_") } |
         Sort-Object LastWriteTimeUtc -Descending |
         Select-Object -First 1
     if ($null -eq $newestRun) {

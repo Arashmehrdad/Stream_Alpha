@@ -69,6 +69,70 @@ def build_default_policy_candidates() -> tuple[LongOnlyPolicyCandidate, ...]:
             prob_up_min=0.80,
             blocked_regimes=frozenset({"TREND_DOWN", "HIGH_VOL"}),
         ),
+        LongOnlyPolicyCandidate(
+            name="range_only_080",
+            description="RANGE-only long policy using prob_up >= 0.80",
+            prob_up_min=0.80,
+            allowed_regimes=frozenset({"RANGE"}),
+        ),
+        LongOnlyPolicyCandidate(
+            name="trend_up_only_070",
+            description="TREND_UP-only long policy using prob_up >= 0.70",
+            prob_up_min=0.70,
+            allowed_regimes=frozenset({"TREND_UP"}),
+        ),
+        LongOnlyPolicyCandidate(
+            name="trend_up_only_080",
+            description="TREND_UP-only long policy using prob_up >= 0.80",
+            prob_up_min=0.80,
+            allowed_regimes=frozenset({"TREND_UP"}),
+        ),
+        LongOnlyPolicyCandidate(
+            name="range_or_trend_up_080",
+            description="Longs only in RANGE or TREND_UP using prob_up >= 0.80",
+            prob_up_min=0.80,
+            allowed_regimes=frozenset({"RANGE", "TREND_UP"}),
+        ),
+        LongOnlyPolicyCandidate(
+            name="no_long_in_trend_down_080",
+            description="Block TREND_DOWN longs and require prob_up >= 0.80 elsewhere",
+            prob_up_min=0.80,
+            blocked_regimes=frozenset({"TREND_DOWN"}),
+        ),
+        LongOnlyPolicyCandidate(
+            name="no_long_in_trend_down_high_vol_075",
+            description=(
+                "Block TREND_DOWN and HIGH_VOL longs and require prob_up >= 0.75 elsewhere"
+            ),
+            prob_up_min=0.75,
+            blocked_regimes=frozenset({"TREND_DOWN", "HIGH_VOL"}),
+        ),
+        LongOnlyPolicyCandidate(
+            name="no_long_in_trend_down_high_vol_080",
+            description=(
+                "Block TREND_DOWN and HIGH_VOL longs and require prob_up >= 0.80 elsewhere"
+            ),
+            prob_up_min=0.80,
+            blocked_regimes=frozenset({"TREND_DOWN", "HIGH_VOL"}),
+        ),
+        LongOnlyPolicyCandidate(
+            name="no_long_in_trend_down_high_vol_085",
+            description=(
+                "Block TREND_DOWN and HIGH_VOL longs and require prob_up >= 0.85 elsewhere"
+            ),
+            prob_up_min=0.85,
+            blocked_regimes=frozenset({"TREND_DOWN", "HIGH_VOL"}),
+        ),
+        LongOnlyPolicyCandidate(
+            name="per_regime_thresholds_v1",
+            description=(
+                "Per-regime challenger: RANGE >= 0.80, TREND_UP >= 0.70, "
+                "TREND_DOWN blocked, HIGH_VOL blocked"
+            ),
+            prob_up_min=0.80,
+            blocked_regimes=frozenset({"TREND_DOWN", "HIGH_VOL"}),
+            per_regime_thresholds={"RANGE": 0.80, "TREND_UP": 0.70},
+        ),
     )
 
 

@@ -202,6 +202,12 @@ def load_training_config(config_path: Path) -> TrainingConfig:
 
 def load_training_dataset(config: TrainingConfig) -> TrainingDataset:
     """Load the configured source table from PostgreSQL and construct labeled samples."""
+    dataset = load_training_dataset_preview(config)
+    return _require_non_empty_training_dataset(dataset, config)
+
+
+def load_training_dataset_preview(config: TrainingConfig) -> TrainingDataset:
+    """Load the configured source table without requiring that labeled rows already exist."""
     settings = Settings.from_env()
     return asyncio.run(_load_training_dataset_with_fallback(settings, config))
 
@@ -232,18 +238,7 @@ async def _load_training_dataset(dsn: str, config: TrainingConfig) -> TrainingDa
     finally:
         await connection.close()
 
-    if not rows:
-        raise ValueError(
-            f"No source rows found in {config.source_table} for symbols {list(config.symbols)}"
-        )
-
     samples, manifest = _build_labeled_samples(rows, config)
-    if not samples:
-        raise ValueError(
-            "No eligible labeled rows were produced from feature_ohlc. "
-            "Check that the table contains enough finalized feature rows."
-        )
-
     ordered_samples = tuple(sorted(samples, key=lambda sample: (sample.as_of_time, sample.symbol)))
     return TrainingDataset(
         samples=ordered_samples,
@@ -252,6 +247,22 @@ async def _load_training_dataset(dsn: str, config: TrainingConfig) -> TrainingDa
         feature_columns=config.all_feature_columns,
         categorical_feature_columns=config.categorical_feature_columns,
         numeric_feature_columns=config.numeric_feature_columns,
+    )
+
+
+def _require_non_empty_training_dataset(
+    dataset: TrainingDataset,
+    config: TrainingConfig,
+) -> TrainingDataset:
+    if int(dataset.manifest["loaded_rows"]) == 0:
+        raise ValueError(
+            f"No source rows found in {config.source_table} for symbols {list(config.symbols)}"
+        )
+    if dataset.samples:
+        return dataset
+    raise ValueError(
+        "No eligible labeled rows were produced from feature_ohlc. "
+        "Check that the table contains enough finalized feature rows."
     )
 
 

@@ -213,7 +213,10 @@ def test_multi_run_aggregation_prefers_research_candidate_by_median_net(
         rows=_run_rows("run3", (-0.004, -0.007, 0.002, 0.003, -0.001)),
     )
 
-    analysis = analyze_policy_candidates_across_runs(artifact_root=artifact_root)
+    analysis = analyze_policy_candidates_across_runs(
+        artifact_root=artifact_root,
+        candidate_names=["default_long_only_050", "m7_research_long_only_v1"],
+    )
 
     assert analysis["best_candidate"]["policy_name"] == "m7_research_long_only_v1"
     assert analysis["best_candidate"]["positive_run_count"] == 2
@@ -236,7 +239,10 @@ def test_incomplete_runs_are_excluded_from_multi_run_analysis(
         encoding="utf-8",
     )
 
-    analysis = analyze_policy_candidates_across_runs(artifact_root=artifact_root)
+    analysis = analyze_policy_candidates_across_runs(
+        artifact_root=artifact_root,
+        candidate_names=["default_long_only_050", "m7_research_long_only_v1"],
+    )
 
     assert analysis["scanned_run_count"] == 2
     assert analysis["complete_run_count"] == 1
@@ -261,7 +267,10 @@ def test_sparse_evidence_warnings_are_recorded(
         rows=_run_rows("run3", (-0.004, -0.007, 0.002, 0.003, -0.001)),
     )
 
-    analysis = analyze_policy_candidates_across_runs(artifact_root=artifact_root)
+    analysis = analyze_policy_candidates_across_runs(
+        artifact_root=artifact_root,
+        candidate_names=["default_long_only_050", "m7_research_long_only_v1"],
+    )
     best_candidate = analysis["best_candidate"]
 
     assert best_candidate["evidence_too_sparse"] is True
@@ -287,7 +296,10 @@ def test_positive_run_rate_is_calculated_from_complete_runs(
         rows=_run_rows("run3", (-0.004, -0.007, 0.002, 0.003, -0.001)),
     )
 
-    analysis = analyze_policy_candidates_across_runs(artifact_root=artifact_root)
+    analysis = analyze_policy_candidates_across_runs(
+        artifact_root=artifact_root,
+        candidate_names=["default_long_only_050", "m7_research_long_only_v1"],
+    )
     candidate_rows = {
         row["policy_name"]: row for row in analysis["candidate_summaries"]
     }
@@ -305,7 +317,10 @@ def test_legacy_complete_runs_are_skipped_when_oof_schema_is_incompatible(
     )
     _write_legacy_completed_run(artifact_root / "20260320T134537Z")
 
-    analysis = analyze_policy_candidates_across_runs(artifact_root=artifact_root)
+    analysis = analyze_policy_candidates_across_runs(
+        artifact_root=artifact_root,
+        candidate_names=["default_long_only_050", "m7_research_long_only_v1"],
+    )
     candidate_rows = {
         row["policy_name"]: row for row in analysis["candidate_summaries"]
     }
@@ -325,3 +340,127 @@ def test_legacy_complete_runs_are_skipped_when_oof_schema_is_incompatible(
     ]
     assert candidate_rows["default_long_only_050"]["run_count"] == 1
     assert candidate_rows["default_long_only_050"]["complete_run_count"] == 2
+
+
+def test_expanded_candidate_family_can_rank_regime_aware_candidate_across_runs(
+    tmp_path: Path,
+) -> None:
+    artifact_root = tmp_path / "m7"
+    run_rows = [
+        {
+            "model_name": "autogluon_tabular",
+            "fold_index": 0,
+            "row_id": "range-positive",
+            "symbol": "BTC/USD",
+            "interval_begin": "2026-04-01T00:00:00Z",
+            "as_of_time": "2026-04-01T00:05:00Z",
+            "y_true": 1,
+            "y_pred": 1,
+            "prob_up": 0.83,
+            "confidence": 0.83,
+            "regime_label": "RANGE",
+            "long_trade_taken": 1,
+            "future_return_3": 0.010,
+            "long_only_gross_value_proxy": 0.010,
+            "long_only_net_value_proxy": 0.008,
+        },
+        {
+            "model_name": "autogluon_tabular",
+            "fold_index": 0,
+            "row_id": "trend-up-mid-1",
+            "symbol": "ETH/USD",
+            "interval_begin": "2026-04-01T00:05:00Z",
+            "as_of_time": "2026-04-01T00:10:00Z",
+            "y_true": 1,
+            "y_pred": 1,
+            "prob_up": 0.72,
+            "confidence": 0.72,
+            "regime_label": "TREND_UP",
+            "long_trade_taken": 1,
+            "future_return_3": 0.009,
+            "long_only_gross_value_proxy": 0.009,
+            "long_only_net_value_proxy": 0.007,
+        },
+        {
+            "model_name": "autogluon_tabular",
+            "fold_index": 1,
+            "row_id": "trend-up-mid-2",
+            "symbol": "SOL/USD",
+            "interval_begin": "2026-04-01T00:10:00Z",
+            "as_of_time": "2026-04-01T00:15:00Z",
+            "y_true": 1,
+            "y_pred": 1,
+            "prob_up": 0.76,
+            "confidence": 0.76,
+            "regime_label": "TREND_UP",
+            "long_trade_taken": 1,
+            "future_return_3": 0.008,
+            "long_only_gross_value_proxy": 0.008,
+            "long_only_net_value_proxy": 0.006,
+        },
+        {
+            "model_name": "autogluon_tabular",
+            "fold_index": 1,
+            "row_id": "trend-down-negative",
+            "symbol": "BTC/USD",
+            "interval_begin": "2026-04-01T00:15:00Z",
+            "as_of_time": "2026-04-01T00:20:00Z",
+            "y_true": 0,
+            "y_pred": 1,
+            "prob_up": 0.84,
+            "confidence": 0.84,
+            "regime_label": "TREND_DOWN",
+            "long_trade_taken": 1,
+            "future_return_3": -0.010,
+            "long_only_gross_value_proxy": -0.010,
+            "long_only_net_value_proxy": -0.012,
+        },
+        {
+            "model_name": "autogluon_tabular",
+            "fold_index": 2,
+            "row_id": "high-vol-negative",
+            "symbol": "ETH/USD",
+            "interval_begin": "2026-04-01T00:20:00Z",
+            "as_of_time": "2026-04-01T00:25:00Z",
+            "y_true": 0,
+            "y_pred": 1,
+            "prob_up": 0.82,
+            "confidence": 0.82,
+            "regime_label": "HIGH_VOL",
+            "long_trade_taken": 1,
+            "future_return_3": -0.006,
+            "long_only_gross_value_proxy": -0.006,
+            "long_only_net_value_proxy": -0.008,
+        },
+        {
+            "model_name": "autogluon_tabular",
+            "fold_index": 2,
+            "row_id": "range-low-negative",
+            "symbol": "SOL/USD",
+            "interval_begin": "2026-04-01T00:25:00Z",
+            "as_of_time": "2026-04-01T00:30:00Z",
+            "y_true": 0,
+            "y_pred": 1,
+            "prob_up": 0.60,
+            "confidence": 0.60,
+            "regime_label": "RANGE",
+            "long_trade_taken": 1,
+            "future_return_3": -0.003,
+            "long_only_gross_value_proxy": -0.003,
+            "long_only_net_value_proxy": -0.005,
+        },
+    ]
+    for run_name in ("20260401T000001Z", "20260401T000002Z", "20260401T000003Z"):
+        _write_completed_run(artifact_root / run_name, rows=run_rows)
+
+    analysis = analyze_policy_candidates_across_runs(artifact_root=artifact_root)
+    candidate_rows = {
+        row["policy_name"]: row for row in analysis["candidate_summaries"]
+    }
+
+    assert analysis["best_candidate"]["policy_name"] == "per_regime_thresholds_v1"
+    assert candidate_rows["range_only_080"]["never_trades_trend_up_across_runs"] is True
+    assert (
+        "Candidate never trades TREND_UP across analyzable runs."
+        in candidate_rows["range_only_080"]["warnings"]
+    )

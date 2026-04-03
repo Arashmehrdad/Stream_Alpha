@@ -14,11 +14,11 @@ import asyncpg
 
 from app.common.config import Settings
 from app.common.serialization import make_json_safe
+from app.training.data_readiness import build_data_readiness_report
 from app.training.dataset import (
     TrainingConfig,
     candidate_dsns,
     load_training_config,
-    load_training_dataset,
 )
 from app.training.splits import minimum_required_unique_timestamps
 
@@ -115,7 +115,10 @@ def build_training_readiness_report(config_path: Path) -> TrainingReadinessRepor
         purge_gap_candles=config.purge_gap_candles,
     )
     try:
-        settings = Settings.from_env()
+        data_readiness = build_data_readiness_report(
+            config,
+            config_path=resolved_config_path,
+        )
     except ValueError as error:
         return TrainingReadinessReport(
             config_path=str(resolved_config_path),
@@ -140,40 +143,6 @@ def build_training_readiness_report(config_path: Path) -> TrainingReadinessRepor
             readiness_detail="Environment settings could not be resolved for training",
         )
 
-    probe = asyncio.run(
-        _probe_training_source_with_fallback(
-            postgres=settings.postgres,
-            table_name=config.source_table,
-        )
-    )
-    eligible_rows: int | None = None
-    unique_timestamps: int | None = None
-    ready_for_training = False
-    readiness_detail: str | None = None
-    if not probe.postgres_reachable:
-        readiness_detail = "PostgreSQL is not reachable for training readiness checks"
-    elif probe.feature_table_exists is False:
-        readiness_detail = f"Training source table {config.source_table} does not exist"
-    elif probe.row_count in {None, 0}:
-        readiness_detail = f"Training source table {config.source_table} has no rows yet"
-    else:
-        try:
-            dataset = load_training_dataset(config)
-            eligible_rows = int(dataset.manifest["eligible_rows"])
-            unique_timestamps = int(dataset.manifest["unique_timestamps"])
-            ready_for_training = unique_timestamps >= required_unique_timestamps
-            if ready_for_training:
-                readiness_detail = (
-                    "feature_ohlc satisfies the configured walk-forward timestamp requirement"
-                )
-            else:
-                readiness_detail = (
-                    "feature_ohlc does not yet satisfy the configured walk-forward "
-                    f"timestamp requirement ({unique_timestamps}/{required_unique_timestamps})"
-                )
-        except ValueError as error:
-            readiness_detail = str(error)
-
     return TrainingReadinessReport(
         config_path=str(resolved_config_path),
         config_ok=True,
@@ -186,15 +155,15 @@ def build_training_readiness_report(config_path: Path) -> TrainingReadinessRepor
         fastai_version=fastai_status.version,
         fastai_usable=fastai_status.usable,
         fastai_detail=fastai_status.detail,
-        postgres_reachable=probe.postgres_reachable,
-        postgres_error=probe.postgres_error,
-        feature_table_exists=probe.feature_table_exists,
-        row_count=probe.row_count,
-        eligible_rows=eligible_rows,
-        unique_timestamps=unique_timestamps,
+        postgres_reachable=data_readiness.postgres_reachable,
+        postgres_error=data_readiness.postgres_error,
+        feature_table_exists=data_readiness.feature_table_exists,
+        row_count=data_readiness.feature_rows_total,
+        eligible_rows=data_readiness.labeled_rows_total,
+        unique_timestamps=data_readiness.unique_timestamps,
         required_unique_timestamps=required_unique_timestamps,
-        ready_for_training=ready_for_training,
-        readiness_detail=readiness_detail,
+        ready_for_training=data_readiness.ready_for_training,
+        readiness_detail=data_readiness.readiness_detail,
     )
 
 

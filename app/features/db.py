@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
+from dataclasses import fields
 
 import asyncpg
 
@@ -99,129 +100,89 @@ class FeatureStore:
         *,
         symbols: Sequence[str],
         interval_minutes: int,
+        start: object | None = None,
+        end: object | None = None,
     ) -> list[OhlcEvent]:
         """Load ordered raw OHLC candles for explicit backfill regeneration."""
         pool = self._require_pool()
         raw_ohlc_table = _quote_table_name(self._tables.raw_ohlc)
+        filters = [
+            "symbol = ANY($1::text[])",
+            "interval_minutes = $2",
+        ]
+        parameters: list[object] = [list(symbols), interval_minutes]
+        if start is not None:
+            filters.append(f"interval_begin >= ${len(parameters) + 1}")
+            parameters.append(start)
+        if end is not None:
+            filters.append(f"interval_begin < ${len(parameters) + 1}")
+            parameters.append(end)
         try:
             rows = await pool.fetch(
                 f"""
                 SELECT payload::text AS payload_text
                 FROM {raw_ohlc_table}
-                WHERE symbol = ANY($1::text[]) AND interval_minutes = $2
+                WHERE {" AND ".join(filters)}
                 ORDER BY source_exchange ASC, symbol ASC, interval_minutes ASC, interval_begin ASC
                 """,
-                list(symbols),
-                interval_minutes,
+                *parameters,
             )
         except (asyncpg.InvalidSchemaNameError, asyncpg.UndefinedTableError):
             return []
 
         return [deserialize_ohlc_event(row["payload_text"]) for row in rows]
 
+    async def load_feature_rows(
+        self,
+        *,
+        symbols: Sequence[str],
+        interval_minutes: int,
+        start: object | None = None,
+        end: object | None = None,
+    ) -> list[FeatureOhlcRow]:
+        """Load ordered feature rows for explicit replay accounting."""
+        pool = self._require_pool()
+        feature_table = _quote_table_name(self._tables.feature_ohlc)
+        filters = [
+            "source_exchange = $1",
+            "symbol = ANY($2::text[])",
+            "interval_minutes = $3",
+        ]
+        parameters: list[object] = ["kraken", list(symbols), interval_minutes]
+        if start is not None:
+            filters.append(f"interval_begin >= ${len(parameters) + 1}")
+            parameters.append(start)
+        if end is not None:
+            filters.append(f"interval_begin < ${len(parameters) + 1}")
+            parameters.append(end)
+        try:
+            rows = await pool.fetch(
+                f"""
+                SELECT *
+                FROM {feature_table}
+                WHERE {" AND ".join(filters)}
+                ORDER BY source_exchange ASC, symbol ASC, interval_minutes ASC, interval_begin ASC
+                """,
+                *parameters,
+            )
+        except (asyncpg.InvalidSchemaNameError, asyncpg.UndefinedTableError):
+            return []
+
+        return [_feature_row_from_record(row) for row in rows]
+
     async def upsert_feature_row(self, row: FeatureOhlcRow) -> None:
         """Upsert one finalized feature row into PostgreSQL."""
         pool = self._require_pool()
-        table_name = _quote_table_name(self._tables.feature_ohlc)
-        await pool.execute(
-            f"""
-            INSERT INTO {table_name} (
-                source_exchange,
-                symbol,
-                interval_minutes,
-                interval_begin,
-                interval_end,
-                as_of_time,
-                computed_at,
-                raw_event_id,
-                open_price,
-                high_price,
-                low_price,
-                close_price,
-                vwap,
-                trade_count,
-                volume,
-                log_return_1,
-                log_return_3,
-                momentum_3,
-                return_mean_12,
-                return_std_12,
-                realized_vol_12,
-                rsi_14,
-                macd_line_12_26,
-                volume_mean_12,
-                volume_std_12,
-                volume_zscore_12,
-                close_zscore_12,
-                lag_log_return_1,
-                lag_log_return_2,
-                lag_log_return_3,
-                updated_at
-            ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-                $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
-                $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, NOW()
-            )
-            ON CONFLICT (source_exchange, symbol, interval_minutes, interval_begin)
-            DO UPDATE SET
-                interval_end = EXCLUDED.interval_end,
-                as_of_time = EXCLUDED.as_of_time,
-                computed_at = EXCLUDED.computed_at,
-                raw_event_id = EXCLUDED.raw_event_id,
-                open_price = EXCLUDED.open_price,
-                high_price = EXCLUDED.high_price,
-                low_price = EXCLUDED.low_price,
-                close_price = EXCLUDED.close_price,
-                vwap = EXCLUDED.vwap,
-                trade_count = EXCLUDED.trade_count,
-                volume = EXCLUDED.volume,
-                log_return_1 = EXCLUDED.log_return_1,
-                log_return_3 = EXCLUDED.log_return_3,
-                momentum_3 = EXCLUDED.momentum_3,
-                return_mean_12 = EXCLUDED.return_mean_12,
-                return_std_12 = EXCLUDED.return_std_12,
-                realized_vol_12 = EXCLUDED.realized_vol_12,
-                rsi_14 = EXCLUDED.rsi_14,
-                macd_line_12_26 = EXCLUDED.macd_line_12_26,
-                volume_mean_12 = EXCLUDED.volume_mean_12,
-                volume_std_12 = EXCLUDED.volume_std_12,
-                volume_zscore_12 = EXCLUDED.volume_zscore_12,
-                close_zscore_12 = EXCLUDED.close_zscore_12,
-                lag_log_return_1 = EXCLUDED.lag_log_return_1,
-                lag_log_return_2 = EXCLUDED.lag_log_return_2,
-                lag_log_return_3 = EXCLUDED.lag_log_return_3,
-                updated_at = NOW()
-            """,
-            row.source_exchange,
-            row.symbol,
-            row.interval_minutes,
-            row.interval_begin,
-            row.interval_end,
-            row.as_of_time,
-            row.computed_at,
-            row.raw_event_id,
-            row.open_price,
-            row.high_price,
-            row.low_price,
-            row.close_price,
-            row.vwap,
-            row.trade_count,
-            row.volume,
-            row.log_return_1,
-            row.log_return_3,
-            row.momentum_3,
-            row.return_mean_12,
-            row.return_std_12,
-            row.realized_vol_12,
-            row.rsi_14,
-            row.macd_line_12_26,
-            row.volume_mean_12,
-            row.volume_std_12,
-            row.volume_zscore_12,
-            row.close_zscore_12,
-            row.lag_log_return_1,
-            row.lag_log_return_2,
-            row.lag_log_return_3,
+        await pool.execute(_feature_upsert_sql(self._tables.feature_ohlc), *_feature_upsert_values(row))
+
+    async def upsert_feature_rows_batch(self, rows: Sequence[FeatureOhlcRow]) -> None:
+        """Upsert a batch of finalized feature rows into PostgreSQL."""
+        if not rows:
+            return
+        pool = self._require_pool()
+        await pool.executemany(
+            _feature_upsert_sql(self._tables.feature_ohlc),
+            [_feature_upsert_values(row) for row in rows],
         )
 
     async def _ensure_schema(self) -> None:
@@ -301,3 +262,118 @@ class FeatureStore:
         if self._pool is None:
             raise RuntimeError("FeatureStore has not been connected")
         return self._pool
+
+
+def _feature_row_from_record(record: asyncpg.Record) -> FeatureOhlcRow:
+    values = {
+        field.name: record[field.name]
+        for field in fields(FeatureOhlcRow)
+    }
+    return FeatureOhlcRow(**values)
+
+
+def _feature_upsert_sql(table_name: str) -> str:
+    quoted_table_name = _quote_table_name(table_name)
+    return f"""
+        INSERT INTO {quoted_table_name} (
+            source_exchange,
+            symbol,
+            interval_minutes,
+            interval_begin,
+            interval_end,
+            as_of_time,
+            computed_at,
+            raw_event_id,
+            open_price,
+            high_price,
+            low_price,
+            close_price,
+            vwap,
+            trade_count,
+            volume,
+            log_return_1,
+            log_return_3,
+            momentum_3,
+            return_mean_12,
+            return_std_12,
+            realized_vol_12,
+            rsi_14,
+            macd_line_12_26,
+            volume_mean_12,
+            volume_std_12,
+            volume_zscore_12,
+            close_zscore_12,
+            lag_log_return_1,
+            lag_log_return_2,
+            lag_log_return_3,
+            updated_at
+        ) VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+            $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
+            $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, NOW()
+        )
+        ON CONFLICT (source_exchange, symbol, interval_minutes, interval_begin)
+        DO UPDATE SET
+            interval_end = EXCLUDED.interval_end,
+            as_of_time = EXCLUDED.as_of_time,
+            computed_at = EXCLUDED.computed_at,
+            raw_event_id = EXCLUDED.raw_event_id,
+            open_price = EXCLUDED.open_price,
+            high_price = EXCLUDED.high_price,
+            low_price = EXCLUDED.low_price,
+            close_price = EXCLUDED.close_price,
+            vwap = EXCLUDED.vwap,
+            trade_count = EXCLUDED.trade_count,
+            volume = EXCLUDED.volume,
+            log_return_1 = EXCLUDED.log_return_1,
+            log_return_3 = EXCLUDED.log_return_3,
+            momentum_3 = EXCLUDED.momentum_3,
+            return_mean_12 = EXCLUDED.return_mean_12,
+            return_std_12 = EXCLUDED.return_std_12,
+            realized_vol_12 = EXCLUDED.realized_vol_12,
+            rsi_14 = EXCLUDED.rsi_14,
+            macd_line_12_26 = EXCLUDED.macd_line_12_26,
+            volume_mean_12 = EXCLUDED.volume_mean_12,
+            volume_std_12 = EXCLUDED.volume_std_12,
+            volume_zscore_12 = EXCLUDED.volume_zscore_12,
+            close_zscore_12 = EXCLUDED.close_zscore_12,
+            lag_log_return_1 = EXCLUDED.lag_log_return_1,
+            lag_log_return_2 = EXCLUDED.lag_log_return_2,
+            lag_log_return_3 = EXCLUDED.lag_log_return_3,
+            updated_at = NOW()
+        """
+
+
+def _feature_upsert_values(row: FeatureOhlcRow) -> tuple[object, ...]:
+    return (
+        row.source_exchange,
+        row.symbol,
+        row.interval_minutes,
+        row.interval_begin,
+        row.interval_end,
+        row.as_of_time,
+        row.computed_at,
+        row.raw_event_id,
+        row.open_price,
+        row.high_price,
+        row.low_price,
+        row.close_price,
+        row.vwap,
+        row.trade_count,
+        row.volume,
+        row.log_return_1,
+        row.log_return_3,
+        row.momentum_3,
+        row.return_mean_12,
+        row.return_std_12,
+        row.realized_vol_12,
+        row.rsi_14,
+        row.macd_line_12_26,
+        row.volume_mean_12,
+        row.volume_std_12,
+        row.volume_zscore_12,
+        row.close_zscore_12,
+        row.lag_log_return_1,
+        row.lag_log_return_2,
+        row.lag_log_return_3,
+    )

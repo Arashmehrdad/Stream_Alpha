@@ -13,3 +13,4 @@ uvicorn>=0.32,<1
 websockets>=13,<17
 pylint>=4,<5
 autopep8>=2,<3
+paramiko>=3,<4

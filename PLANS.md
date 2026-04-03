@@ -118,6 +118,18 @@
 | H | Keep Windows local bagged AutoGluon training off Ray while preserving honest stacking/bagging controls | AutoGluon wrapper/config/tests, PLANS.md | DONE | focused wrapper tests plus dry-run checks and synthetic smoke fit | Explicit fold_fitting_strategy now keeps checked-in local M3/M7 training on sequential_local bag-fold execution, which avoids the Windows Ray access-violation hang while keeping bagging and stacking enabled |
 | I | Fix the remaining local optional-model warning sources honestly instead of suppressing them | requirements, readiness/script truth, focused tests, README, PLANS.md | DONE | focused pytest plus dry-run checks and tiny FastAI/neural smoke fits | FastAI breadth now validates real usability, sklearn is pinned to the non-deprecated AutoGluon-compatible range, and the local environment proof no longer emits the previous fastai/sklearn/NVML warnings |
 | J | Make local M7 training visibly operable while staying Windows-safe and honest about budget/runtime | progress helper, start script, focused tests, README, PLANS.md | DONE | focused pytest plus dry-run checks and live-process inspection | The local operator path now shows a PowerShell heartbeat with elapsed time, budget ETA/overrun, current best model, latest model activity, and explicit CPU mode instead of leaving long Windows runs silent |
+| K | Treat complete M7 artifacts honestly even when the child training wrapper exits non-zero | start script, focused tests, PLANS.md | DONE | focused pytest plus dry-run checks | The operator path now surfaces logs and treats a complete artifact bundle as completed instead of a false failure |
+| L | Add completed-run threshold and regime analysis for M7 | threshold analysis module/script, focused tests, README, PLANS.md | DONE | focused pytest plus dry-run and real completed-run analysis | Cost-aware long-only threshold analysis now writes deterministic artifacts into each completed run without changing runtime policy |
+| M | Add named research-only policy candidate evaluation for completed M7 runs | policy candidates module, candidate analysis module/script, focused tests, README, PLANS.md | DONE | focused pytest plus dry-run and real completed-run analysis | The discovered gated long-only rule now exists as an explicit named challenger candidate for evaluation only |
+| N | Add multi-run policy-candidate aggregation across completed M7 artifacts | multi-run analysis module/script, focused tests, README, PLANS.md | DONE | focused pytest plus dry-run and real artifact-root analysis | Cross-run candidate evidence now stays explicit about skipped legacy runs and still shows weak robustness |
+| O | Add bounded research-only AutoGluon experiment configs and runner for M7 | research configs, experiment summary module/script, focused tests, README, PLANS.md | DONE | focused pytest plus dry-run checks | Small explicit preset experiments can now be run and summarized without changing production behavior |
+| P | Add completed-run data and regime diagnostics for M7 | data/regime diagnostics module/script, focused tests, README, PLANS.md | DONE | focused pytest plus dry-run and real completed-run analysis | Completed M7 artifacts now expose label balance, opportunity density, regime routing, fold drift, and honest feature-shift support limits |
+| Q | Add bounded regime-policy ablation research for completed M7 runs | policy candidates, candidate analysis, multi-run analysis, focused tests, README, PLANS.md | DONE | focused pytest plus real single-run and multi-run policy analysis | The completed-run research path now compares a bounded routing-focused candidate family and surfaces when “wins” come from never trading TREND_UP |
+| S | Add research-only live paper challenger scoring for top M7 policy candidates | paper runner sidecar, live challenger module/script, focused tests, README, PLANS.md | DONE | focused pytest plus dry-run and minimal no-services smoke | Paper mode now records bounded observer-only challenger decisions and delayed proxy settlements without changing execution behavior |
+| T | Add a repo-native Linux VPS paper deployment path for observer-only challenger collection | deployment helper/scripts, focused tests, README, .env.example, requirements, PLANS.md | DONE | focused helper tests plus PowerShell dry-run checks | The repo can now stage the paper Compose stack plus research-only challenger scoring onto a Linux VPS without adding VPS training or changing execution behavior |
+| U | Make VPS deployment failures surface actionable SSH connectivity guidance | deployment helper, focused tests, PLANS.md | DONE | focused helper tests plus one real failing-connect smoke | SSH timeout/auth failures now collapse into operator-readable guidance instead of a Paramiko traceback |
+| V | Add historical raw backfill, feature replay, and data readiness reporting on the real live pipeline path | ingestion backfill path, feature DB helpers, training readiness/reporting, focused tests, README, PLANS.md | DONE | focused pytest plus real 48h backfill/replay smoke | The real `raw_ohlc -> feature_ohlc -> training` path now supports bounded historical replay, idempotent reruns, persisted readiness artifacts, and an early training sufficiency gate |
+| W | Import the full local Kraken downloadable OHLCVT dataset into the real raw -> feature -> readiness path | Kraken CSV importer/operator script, batch DB helpers, focused tests, README, PLANS.md | DONE | focused pytest plus real full-dataset import and idempotent rerun smoke | The repo can now ingest the extracted Kraken 5-minute CSV history into `raw_ohlc`, replay the real feature pipeline into `feature_ohlc`, and persist the usual readiness bundle without creating a fake offline dataset path |
 
 ### Batch A log
 - Inspected only the M20-relevant files and runtime truth needed to answer the strengthening question:
@@ -950,3 +962,601 @@
   - `.\scripts\run_m7_research_experiments.ps1 -DryRun` -> discovered the bounded config set and printed the expected training/evaluation sequence plus the target `_analysis/research_experiments` summary path
 - Blockers:
   - none
+
+### Batch P log
+- Scope for this pass was limited to research-only diagnostics for completed M7 artifacts. No production inference behavior, runtime policy, promotion semantics, retraining cadence, or M18/M19/M20 authority boundaries were changed.
+- Added a focused completed-run diagnostics module:
+  - `app/training/data_regime_diagnostics.py`
+  - analyzes one completed M7 run using:
+    - `summary.json`
+    - `oof_predictions.csv`
+    - `fold_metrics.csv`
+    - `dataset_manifest.json`
+  - computes:
+    - overall / per-fold / per-regime / per-symbol positive label rates
+    - opportunity density at `0`, `5`, `10`, and `20` bps overall and by regime
+    - regime-routing summaries for:
+      - `default_long_only_050`
+      - `m7_research_long_only_v1`
+    - fold-drift summaries with weakest-fold selection under the best named candidate
+    - an explicit feature-shift-support section that stays honest when completed artifacts do not contain per-row feature values
+  - writes deterministic outputs under each run's:
+    - `data_regime_diagnostics/diagnostics.json`
+    - `data_regime_diagnostics/label_diagnostics.csv`
+    - `data_regime_diagnostics/opportunity_density.csv`
+    - `data_regime_diagnostics/regime_routing.csv`
+    - `data_regime_diagnostics/fold_diagnostics.csv`
+    - `data_regime_diagnostics/summary.md`
+- Added a PowerShell-first operator wrapper:
+  - `scripts/analyze_m7_data_regime.ps1`
+  - defaults to the newest completed M7 run under `artifacts/training/m7`
+  - ignores `_analysis` directories when resolving the newest run
+  - validates the required completed-run files before dispatch
+  - prints:
+    - overall positive label rate
+    - `>=20` bps opportunity density and sparsity flag
+    - best named candidate summary
+    - weakest fold
+    - the first suspicious regime-routing finding
+    - warning lines and saved output paths
+- Updated operator docs:
+  - `README.md`
+  - now documents the completed-run data/regime diagnostics command and its research-only scope
+- Added focused tests:
+  - `tests/test_training_data_regime_diagnostics.py`
+    - opportunity-density calculations
+    - regime-routing summary behavior
+    - weakest-fold selection
+    - honest missing feature-shift warning
+  - `tests/test_training_scripts.py`
+    - newest-run resolution for `analyze_m7_data_regime.ps1`
+    - `_analysis` directory exclusion for the newest-run dry-run path
+- Real newest-run findings from `artifacts/training/m7/20260402T054205Z`:
+  - overall positive label rate:
+    - `0.5430`
+  - `>=20` bps opportunities:
+    - `137 / 558`
+    - rate `0.2455`
+    - not sparse
+  - best named candidate:
+    - `m7_research_long_only_v1`
+    - `trade_count = 6`
+    - `mean_long_only_net_value_proxy = 0.000032`
+    - after-cost positive, but still explicitly flagged as too sparse
+  - default long-only routing:
+    - trades `17 / 22` `TREND_DOWN` rows
+    - `TREND_DOWN` regime net remains negative under the default policy
+  - best named candidate routing:
+    - takes `0` `TREND_UP` longs despite `58` available `TREND_UP` rows
+    - takes all `6` of its longs only in `RANGE`
+  - weakest fold under the best named candidate:
+    - `fold 1`
+    - `best_named_mean_long_only_net_value_proxy = -0.000030`
+    - default policy mean net on the same fold remains much worse at `-0.000798`
+  - feature-shift diagnostics:
+    - not available from the completed artifact alone because per-row feature values are not persisted
+- Targeted checks passed:
+  - `python -m pytest tests\test_training_data_regime_diagnostics.py tests\test_training_scripts.py -q` -> `13 passed`
+  - `.\scripts\analyze_m7_data_regime.ps1 -DryRun` -> resolved the newest completed M7 run and printed the authoritative Python command plus expected analysis directory
+  - `.\scripts\analyze_m7_data_regime.ps1` -> completed successfully against `artifacts/training/m7/20260402T054205Z` and wrote the expected `data_regime_diagnostics/` outputs
+- Blockers:
+  - none
+
+### Batch Q log
+- Scope for this pass was limited to research-only regime-policy ablation over completed M7 artifacts. No production inference behavior, runtime policy, promotion semantics, training configuration, or retraining cadence were changed.
+- Expanded the bounded named-candidate family in:
+  - `app/training/policy_candidates.py`
+  - existing candidates kept:
+    - `default_long_only_050`
+    - `m7_research_long_only_v1`
+  - added routing-focused candidates:
+    - `range_only_080`
+    - `trend_up_only_070`
+    - `trend_up_only_080`
+    - `range_or_trend_up_080`
+    - `no_long_in_trend_down_080`
+    - `no_long_in_trend_down_high_vol_075`
+    - `no_long_in_trend_down_high_vol_080`
+    - `no_long_in_trend_down_high_vol_085`
+    - `per_regime_thresholds_v1`
+- Reused the existing single-run candidate-analysis path instead of building a second evaluation stack:
+  - `app/training/policy_candidate_analysis.py`
+  - each candidate result now persists routing flags:
+    - `trades_in_trend_down`
+    - `trades_in_trend_up`
+    - `trades_in_range`
+    - `trades_in_high_vol`
+    - `trend_up_blocked_entirely`
+    - `positive_but_sparse`
+    - `range_only_behavior`
+  - added a bounded candidate-family summary with:
+    - best candidate by mean net proxy
+    - best positive candidate by trade count
+    - whether positivity depends on blocking `TREND_UP` entirely
+    - whether RANGE-only behavior dominates the positive-candidate set
+  - existing `policy_candidate_analysis/` outputs are reused and updated in place
+- Extended the multi-run analysis path to aggregate the expanded routing family:
+  - `app/training/multi_run_policy_analysis.py`
+  - now aggregates per candidate:
+    - total trades by regime across runs
+    - `positive_but_sparse_run_count`
+    - `never_trades_trend_up_across_runs`
+  - added the requested honest warning:
+    - `Candidate never trades TREND_UP across analyzable runs.`
+  - existing `_analysis/policy_candidates/` outputs are reused and updated in place
+- Fixed the completed-run resolver path so the existing single-run research scripts keep working when `_analysis/` exists under `artifacts/training/m7`:
+  - `app/training/threshold_analysis.py`
+  - `scripts/evaluate_m7_policy_candidates.ps1`
+  - `scripts/analyze_m7_thresholds.ps1`
+  - all now ignore directories whose names start with `_` when defaulting to the newest completed run
+- Updated operator docs:
+  - `README.md`
+  - now states that `evaluate_m7_policy_candidates.ps1` covers a small bounded regime-routing ablation family
+- Added focused tests:
+  - `tests/test_training_policy_candidate_analysis.py`
+    - expanded candidate definitions
+    - blocked-regime behavior
+    - `range_only` and `trend_up_only` behavior
+    - `positive_but_sparse` flag
+    - family-summary flags when positivity depends on blocking `TREND_UP`
+  - `tests/test_training_multi_run_policy_analysis.py`
+    - expanded-family multi-run ranking
+    - `never_trades_trend_up_across_runs` warning
+  - `tests/test_training_scripts.py`
+    - existing single-run script dry-runs now also cover `_analysis` directory exclusion
+- Real newest-run findings from `artifacts/training/m7/20260402T054205Z` after expanding the candidate family:
+  - best candidate by mean net proxy:
+    - `no_long_in_trend_down_high_vol_075`
+    - `trade_count = 8`
+    - `trade_rate = 0.0143`
+    - `mean_long_only_net_value_proxy = 0.000033`
+    - after-cost positive
+  - honest limitation:
+    - still flagged `Positive but too sparse to count as robust promotion evidence.`
+    - still takes `0` `TREND_UP` longs and all `8` trades only in `RANGE`
+- Real multi-run findings from `artifacts/training/m7/_analysis/policy_candidates` after expanding the candidate family:
+  - analyzable runs:
+    - `7`
+  - best candidate by median net proxy:
+    - `range_only_080`
+    - `median_net_value_proxy_across_runs = 0.000011`
+    - `positive_run_rate = 0.71`
+    - `total_trade_count = 63`
+  - honest limitation:
+    - it never trades `TREND_UP` across analyzable runs
+    - the saved summary now warns explicitly that this candidate never trades `TREND_UP`
+  - notable comparison:
+    - `m7_research_long_only_v1`, `no_long_in_trend_down_high_vol_080`, `range_or_trend_up_080`, and `per_regime_thresholds_v1` all ended up close on cross-run median net, but `range_only_080` ranked first by the current deterministic median/mean trade-count ordering
+- Targeted checks passed:
+  - `python -m pytest tests\test_training_policy_candidate_analysis.py tests\test_training_multi_run_policy_analysis.py tests\test_training_scripts.py -q` -> `22 passed`
+  - `.\scripts\evaluate_m7_policy_candidates.ps1` -> completed successfully against the newest run and rewrote `policy_candidate_analysis/` with the expanded family
+  - `.\scripts\evaluate_m7_policy_candidates_multi_run.ps1` -> completed successfully against current artifacts and rewrote `_analysis/policy_candidates/` with the expanded family
+- Blockers:
+  - none
+
+### Batch R log
+- Scope for this pass was limited to research-only trade-ledger replay evaluation over completed M7 artifacts. No production inference behavior, runtime policy, retraining flow, or promotion semantics were changed.
+- Added the authoritative replay module:
+  - `app/training/policy_replay_analysis.py`
+  - supports:
+    - single-run replay analysis over a bounded shortlist of named candidates
+    - multi-run replay aggregation across completed M7 artifacts
+  - single-run replay metrics now include:
+    - `trade_count`
+    - `cumulative_gross_proxy`
+    - `cumulative_net_proxy`
+    - `mean_net_proxy`
+    - `median_net_proxy_per_trade`
+    - `win_rate_on_trades`
+    - `max_drawdown_proxy`
+    - `longest_loss_streak`
+    - `first_trade_time`
+    - `last_trade_time`
+    - routing counts for `TREND_DOWN`, `TREND_UP`, `RANGE`, and `HIGH_VOL`
+  - writes per-run replay artifacts under:
+    - `policy_replay_analysis/replay_summary.json`
+    - `policy_replay_analysis/replay_summary.csv`
+    - `policy_replay_analysis/replay_trade_ledger.csv`
+    - `policy_replay_analysis/summary.md`
+  - writes multi-run replay artifacts under:
+    - `_analysis/policy_replay/multi_run_replay_summary.json`
+    - `_analysis/policy_replay/multi_run_replay_summary.csv`
+    - `_analysis/policy_replay/summary.md`
+- Added operator wrappers:
+  - `scripts/evaluate_m7_policy_replay.ps1`
+  - `scripts/evaluate_m7_policy_replay_multi_run.ps1`
+  - both default to the authoritative newest-run / artifact-root behavior and print concise replay summaries
+- Added focused replay tests:
+  - `tests/test_training_policy_replay_analysis.py`
+    - chronological ledger ordering
+    - cumulative net calculation
+    - max drawdown calculation
+    - longest loss streak
+    - multi-run aggregation
+    - TREND_UP-block warning
+  - `tests/test_training_scripts.py`
+    - newest-run dry-run resolution for `evaluate_m7_policy_replay.ps1`
+    - artifact-root dry-run behavior for `evaluate_m7_policy_replay_multi_run.ps1`
+- Updated operator docs:
+  - `README.md`
+  - now documents the replay scripts and the `_analysis/policy_replay/` research output path
+- Real newest-run replay findings from `artifacts/training/m7/20260402T054205Z`:
+  - best candidate by cumulative net proxy:
+    - `m7_research_long_only_v1`
+    - `cumulative_net_proxy = 0.018048`
+    - `trade_count = 6`
+    - `max_drawdown_proxy = -0.006424`
+  - honest limitation:
+    - still flagged thin because `trade_count < 20`
+    - still takes `0` `TREND_UP` longs on that run
+- Real multi-run replay findings from `artifacts/training/m7/_analysis/policy_replay`:
+  - analyzable runs:
+    - `7`
+  - best candidate by cross-run cumulative-path ranking:
+    - `range_only_080`
+    - `median_cumulative_net_proxy = 0.006014`
+    - `total_trade_count = 63`
+    - `average_max_drawdown_proxy = -0.009007`
+  - honest limitation:
+    - it still warns because it never trades `TREND_UP` across replayed runs
+  - candidates that now clear the replay thinness warnings:
+    - `m7_research_long_only_v1`
+    - `no_long_in_trend_down_high_vol_080`
+    - `range_or_trend_up_080`
+    - `per_regime_thresholds_v1`
+    - all show:
+      - `positive_cumulative_run_rate = 0.7143`
+      - `total_trade_count` in the `65-66` range
+      - at least some `TREND_UP` trades across runs
+- Targeted checks passed:
+  - `python -m py_compile app/training/policy_replay_analysis.py`
+  - `python -m pytest tests\test_training_policy_replay_analysis.py tests\test_training_scripts.py -q` -> `16 passed`
+  - `.\scripts\evaluate_m7_policy_replay.ps1` -> completed successfully against the newest run and wrote `policy_replay_analysis/`
+  - `.\scripts\evaluate_m7_policy_replay_multi_run.ps1` -> completed successfully against current artifacts and wrote `_analysis/policy_replay/`
+- Blockers:
+  - none
+
+### Batch S log
+- Scope for this pass was limited to research-only live paper challenger scoring for a bounded shortlist of top M7 policy candidates. No production inference behavior, runtime trading policy, execution routing, promotion semantics, or retraining flow were changed.
+- Added a new research-only live paper challenger module:
+  - `app/training/live_policy_challenger.py`
+  - loads the authoritative M7 economics contract from `configs/training.m7.json`
+  - uses a bounded built-in shortlist:
+    - `m7_research_long_only_v1`
+    - `no_long_in_trend_down_high_vol_080`
+    - `range_or_trend_up_080`
+    - `per_regime_thresholds_v1`
+    - `range_only_080`
+  - scores those candidates on the same paper signal rows already produced by the normal system
+  - never alters execution behavior
+  - appends research-only logs under:
+    - `challenger_observations.jsonl`
+    - `challenger_settlements.jsonl`
+  - builds a research-only scoreboard with:
+    - `observed_decision_count`
+    - `settled_decision_count`
+    - `hypothetical_trade_count`
+    - `hypothetical_mean_net_proxy`
+    - `cumulative_net_proxy`
+    - `max_drawdown_proxy`
+    - regime trade counts
+    - sparse and routing warnings such as `Candidate never trades TREND_UP.`
+  - writes summary artifacts under:
+    - `artifacts/paper_trading/paper/research/policy_challengers/`
+    - `latest_scoreboard.json`
+    - `latest_scoreboard.csv`
+    - `summary.md`
+- Integrated the sidecar into the authoritative paper runner path only:
+  - `app/trading/runner.py`
+  - the runner now:
+    - enables the challenger tracker only when `execution.mode == "paper"`
+    - scores candidates after the normal risk/execution decision is already determined
+    - writes the latest challenger scoreboard after the standard paper summaries
+  - the integration is wrapped in defensive `try/except` blocks so research logging cannot break the production paper execution path
+- Added an operator visibility script:
+  - `scripts/show_live_policy_challengers.ps1`
+  - prints:
+    - active production trade count and cumulative net proxy
+    - best research candidate
+    - best candidate cumulative net proxy
+    - best candidate trade count
+    - best candidate drawdown proxy
+    - sparse and TREND_UP-routing warnings
+    - output artifact paths
+- Updated operator docs:
+  - `README.md`
+  - now documents the research-only live paper challenger scoreboard command and its artifact location
+- Added focused tests:
+  - `tests/test_training_live_policy_challenger.py`
+    - candidate scoring logic
+    - observation/settlement log writing
+    - scoreboard summary aggregation
+    - sparse and never-trades-`TREND_UP` warnings
+  - `tests/trading/test_runner_idempotency.py`
+    - paper runner integration writes challenger artifacts without creating extra orders
+    - updated the fake repository with the minimal continual-learning read stubs now required by the current runner path
+  - `tests/test_training_scripts.py`
+    - dry-run coverage for `show_live_policy_challengers.ps1`
+- Targeted checks passed:
+  - `python -m py_compile app\training\live_policy_challenger.py`
+  - `python -m pytest tests\test_training_live_policy_challenger.py tests\trading\test_runner_idempotency.py tests\test_training_scripts.py -q` -> `27 passed`
+  - `.\scripts\show_live_policy_challengers.ps1 -DryRun` -> printed the authoritative observer command using the paper trading and M7 configs
+  - `python -m app.training.live_policy_challenger --artifact-dir artifacts\tmp\live_policy_challenger_smoke --json` -> completed successfully against an empty research artifact dir and returned a zero-observation scoreboard without needing live services
+- Blockers:
+  - none
+
+### Batch T log
+- Scope for this pass was limited to a repo-native Linux VPS deployment path for the existing paper stack plus the already-integrated research-only live challenger sidecar. No production inference behavior, runtime trading policy, promotion semantics, or training flow were changed.
+- Added a bounded deployment helper module:
+  - `app/deployment/paper_vps.py`
+  - normalizes VPS connection settings from the local root `.env`
+  - supports both standard names and the existing legacy aliases already present in this repo:
+    - `STREAMALPHA_VPS_HOST` or `ipaddress`
+    - `STREAMALPHA_VPS_USER` or `username`
+    - `STREAMALPHA_VPS_PASSWORD` or `password`
+  - builds a sanitized remote `.env` that:
+    - strips local-only VPS connection keys
+    - forces the remote runtime into `paper`
+    - sets `STREAMALPHA_TRADING_CONFIG_PATH=configs/paper_trading.paper.yaml`
+    - keeps the startup report path explicit
+  - uploads only the bounded deployment set needed for the paper system:
+    - `app/`
+    - `configs/`
+    - `dashboards/`
+    - `docker/`
+    - `scripts/`
+    - `artifacts/registry/`
+    - `artifacts/regime/`
+    - `docker-compose.yml`
+    - `requirements.txt`
+    - `README.md`
+    - `.env.example`
+  - provides four authoritative actions:
+    - `deploy`
+    - `status`
+    - `stop`
+    - `show-challengers`
+  - installs Docker plus the Compose plugin on Ubuntu/Debian VPS hosts when missing, then reuses the existing Docker Compose `paper` profile startup contract and runs the bounded OHLC backfill after startup
+  - keeps remote persistence honest by reusing the repo-root bind-mounted artifact paths and not deleting `artifacts/paper_trading/paper/` during code refreshes
+- Added PowerShell-first operator wrappers:
+  - `scripts/deploy_paper_vps.ps1`
+  - `scripts/status_paper_vps.ps1`
+  - `scripts/stop_paper_vps.ps1`
+  - `scripts/show_live_policy_challengers_vps.ps1`
+  - these wrappers now work on Windows PowerShell 5.1 by using plain `ConvertFrom-Json` instead of `-AsHashtable`
+- Added focused deployment tests:
+  - `tests/test_deployment_paper_vps.py`
+    - alias normalization from the root `.env` naming style
+    - sanitized remote `.env` generation
+    - bounded deploy-plan discovery
+  - `tests/test_deployment_scripts.py`
+    - dry-run coverage for deploy/status/stop/show-challengers wrappers
+    - verifies dry-run output stays secret-safe and command-oriented
+- Updated local tooling/docs:
+  - `requirements.txt`
+    - now includes `paramiko>=3,<4` for the local operator deploy path
+  - `.env.example`
+    - now documents the standard optional VPS variable names without changing the existing root `.env`
+  - `README.md`
+    - now includes a short Linux VPS paper-observation section with the four operator commands
+- Targeted checks passed:
+  - `python -m py_compile app\deployment\paper_vps.py`
+  - `python -m pytest tests\test_deployment_paper_vps.py tests\test_deployment_scripts.py -q` -> `7 passed`
+  - `.\scripts\deploy_paper_vps.ps1 -DryRun`
+  - `.\scripts\status_paper_vps.ps1 -DryRun`
+  - `.\scripts\show_live_policy_challengers_vps.ps1 -DryRun`
+  - `.\scripts\stop_paper_vps.ps1 -DryRun`
+- Honest note:
+  - this batch validated only the bounded local helper logic and the PowerShell dry-run path; it did not perform a real VPS deployment
+- Blockers:
+  - none
+
+### Batch U log
+- Scope for this pass was limited to deploy-tooling failure handling for the bounded Linux VPS paper deployment path. No runtime trading logic, paper execution behavior, promotion semantics, or training flow were changed.
+- Updated the VPS deployment helper:
+  - `app/deployment/paper_vps.py`
+  - `RemoteSession.__enter__` now catches raw Paramiko/socket connection failures and converts them into short actionable operator messages
+  - SSH failures now distinguish at least:
+    - TCP timeout / unreachable SSH port
+    - authentication failure
+    - SSH transport setup failure
+    - generic SSH connection failure fallback
+  - timeout guidance now explicitly points the operator at:
+    - verifying that the VPS is powered on
+    - verifying that SSH is listening and allowed by the VPS firewall/security group
+    - setting `STREAMALPHA_VPS_PORT` in the root `.env` if the host uses a custom SSH port
+- Added focused tests:
+  - `tests/test_deployment_paper_vps.py`
+  - covers:
+    - timeout error messaging
+    - authentication failure messaging
+- Targeted checks passed:
+  - `python -m py_compile app\deployment\paper_vps.py`
+  - `python -m pytest tests\test_deployment_paper_vps.py tests\test_deployment_scripts.py -q` -> `9 passed`
+  - targeted live-connect smoke:
+    - raw TCP connect to the configured VPS host/port timed out
+    - common alternate SSH ports `22`, `2222`, `2200`, `222`, `2022`, and `22222` also timed out
+    - `Test-NetConnection` confirmed the host is pingable while TCP/22 is not reachable
+- Honest blocker:
+  - the current deployment failure is outside the repo now: the VPS is not accepting SSH connections on the configured/default port from this machine
+
+### Batch V log
+- Scope for this pass was limited to the existing live-path data contract: historical Kraken OHLC backfill into `raw_ohlc`, replay through the existing M2 feature logic into `feature_ohlc`, and readiness/reporting for the existing training path. No model-family additions, runtime trading logic changes, synthetic datasets, or promotion changes were made.
+- Extended the authoritative historical backfill command:
+  - `app/ingestion/backfill_ohlc.py`
+  - new capabilities:
+    - explicit `--start` / `--end` RFC3339 window support for 5-minute Kraken history
+    - bounded retry support with `--request-retries`
+    - `--skip-raw-backfill`, `--skip-feature-replay`, and `--report-only` modes
+    - deterministic backfill OHLC `event_id` values
+    - deterministic historical `received_at` values per candle
+    - raw-window synchronization that now counts and skips unchanged rows instead of blindly rewriting them
+    - feature replay over the same real `raw_ohlc -> FeatureStateManager.bootstrap -> feature_ohlc` path, with deterministic `computed_at` for historical rows so reruns stay idempotent
+    - persisted `backfill_operation.json` written into the same readiness artifact bundle as the sufficiency report
+- Added the shared historical readiness/reporting module:
+  - `app/training/data_readiness.py`
+  - report contents now include:
+    - raw rows by symbol
+    - feature rows by symbol
+    - labeled rows by symbol
+    - earliest and latest usable timestamps
+    - missing interval counts and explicit gap windows
+    - class balance
+    - regime distribution when the latest thresholds artifact is available
+    - whether enough unique labeled timestamps exist for the configured walk-forward split
+  - persisted artifact bundle now lives under:
+    - `artifacts/training/data_readiness/<run_id>/`
+    - with:
+      - `readiness_report.json`
+      - `symbol_coverage.csv`
+      - `gap_summary.csv`
+      - `summary.md`
+      - `backfill_operation.json`
+- Strengthened the authoritative training/readiness path:
+  - `app/training/dataset.py`
+    - added `load_training_dataset_preview(...)` so readiness/reporting can inspect the real feature table without pretending the dataset is already trainable
+  - `app/training/readiness.py`
+    - now uses the shared readiness report instead of a separate shallow probe
+  - `app/training/service.py`
+    - now calls the shared readiness gate before loading the full dataset for training, so historical insufficiency fails early and clearly
+- Extended the feature-store read helpers needed for idempotent replay:
+  - `app/features/db.py`
+  - `load_raw_candles(...)` now supports optional start/end bounds
+  - added `load_feature_rows(...)` for replay accounting against the real `feature_ohlc` table
+- Updated operator documentation:
+  - `README.md`
+  - now documents:
+    - the exact historical backfill command
+    - the replay-only command
+    - the readiness artifact path
+    - what minimum readiness means before rerunning M7 experiments
+    - the honest Kraken REST limit that only the most recent 720 OHLC entries can be recovered on demand
+- Added focused tests:
+  - `tests/test_backfill_ohlc.py`
+    - deterministic backfill event identity
+    - raw rerun skip behavior
+    - feature replay idempotency
+  - `tests/test_training_data_readiness.py`
+    - gap counting
+    - persisted readiness artifact writing
+    - insufficient walk-forward readiness detection
+  - `tests/test_training_readiness.py`
+    - local readiness wrapper now uses the shared historical report
+  - `tests/test_training_service.py`
+    - training now fails at the shared readiness gate before dataset loading when history is insufficient
+- Targeted checks passed:
+  - `python -m pytest tests\test_backfill_ohlc.py tests\test_training_data_readiness.py tests\test_training_readiness.py tests\test_training_service.py -q` -> `18 passed`
+  - `python -m py_compile app\training\data_readiness.py app\ingestion\backfill_ohlc.py app\features\db.py app\training\readiness.py app\training\service.py app\training\dataset.py`
+  - real historical smoke:
+    - `python -m app.ingestion.backfill_ohlc --symbols BTC/USD ETH/USD SOL/USD --start 2026-03-31T11:50:00Z --end 2026-04-02T11:50:00Z --training-config .\configs\training.m7.json`
+    - result:
+      - raw rerun stayed idempotent with `created=0`, `updated=0`, `unchanged=576` for each of `BTC/USD`, `ETH/USD`, and `SOL/USD`
+      - feature replay stayed idempotent with `generated=1728`, `created=0`, `updated=0`, `unchanged=1728`
+      - readiness artifact bundle written at `artifacts/training/data_readiness/20260402T115445Z`
+      - readiness summary now shows:
+        - `raw_rows_total = 2247`
+        - `feature_rows_total = 2172`
+        - `labeled_rows_total = 2142`
+        - `earliest_usable_timestamp = 2026-03-22T16:05:00Z`
+        - `latest_usable_timestamp = 2026-04-02T11:35:00Z`
+        - `walk_forward_ready = True (718/9 unique timestamps)`
+        - honest gap warning remains for the multi-day missing interval block already present in the local historical truth
+- Honest blocker / limit:
+  - Kraken's official public OHLC REST endpoint only exposes the most recent 720 entries, so older gaps cannot be recovered on demand from that source. The new readiness artifact now keeps that limitation explicit instead of silently hiding it.
+
+### Batch W log
+- Scope for this pass was limited to importing the full local Kraken downloadable OHLCVT dataset into the existing live-path contract: `raw_ohlc -> feature_ohlc -> training readiness`. No live trading logic, model stack, training semantics, or synthetic/offline-only dataset path was added.
+- Added the bounded local CSV importer:
+  - `app/ingestion/import_kraken_ohlcvt.py`
+  - capabilities:
+    - resolves the extracted local dataset root and the authoritative 5-minute Kraken files for:
+      - `BTC/USD` -> `XBTUSD_5.csv`
+      - `ETH/USD` -> `ETHUSD_5.csv`
+      - `SOL/USD` -> `SOLUSD_5.csv`
+    - parses the official headerless downloadable OHLCVT CSV rows
+    - imports them into the real `raw_ohlc` contract with deterministic event IDs
+    - supports:
+      - raw import + feature replay
+      - replay-only mode
+      - report-only mode
+      - optional bounded `--start` / `--end` filtering
+    - persists the normal readiness bundle plus:
+      - `import_operation.json`
+- Strengthened the DB helpers for full-history throughput without changing contracts:
+  - `app/ingestion/db.py`
+    - added `write_ohlc_batch(...)`
+  - `app/features/db.py`
+    - added `upsert_feature_rows_batch(...)`
+- Kept the existing feature logic and training contract intact:
+  - the importer reuses the real `FeatureStateManager` path
+  - replay now runs symbol-by-symbol so the full multi-year Kraken files stay operable without inventing a separate feature path
+- Added a PowerShell-first operator path:
+  - `scripts/import_kraken_ohlcvt.ps1`
+  - defaults to:
+    - `.\Datasets\master_q4`
+  - prints:
+    - imported symbols
+    - raw import counts by symbol
+    - feature totals
+    - labeled totals
+    - readiness artifact path
+- Updated docs:
+  - `README.md`
+  - now documents:
+    - the local Kraken CSV import command
+    - replay-only mode
+    - the readiness artifact bundle
+    - the honest VWAP fallback note for the downloadable dataset format
+- Updated local repo hygiene:
+  - `.gitignore`
+  - now ignores `Datasets/` so the large local Kraken download stays out of git while the importer/replay path remains repo-native
+- Added focused tests:
+  - `tests/test_import_kraken_ohlcvt.py`
+    - file/symbol resolution
+    - 5-minute file selection
+    - CSV parsing for the downloadable schema
+    - idempotent raw import behavior
+    - idempotent feature replay behavior
+    - replay-only artifact creation
+  - `tests/test_import_scripts.py`
+    - import script dry-run output
+    - import script summary rendering from JSON output
+- Targeted checks passed:
+  - `python -m py_compile app\ingestion\import_kraken_ohlcvt.py app\ingestion\db.py app\features\db.py`
+  - `python -m pytest tests\test_import_kraken_ohlcvt.py tests\test_import_scripts.py -q` -> `7 passed`
+  - regression guard:
+    - `python -m pytest tests\test_backfill_ohlc.py tests\test_training_data_readiness.py tests\test_training_readiness.py tests\test_training_service.py -q` -> `18 passed`
+- Real full-dataset operator smoke passed:
+  - `.\scripts\import_kraken_ohlcvt.ps1`
+  - first import created:
+    - raw:
+      - `BTC/USD parsed=1029953 selected=1029953 created=1029953 updated=0 unchanged=0`
+      - `ETH/USD parsed=974690 selected=974690 created=974690 updated=0 unchanged=0`
+      - `SOL/USD parsed=468713 selected=468713 created=468713 updated=0 unchanged=0`
+    - feature replay:
+      - `generated=2475528 created=2473356 updated=444 unchanged=1728`
+    - readiness artifact:
+      - `artifacts/training/data_readiness/20260402T191327Z`
+- Real idempotent rerun proof passed:
+  - reran the same command unchanged
+  - second import produced:
+    - raw:
+      - `BTC/USD created=0 updated=0 unchanged=1029953`
+      - `ETH/USD created=0 updated=0 unchanged=974690`
+      - `SOL/USD created=0 updated=0 unchanged=468713`
+    - feature replay:
+      - `generated=2475528 created=0 updated=0 unchanged=2475528`
+    - readiness artifact:
+      - `artifacts/training/data_readiness/20260402T192156Z`
+- Real readiness truth from the latest artifact:
+  - `raw_rows_total = 2475603`
+  - `feature_rows_total = 2475528`
+  - `labeled_rows_total = 2440453`
+  - `earliest_usable_timestamp = 2013-10-18T12:55:00Z`
+  - `latest_usable_timestamp = 2026-04-02T11:35:00Z`
+  - `walk_forward_ready = True (1036586/9 unique timestamps)`
+  - honest warnings remain:
+    - raw OHLC gaps remain
+    - feature-table gaps remain
+- Honest blocker / limit:
+  - the current local Kraken downloadable CSV files do not include VWAP, while the real `raw_ohlc` contract does. The importer keeps the real contract and records this explicitly in `import_operation.json`; when CSV VWAP is missing, it persists `vwap = close_price` as the bounded fallback needed to replay the existing feature path without creating a second raw schema.

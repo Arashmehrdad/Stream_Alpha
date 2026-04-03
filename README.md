@@ -262,6 +262,61 @@ Key scripts:
 
 ## Local M7 Training
 
+## Historical backfill and feature replay
+
+To import the full local Kraken downloadable OHLCVT CSV dataset into the real `raw_ohlc` table, replay the same live feature logic into `feature_ohlc`, and persist a training-readiness artifact, run:
+
+* `.\scripts\import_kraken_ohlcvt.ps1`
+
+That wrapper defaults to the extracted local dataset root at:
+
+* `.\Datasets\master_q4`
+
+and imports the authoritative 5-minute files for:
+
+* `BTC/USD`
+* `ETH/USD`
+* `SOL/USD`
+
+To replay features and refresh the readiness report from already imported raw CSV truth without touching `raw_ohlc` again, run:
+
+* `.\scripts\import_kraken_ohlcvt.ps1 -ReplayOnly`
+
+Important honesty note:
+
+* Kraken's downloadable OHLCVT CSV files do not include VWAP in the current local format, while the real `raw_ohlc` contract does require it.
+* The importer keeps the real `raw_ohlc -> feature_ohlc -> training` path and records this explicitly in `import_operation.json`.
+* When CSV VWAP is missing, imported rows use `close_price` as the persisted VWAP fallback so the existing feature contract can be replayed without inventing a second raw schema.
+
+To backfill the real Kraken 5-minute raw history into `raw_ohlc`, replay the same live feature logic into `feature_ohlc`, and persist a training-readiness artifact, run:
+
+* `python -m app.ingestion.backfill_ohlc --symbols BTC/USD ETH/USD SOL/USD --start 2026-03-31T11:50:00Z --end 2026-04-02T11:50:00Z --training-config .\configs\training.m7.json`
+
+To replay features and refresh the readiness report from already persisted raw history without calling Kraken again, run:
+
+* `python -m app.ingestion.backfill_ohlc --symbols BTC/USD ETH/USD SOL/USD --start 2026-03-31T11:50:00Z --end 2026-04-02T11:50:00Z --training-config .\configs\training.m7.json --skip-raw-backfill`
+
+Each run writes a readiness artifact bundle under:
+
+* `artifacts/training/data_readiness/<run_id>/`
+
+Important files in that bundle are:
+
+* `readiness_report.json`
+* `symbol_coverage.csv`
+* `gap_summary.csv`
+* `summary.md`
+* `backfill_operation.json`
+* `import_operation.json` for local Kraken CSV imports
+
+Minimum historical readiness before rerunning AutoGluon experiments means:
+
+* `ready_for_training` is `true` for the configured walk-forward split
+* configured symbols have real rows in both `raw_ohlc` and `feature_ohlc`
+* the report's gap warnings are understood and acceptable for the experiment window
+
+Kraken's public OHLC REST endpoint only returns the most recent 720 entries, so older gaps cannot be recovered on demand from that source once they fall outside that window. The readiness artifact keeps those gaps explicit instead of pretending they were filled.
+
 For local AutoGluon challenger training, use the repo-native operator flow instead of raw Docker profile reasoning:
 
 * `./scripts/prepare_m7_training.ps1`
@@ -283,7 +338,7 @@ To compare explicit named research candidates instead of ad hoc threshold sweeps
 
 * `./scripts/evaluate_m7_policy_candidates.ps1`
 
-That script defaults to the newest M7 artifact, evaluates the bounded built-in named candidates against the winner model's OOF predictions, and writes a `policy_candidate_analysis/` folder into the run directory. This remains research support only and does not change production inference or promotion behavior.
+That script defaults to the newest completed M7 artifact, evaluates the bounded built-in named candidates against the winner model's OOF predictions, and writes a `policy_candidate_analysis/` folder into the run directory. The candidate set now includes a small explicit regime-routing ablation family such as RANGE-only, TREND_UP-only, and TREND_DOWN/HIGH_VOL-blocked variants. This remains research support only and does not change production inference or promotion behavior.
 
 To judge whether those named candidates look robust across multiple completed M7 runs instead of one-run luck, use:
 
@@ -291,11 +346,46 @@ To judge whether those named candidates look robust across multiple completed M7
 
 That script scans completed runs under `artifacts/training/m7`, excludes incomplete runs, skips legacy runs whose `oof_predictions.csv` schema is too old for regime-aware cost analysis, aggregates candidate performance across analyzable runs, and writes a stable `_analysis/policy_candidates/` summary under the M7 artifact root. This is still research support only and does not change runtime or promotion behavior.
 
+To replay a bounded shortlist of named M7 research candidates as simple long-only proxy ledgers on a completed run, use:
+
+* `./scripts/evaluate_m7_policy_replay.ps1`
+
+That script defaults to the newest completed M7 artifact, replays the built-in shortlist in time order using the saved OOF proxy fields, and writes a `policy_replay_analysis/` folder into the run directory with cumulative net, drawdown, and trade-ledger outputs. It stays research-only and does not change production runtime or promotion behavior.
+
+To judge whether those replay paths hold up across multiple completed M7 runs, use:
+
+* `./scripts/evaluate_m7_policy_replay_multi_run.ps1`
+
+That script scans completed runs under `artifacts/training/m7`, excludes incomplete runs, skips legacy runs whose OOF schema is too old for replay analysis, aggregates cumulative-path metrics across analyzable runs, and writes a stable `_analysis/policy_replay/` summary under the M7 artifact root. This remains research-only and does not change runtime or promotion behavior.
+
 For a bounded stronger-config research pass, use:
 
 * `./scripts/run_m7_research_experiments.ps1`
 
 That runner discovers the small checked-in M7 AutoGluon research config set under `configs/training.m7.research.*.json`, runs each config through the existing Windows-safe M7 training path, evaluates the existing named policy candidates after each completed run, and writes a compact `_analysis/research_experiments/` summary under `artifacts/training/m7`. This remains research support only and does not change runtime or promotion behavior.
+
+For completed-run data, regime, and opportunity diagnostics, use:
+
+* `./scripts/analyze_m7_data_regime.ps1`
+
+That script defaults to the newest completed M7 artifact, analyzes label balance, opportunity density, regime routing, and fold drift from the saved run artifacts, and writes a `data_regime_diagnostics/` folder into the run directory. It stays research-only and does not change runtime or promotion behavior.
+
+For research-only forward paper observation of top M7 policy candidates while the normal paper system runs, use:
+
+* `./scripts/show_live_policy_challengers.ps1`
+
+That script reads the research-only challenger scoreboard written under `artifacts/paper_trading/paper/research/policy_challengers/`, compares the bounded candidate shortlist against the active production policy on the same observed paper rows, and prints cumulative proxy, drawdown, trade-count, and sparse-routing warnings. It is observer-only: it does not route execution, place extra trades, or change the active runtime policy.
+
+## Linux VPS paper observation
+
+To run the normal paper stack plus the research-only live challenger sidecar on a Linux VPS for forward observation, use:
+
+* `./scripts/deploy_paper_vps.ps1`
+* `./scripts/status_paper_vps.ps1`
+* `./scripts/show_live_policy_challengers_vps.ps1`
+* `./scripts/stop_paper_vps.ps1`
+
+The deploy path reads VPS connection settings from the local root `.env`, supports the existing legacy aliases already used in this repo, uploads only the bounded paper/runtime deployment set, writes a sanitized remote `.env`, starts the Docker Compose `paper` profile, and keeps challenger scoring observer-only through the normal paper runner path. It does not train on the VPS and it does not change live behavior.
 
 * `./scripts/stop-stack.ps1`
 * `./scripts/reset-state.ps1`

@@ -67,6 +67,7 @@ def evaluate_policy_candidates(
         for result in candidate_results
         if result["after_cost_positive"]
     ]
+    candidate_family_summary = _build_candidate_family_summary(candidate_results)
 
     analysis_dir = resolved_run_dir / analysis_dir_name
     analysis_dir.mkdir(parents=True, exist_ok=True)
@@ -84,6 +85,7 @@ def evaluate_policy_candidates(
         "candidate_definitions": [candidate.to_dict() for candidate in candidates],
         "candidate_results": candidate_results,
         "best_candidate": best_candidate,
+        "candidate_family_summary": candidate_family_summary,
         "any_after_cost_positive": bool(after_cost_positive_candidates),
         "after_cost_positive_candidates": after_cost_positive_candidates,
         "worst_fold_for_best_candidate": worst_fold_for_best_candidate,
@@ -141,6 +143,12 @@ def _evaluate_candidate(
     ]
     metrics = compute_policy_metrics(rows, trade_rows, fee_rate)
     caution_text = low_trade_count_caution(int(metrics["trade_count"]))
+    routing_flags = _build_candidate_routing_flags(
+        rows=rows,
+        trade_count=int(metrics["trade_count"]),
+        per_regime_breakdown=per_regime_breakdown,
+        positive_but_sparse=caution_text is not None and bool(metrics["after_cost_positive"]),
+    )
     return {
         "policy_name": candidate.name,
         "policy_description": candidate.description,
@@ -161,6 +169,7 @@ def _evaluate_candidate(
         ),
         **metrics,
         "caution_text": caution_text,
+        **routing_flags,
         "per_fold_breakdown": per_fold_breakdown,
         "per_regime_breakdown": per_regime_breakdown,
     }
@@ -207,6 +216,12 @@ def _flatten_candidate_result(
         "cumulative_long_only_net_value_proxy": result["cumulative_long_only_net_value_proxy"],
         "after_cost_positive": result["after_cost_positive"],
         "caution_text": result["caution_text"] or "",
+        "trades_in_trend_down": result["trades_in_trend_down"],
+        "trades_in_trend_up": result["trades_in_trend_up"],
+        "trades_in_range": result["trades_in_range"],
+        "trades_in_high_vol": result["trades_in_high_vol"],
+        "trend_up_blocked_entirely": result["trend_up_blocked_entirely"],
+        "positive_but_sparse": result["positive_but_sparse"],
         "is_best_candidate": result["policy_name"] == best_candidate["policy_name"],
     }
 
@@ -247,6 +262,7 @@ def _flatten_candidate_fold_rows(
 
 def _build_summary_markdown(summary: Mapping[str, Any]) -> str:
     best_candidate = summary["best_candidate"]
+    family_summary = summary["candidate_family_summary"]
     worst_fold = summary["worst_fold_for_best_candidate"]
     lines = [
         "# M7 Policy Candidate Evaluation",
@@ -264,6 +280,14 @@ def _build_summary_markdown(summary: Mapping[str, Any]) -> str:
             f"mean_net={float(best_candidate['mean_long_only_net_value_proxy']):.6f}, "
             f"after_cost_positive={bool(best_candidate['after_cost_positive'])})"
         ),
+        (
+            f"- Routing flags: TREND_UP trades={int(best_candidate['trades_in_trend_up'])}, "
+            f"TREND_DOWN trades={int(best_candidate['trades_in_trend_down'])}, "
+            f"RANGE trades={int(best_candidate['trades_in_range'])}, "
+            f"HIGH_VOL trades={int(best_candidate['trades_in_high_vol'])}, "
+            f"trend_up_blocked_entirely={bool(best_candidate['trend_up_blocked_entirely'])}, "
+            f"positive_but_sparse={bool(best_candidate['positive_but_sparse'])}"
+        ),
     ]
     if best_candidate["caution_text"]:
         lines.extend(
@@ -276,6 +300,25 @@ def _build_summary_markdown(summary: Mapping[str, Any]) -> str:
         )
     lines.extend(
         [
+            "",
+            "## Candidate Family Summary",
+            "",
+            _format_family_summary_line(
+                "Best candidate by mean net proxy",
+                family_summary["best_candidate_by_mean_net_proxy"],
+            ),
+            _format_family_summary_line(
+                "Best positive candidate by trade count",
+                family_summary["best_positive_candidate_by_trade_count"],
+            ),
+            (
+                "- Positive candidates depend on blocking TREND_UP entirely: "
+                f"`{bool(family_summary['positivity_depends_on_trend_up_blocking'])}`"
+            ),
+            (
+                "- RANGE-only behavior dominates the positive candidate set: "
+                f"`{bool(family_summary['range_only_behavior_dominates_positive_candidates'])}`"
+            ),
             "",
             "## Economics Answer",
             "",
@@ -310,6 +353,87 @@ def _build_summary_markdown(summary: Mapping[str, Any]) -> str:
         ]
     )
     return "\n".join(lines)
+
+
+def _build_candidate_routing_flags(
+    *,
+    rows: list[OofPredictionRow],
+    trade_count: int,
+    per_regime_breakdown: list[dict[str, Any]],
+    positive_but_sparse: bool,
+) -> dict[str, Any]:
+    available_regime_counts = {
+        regime_label: len(regime_rows)
+        for regime_label, regime_rows in ordered_regime_groups(rows)
+    }
+    trade_counts_by_regime = {
+        str(row["regime_label"]): int(row["trade_count"])
+        for row in per_regime_breakdown
+    }
+    trades_in_trend_up = trade_counts_by_regime.get("TREND_UP", 0)
+    trades_in_trend_down = trade_counts_by_regime.get("TREND_DOWN", 0)
+    trades_in_range = trade_counts_by_regime.get("RANGE", 0)
+    trades_in_high_vol = trade_counts_by_regime.get("HIGH_VOL", 0)
+    return {
+        "trades_in_trend_down": trades_in_trend_down,
+        "trades_in_trend_up": trades_in_trend_up,
+        "trades_in_range": trades_in_range,
+        "trades_in_high_vol": trades_in_high_vol,
+        "trend_up_blocked_entirely": (
+            available_regime_counts.get("TREND_UP", 0) > 0 and trades_in_trend_up == 0
+        ),
+        "range_only_behavior": trade_count > 0 and trades_in_range == trade_count,
+        "positive_but_sparse": positive_but_sparse,
+    }
+
+
+def _build_candidate_family_summary(
+    candidate_results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    positive_candidates = [
+        result for result in candidate_results if bool(result["after_cost_positive"])
+    ]
+    best_positive_by_trade_count = (
+        sorted(
+            positive_candidates,
+            key=lambda result: (
+                -int(result["trade_count"]),
+                -float(result["mean_long_only_net_value_proxy"]),
+                str(result["policy_name"]),
+            ),
+        )[0]
+        if positive_candidates
+        else None
+    )
+    return {
+        "positive_candidate_names": [
+            str(result["policy_name"]) for result in positive_candidates
+        ],
+        "best_candidate_by_mean_net_proxy": select_best_policy_result(candidate_results),
+        "best_positive_candidate_by_trade_count": best_positive_by_trade_count,
+        "positivity_depends_on_trend_up_blocking": (
+            bool(positive_candidates)
+            and all(bool(result["trend_up_blocked_entirely"]) for result in positive_candidates)
+        ),
+        "range_only_behavior_dominates_positive_candidates": (
+            bool(positive_candidates)
+            and all(bool(result["range_only_behavior"]) for result in positive_candidates)
+        ),
+    }
+
+
+def _format_family_summary_line(
+    label: str,
+    result: Mapping[str, Any] | None,
+) -> str:
+    if result is None:
+        return f"- {label}: none"
+    return (
+        f"- {label}: `{result['policy_name']}` "
+        f"(trade_count={int(result['trade_count'])}, "
+        f"mean_net={float(result['mean_long_only_net_value_proxy']):.6f}, "
+        f"after_cost_positive={bool(result['after_cost_positive'])})"
+    )
 
 
 def main() -> None:

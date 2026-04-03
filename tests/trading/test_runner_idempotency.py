@@ -133,6 +133,10 @@ class FakeRepository:  # pylint: disable=too-many-instance-attributes
         self.saved_adaptive_drift_states = []
         self.saved_adaptive_performance_windows = []
         self.saved_continual_learning_drift_caps = []
+        self.continual_learning_profiles = []
+        self.continual_learning_experiments = []
+        self.continual_learning_events = []
+        self.continual_learning_promotion_decisions = []
         self.risk_state = None
         self.risk_decisions = []
         self.reliability_states = {}
@@ -375,6 +379,79 @@ class FakeRepository:  # pylint: disable=too-many-instance-attributes
 
     async def save_continual_learning_drift_cap(self, record) -> None:
         self.saved_continual_learning_drift_caps.append(record)
+
+    async def load_continual_learning_profiles(self, *, limit: int):
+        del limit
+        return list(self.continual_learning_profiles)
+
+    async def load_continual_learning_experiments(self, *, limit: int):
+        del limit
+        return list(self.continual_learning_experiments)
+
+    async def load_continual_learning_events(self, *, limit: int):
+        del limit
+        return list(self.continual_learning_events)
+
+    async def load_continual_learning_promotion_decisions(self, *, limit: int):
+        del limit
+        return list(self.continual_learning_promotion_decisions)
+
+    async def load_active_continual_learning_profile(
+        self,
+        *,
+        execution_mode: str,
+        symbol: str,
+        regime_label: str,
+    ):
+        del execution_mode, symbol, regime_label
+        for profile in self.continual_learning_profiles:
+            if getattr(profile, "status", None) == "ACTIVE":
+                return profile
+        return None
+
+    async def load_continual_learning_profile(self, *, profile_id: str):
+        for profile in self.continual_learning_profiles:
+            if getattr(profile, "profile_id", None) == profile_id:
+                return profile
+        return None
+
+    async def load_latest_continual_learning_drift_cap(
+        self,
+        *,
+        execution_mode: str,
+        symbol: str,
+        regime_label: str,
+    ):
+        matches = [
+            item
+            for item in self.saved_continual_learning_drift_caps
+            if item.execution_mode_scope == execution_mode
+            and item.symbol_scope == symbol
+            and item.regime_scope == regime_label
+        ]
+        if not matches:
+            return None
+        return matches[-1]
+
+    async def load_continual_learning_drift_caps(
+        self,
+        *,
+        execution_mode: str,
+        symbol: str,
+        regime_label: str,
+        limit: int,
+    ):
+        matches = [
+            item
+            for item in self.saved_continual_learning_drift_caps
+            if item.execution_mode_scope == execution_mode
+            and item.symbol_scope == symbol
+            and item.regime_scope == regime_label
+        ]
+        return matches[:limit]
+
+    async def load_all_continual_learning_drift_caps(self, *, limit: int):
+        return self.saved_continual_learning_drift_caps[:limit]
 
 
 class FakeSignalClient:
@@ -745,6 +822,40 @@ def test_runner_reliability_hold_path_stays_non_actionable(tmp_path: Path) -> No
     assert trace.payload.signal.decision_source == "reliability"
     assert trace.payload.risk is not None
     assert trace.payload.risk.outcome == "APPROVED"
+
+
+def test_runner_writes_research_only_live_policy_challenger_artifacts_without_extra_orders(
+    tmp_path: Path,
+) -> None:
+    repository = FakeRepository([_candle(0), _candle(1), _candle(2), _candle(3)])
+    runner = PaperTradingRunner(
+        config=_config(tmp_path),
+        repository=repository,
+        signal_client=FakeSignalClient(),
+    )
+
+    asyncio.run(runner.run_once())
+
+    challenger_dir = (
+        Path(runner.config.artifact_dir)
+        / "research"
+        / "policy_challengers"
+    )
+    summary_path = challenger_dir / "latest_scoreboard.json"
+    observations_path = challenger_dir / "challenger_observations.jsonl"
+    settlements_path = challenger_dir / "challenger_settlements.jsonl"
+
+    assert len(repository.order_requests) == 1
+    assert summary_path.is_file()
+    assert observations_path.is_file()
+    assert settlements_path.is_file()
+
+    summary_payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary_payload["production_baseline"]["hypothetical_trade_count"] == 1
+    assert any(
+        candidate["candidate_name"] == "m7_research_long_only_v1"
+        for candidate in summary_payload["candidate_results"]
+    )
 
 
 def test_runner_alerting_smoke_writes_daily_summary_and_alert_events(

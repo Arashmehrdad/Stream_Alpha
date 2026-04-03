@@ -72,6 +72,14 @@ def analyze_policy_candidates_across_runs(
                         candidate_result["mean_long_only_gross_value_proxy"]
                     ),
                     "after_cost_positive": bool(candidate_result["after_cost_positive"]),
+                    "trades_in_trend_down": int(candidate_result["trades_in_trend_down"]),
+                    "trades_in_trend_up": int(candidate_result["trades_in_trend_up"]),
+                    "trades_in_range": int(candidate_result["trades_in_range"]),
+                    "trades_in_high_vol": int(candidate_result["trades_in_high_vol"]),
+                    "trend_up_blocked_entirely": bool(
+                        candidate_result["trend_up_blocked_entirely"]
+                    ),
+                    "positive_but_sparse": bool(candidate_result["positive_but_sparse"]),
                     "weakest_fold": int(weakest_fold["fold_index"]) if weakest_fold else None,
                     "caution_flag": bool(candidate_result["caution_text"]),
                     "caution_text": candidate_result["caution_text"] or "",
@@ -228,6 +236,24 @@ def _aggregate_candidate_rows(
         summary["positive_run_rate"] = positive_run_count / len(rows)
         summary["worst_run_net_value_proxy"] = min(net_values)
         summary["best_run_net_value_proxy"] = max(net_values)
+        summary["total_trades_in_trend_down"] = sum(
+            int(row["trades_in_trend_down"]) for row in rows
+        )
+        summary["total_trades_in_trend_up"] = sum(
+            int(row["trades_in_trend_up"]) for row in rows
+        )
+        summary["total_trades_in_range"] = sum(
+            int(row["trades_in_range"]) for row in rows
+        )
+        summary["total_trades_in_high_vol"] = sum(
+            int(row["trades_in_high_vol"]) for row in rows
+        )
+        summary["positive_but_sparse_run_count"] = sum(
+            int(bool(row["positive_but_sparse"])) for row in rows
+        )
+        summary["never_trades_trend_up_across_runs"] = (
+            int(summary["total_trades_in_trend_up"]) == 0
+        )
         warnings = _build_multi_run_warnings(summary)
         summary["warnings"] = warnings
         summary["evidence_too_sparse"] = bool(warnings)
@@ -243,6 +269,8 @@ def _build_multi_run_warnings(summary: Mapping[str, Any]) -> list[str]:
         warnings.append("Positive run rate remains below 0.60 across runs.")
     if int(summary["run_count"]) < 3:
         warnings.append("Fewer than 3 analyzable runs were available.")
+    if bool(summary["never_trades_trend_up_across_runs"]):
+        warnings.append("Candidate never trades TREND_UP across analyzable runs.")
     return warnings
 
 
@@ -290,6 +318,13 @@ def _build_summary_markdown(summary: Mapping[str, Any]) -> str:
             f"(median_net={float(best_candidate['median_net_value_proxy_across_runs']):.6f}, "
             f"positive_run_rate={float(best_candidate['positive_run_rate']):.2f}, "
             f"total_trade_count={int(best_candidate['total_trade_count'])})"
+        ),
+        (
+            f"- Routing totals for the best candidate: "
+            f"`TREND_UP={int(best_candidate['total_trades_in_trend_up'])}`, "
+            f"`TREND_DOWN={int(best_candidate['total_trades_in_trend_down'])}`, "
+            f"`RANGE={int(best_candidate['total_trades_in_range'])}`, "
+            f"`HIGH_VOL={int(best_candidate['total_trades_in_high_vol'])}`"
         ),
     ]
     if best_candidate["warnings"]:

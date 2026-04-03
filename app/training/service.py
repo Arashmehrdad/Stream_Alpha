@@ -28,6 +28,7 @@ from app.regime.service import (
 )
 from app.training.baselines import PersistenceBaseline, build_dummy_classifier
 from app.training.autogluon import build_autogluon_tabular_classifier
+from app.training.data_readiness import assert_training_data_ready
 from app.training.dataset import (
     DatasetSample,
     LEGACY_ARCHIVED_MODEL_NAMES,
@@ -102,6 +103,7 @@ def run_training(config_path: Path) -> Path:  # pylint: disable=too-many-locals
     """Run the full offline M3 training flow and save artifacts to disk."""
     config = load_training_config(config_path)
     _validate_authoritative_model_stack(config)
+    assert_training_data_ready(config, config_path=config_path)
     dataset = load_training_dataset(config)
     _validate_split_readiness(dataset, config)
     regime_context = _build_training_regime_context(dataset.samples, config)

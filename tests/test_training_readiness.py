@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import sys
+from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from app.common.config import PostgresSettings
 from app.training import readiness as readiness_module
+from app.training.data_readiness import DataReadinessReport, SymbolReadinessSnapshot
 from app.training.dataset import TrainingConfig
 
 
@@ -33,15 +35,61 @@ def _config() -> TrainingConfig:
     )
 
 
-def _fake_settings():
-    return SimpleNamespace(
-        postgres=PostgresSettings(
-            host="127.0.0.1",
-            port=5432,
-            database="streamalpha",
-            user="streamalpha",
-            password="change-me-local-only",
-        )
+def _readiness_report(*, ready: bool) -> DataReadinessReport:
+    generated_at = datetime(2026, 4, 2, tzinfo=timezone.utc)
+    return DataReadinessReport(
+        config_path="D:/Github/Stream_Alpha/configs/training.m7.json",
+        generated_at=generated_at,
+        artifact_root="artifacts/training/m7",
+        source_table="feature_ohlc",
+        raw_table="raw_ohlc",
+        feature_table="feature_ohlc",
+        source_exchange="kraken",
+        interval_minutes=5,
+        postgres_reachable=True,
+        postgres_error=None,
+        raw_table_exists=True,
+        feature_table_exists=True,
+        raw_rows_total=600,
+        feature_rows_total=400,
+        labeled_rows_total=240 if ready else 12,
+        unique_timestamps=80 if ready else 4,
+        required_unique_timestamps=9,
+        ready_for_training=ready,
+        readiness_detail=(
+            "feature_ohlc satisfies the configured walk-forward timestamp requirement"
+            if ready
+            else "feature_ohlc does not yet satisfy the configured walk-forward timestamp requirement (4/9)."
+        ),
+        earliest_usable_timestamp=generated_at,
+        latest_usable_timestamp=generated_at,
+        overall_positive_label_rate=0.5,
+        label_counts={"0": 120, "1": 120},
+        regime_distribution_available=True,
+        regime_distribution_detail=None,
+        regime_distribution={"RANGE": 240},
+        opportunity_density={},
+        warnings=tuple(),
+        symbol_summaries=(
+            SymbolReadinessSnapshot(
+                symbol="BTC/USD",
+                raw_row_count=200,
+                feature_row_count=200,
+                labeled_row_count=120,
+                raw_earliest_interval_begin=generated_at,
+                raw_latest_interval_begin=generated_at,
+                feature_earliest_interval_begin=generated_at,
+                feature_latest_interval_begin=generated_at,
+                labeled_earliest_as_of_time=generated_at,
+                labeled_latest_as_of_time=generated_at,
+                positive_label_rate=0.5,
+                raw_missing_interval_count=0,
+                feature_missing_interval_count=0,
+                raw_gap_windows=tuple(),
+                feature_gap_windows=tuple(),
+                regime_distribution={"RANGE": 120},
+            ),
+        ),
     )
 
 
@@ -50,14 +98,6 @@ def test_build_training_readiness_report_marks_ready_from_dataset_manifest(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Readiness should report ready when the source probe and dataset manifest are sufficient."""
-
-    async def _probe(**kwargs):
-        return readiness_module._TrainingSourceProbe(  # pylint: disable=protected-access
-            postgres_reachable=True,
-            postgres_error=None,
-            feature_table_exists=True,
-            row_count=400,
-        )
 
     monkeypatch.setattr(readiness_module, "load_training_config", lambda path: _config())
     monkeypatch.setattr(readiness_module, "_resolve_autogluon_version", lambda: "1.4.0")
@@ -73,20 +113,8 @@ def test_build_training_readiness_report_marks_ready_from_dataset_manifest(
     )
     monkeypatch.setattr(
         readiness_module,
-        "Settings",
-        SimpleNamespace(from_env=lambda: _fake_settings()),
-    )
-    monkeypatch.setattr(
-        readiness_module,
-        "_probe_training_source_with_fallback",
-        _probe,
-    )
-    monkeypatch.setattr(
-        readiness_module,
-        "load_training_dataset",
-        lambda config: SimpleNamespace(
-            manifest={"eligible_rows": 240, "unique_timestamps": 80}
-        ),
+        "build_data_readiness_report",
+        lambda config, config_path=None: _readiness_report(ready=True),
     )
 
     report = readiness_module.build_training_readiness_report(
@@ -112,14 +140,6 @@ def test_build_training_readiness_report_surfaces_unreachable_postgres(
 ) -> None:
     """Readiness should stay honest when PostgreSQL cannot be reached."""
 
-    async def _probe(**kwargs):
-        return readiness_module._TrainingSourceProbe(  # pylint: disable=protected-access
-            postgres_reachable=False,
-            postgres_error="connection refused",
-            feature_table_exists=None,
-            row_count=None,
-        )
-
     monkeypatch.setattr(readiness_module, "load_training_config", lambda path: _config())
     monkeypatch.setattr(readiness_module, "_resolve_autogluon_version", lambda: "1.4.0")
     monkeypatch.setattr(
@@ -134,13 +154,18 @@ def test_build_training_readiness_report_surfaces_unreachable_postgres(
     )
     monkeypatch.setattr(
         readiness_module,
-        "Settings",
-        SimpleNamespace(from_env=lambda: _fake_settings()),
-    )
-    monkeypatch.setattr(
-        readiness_module,
-        "_probe_training_source_with_fallback",
-        _probe,
+        "build_data_readiness_report",
+        lambda config, config_path=None: replace(
+            _readiness_report(ready=False),
+            postgres_reachable=False,
+            postgres_error="connection refused",
+            feature_table_exists=None,
+            feature_rows_total=0,
+            labeled_rows_total=0,
+            unique_timestamps=0,
+            ready_for_training=False,
+            readiness_detail="PostgreSQL is not reachable for training readiness checks",
+        ),
     )
 
     report = readiness_module.build_training_readiness_report(

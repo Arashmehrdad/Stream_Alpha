@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Sequence
 
 import asyncpg
 
@@ -184,58 +185,16 @@ class PostgresWriter:
     async def write_ohlc(self, event: OhlcEvent) -> None:
         """Upsert a normalized OHLC row."""
         pool = self._require_pool()
-        table_name = _quote_table_name(self._tables.raw_ohlc)
-        payload_json = json.dumps(model_to_dict(event))
-        await pool.execute(
-            f"""
-            INSERT INTO {table_name} (
-                event_id,
-                source_exchange,
-                symbol,
-                interval_minutes,
-                interval_begin,
-                interval_end,
-                open_price,
-                high_price,
-                low_price,
-                close_price,
-                vwap,
-                trade_count,
-                volume,
-                received_at,
-                payload
-            ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb
-            )
-            ON CONFLICT (source_exchange, symbol, interval_minutes, interval_begin)
-            DO UPDATE SET
-                event_id = EXCLUDED.event_id,
-                interval_end = EXCLUDED.interval_end,
-                open_price = EXCLUDED.open_price,
-                high_price = EXCLUDED.high_price,
-                low_price = EXCLUDED.low_price,
-                close_price = EXCLUDED.close_price,
-                vwap = EXCLUDED.vwap,
-                trade_count = EXCLUDED.trade_count,
-                volume = EXCLUDED.volume,
-                received_at = EXCLUDED.received_at,
-                payload = EXCLUDED.payload
-            """,
-            event.event_id,
-            event.source_exchange,
-            event.symbol,
-            event.interval_minutes,
-            event.interval_begin,
-            event.interval_end,
-            event.open_price,
-            event.high_price,
-            event.low_price,
-            event.close_price,
-            event.vwap,
-            event.trade_count,
-            event.volume,
-            event.received_at,
-            payload_json,
+        await pool.execute(_ohlc_upsert_sql(self._tables.raw_ohlc), *_ohlc_upsert_values(event))
+
+    async def write_ohlc_batch(self, events: Sequence[OhlcEvent]) -> None:
+        """Upsert a batch of normalized OHLC rows."""
+        if not events:
+            return
+        pool = self._require_pool()
+        await pool.executemany(
+            _ohlc_upsert_sql(self._tables.raw_ohlc),
+            [_ohlc_upsert_values(event) for event in events],
         )
 
     async def write_heartbeat(self, event: HealthEvent) -> None:
@@ -280,3 +239,62 @@ class PostgresWriter:
         if self._pool is None:
             raise RuntimeError("PostgresWriter has not been connected")
         return self._pool
+
+
+def _ohlc_upsert_sql(table_name: str) -> str:
+    quoted_table_name = _quote_table_name(table_name)
+    return f"""
+        INSERT INTO {quoted_table_name} (
+            event_id,
+            source_exchange,
+            symbol,
+            interval_minutes,
+            interval_begin,
+            interval_end,
+            open_price,
+            high_price,
+            low_price,
+            close_price,
+            vwap,
+            trade_count,
+            volume,
+            received_at,
+            payload
+        ) VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb
+        )
+        ON CONFLICT (source_exchange, symbol, interval_minutes, interval_begin)
+        DO UPDATE SET
+            event_id = EXCLUDED.event_id,
+            interval_end = EXCLUDED.interval_end,
+            open_price = EXCLUDED.open_price,
+            high_price = EXCLUDED.high_price,
+            low_price = EXCLUDED.low_price,
+            close_price = EXCLUDED.close_price,
+            vwap = EXCLUDED.vwap,
+            trade_count = EXCLUDED.trade_count,
+            volume = EXCLUDED.volume,
+            received_at = EXCLUDED.received_at,
+            payload = EXCLUDED.payload
+        """
+
+
+def _ohlc_upsert_values(event: OhlcEvent) -> tuple[object, ...]:
+    payload_json = json.dumps(model_to_dict(event))
+    return (
+        event.event_id,
+        event.source_exchange,
+        event.symbol,
+        event.interval_minutes,
+        event.interval_begin,
+        event.interval_end,
+        event.open_price,
+        event.high_price,
+        event.low_price,
+        event.close_price,
+        event.vwap,
+        event.trade_count,
+        event.volume,
+        event.received_at,
+        payload_json,
+    )

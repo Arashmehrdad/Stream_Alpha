@@ -82,6 +82,10 @@ from app.trading.risk_engine import (
 )
 from app.trading.schemas import FeatureCandle, OrderRequest, PaperPosition
 from app.trading.signal_client import SignalClient, SignalClientError
+from app.training.live_policy_challenger import (
+    LivePolicyChallengerTracker,
+    build_live_policy_challenger_config,
+)
 
 
 class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
@@ -130,6 +134,7 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
         self._last_system_reliability_snapshot = None
         self._last_heartbeat_at = None
         self.logger = logging.getLogger(f"{config.service_name}.runner")
+        self.live_policy_challenger = self._build_live_policy_challenger()
 
     async def startup(self) -> None:
         """Connect the repository before polling."""
@@ -489,6 +494,12 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
                     decision_trace_id=decision_trace.decision_trace_id,
                 )
             )
+            self._observe_live_policy_challengers(
+                candle=candle,
+                signal=signal,
+                risk_decision=risk_decision,
+                created_order_request=created_order_request,
+            )
             decision_trace = await self._write_decision_trace_reports(
                 trace=decision_trace,
                 order_request=created_order_request,
@@ -509,6 +520,7 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
             )
 
         await self._write_summaries(available_cash)
+        self._write_live_policy_challenger_summary()
         await self._evaluate_adaptation_cycle()
         await self._evaluate_continual_learning_cycle()
         await self._evaluate_alerting_cycle(service_risk_state=service_risk_state)
@@ -757,6 +769,57 @@ class PaperTradingRunner:  # pylint: disable=too-many-instance-attributes
             artifact_dir / "closed_positions.csv",
             _positions_to_rows([row for row in positions if row.status == "CLOSED"]),
         )
+
+    def _build_live_policy_challenger(self) -> LivePolicyChallengerTracker | None:
+        if self.config.execution.mode != "paper":
+            return None
+        try:
+            return LivePolicyChallengerTracker(
+                trading_config=self.config,
+                challenger_config=build_live_policy_challenger_config(),
+                enabled=True,
+            )
+        except ValueError as error:
+            self.logger.warning(
+                "Disabled research-only live policy challengers because setup failed",
+                extra={"detail": str(error)},
+            )
+            return None
+
+    def _observe_live_policy_challengers(
+        self,
+        *,
+        candle: FeatureCandle,
+        signal,
+        risk_decision,
+        created_order_request: OrderRequest | None,
+    ) -> None:
+        if self.live_policy_challenger is None:
+            return
+        try:
+            self.live_policy_challenger.observe_signal(
+                candle=candle,
+                signal=signal,
+                risk_decision=risk_decision,
+                production_trade_taken=(
+                    created_order_request is not None
+                    and created_order_request.action == "BUY"
+                ),
+            )
+        except Exception:  # pragma: no cover - defensive research-only isolation
+            self.logger.exception(
+                "Research-only live policy challenger observation failed"
+            )
+
+    def _write_live_policy_challenger_summary(self) -> None:
+        if self.live_policy_challenger is None:
+            return
+        try:
+            self.live_policy_challenger.write_latest_scoreboard()
+        except Exception:  # pragma: no cover - defensive research-only isolation
+            self.logger.exception(
+                "Research-only live policy challenger summary failed"
+            )
 
     async def _write_startup_safety_report(self):
         runtime_metadata = build_runtime_metadata(
