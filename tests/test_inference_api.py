@@ -115,11 +115,13 @@ class FakeDatabase:
         self,
         *,
         row: dict | None = None,
+        history_rows: list[dict] | None = None,
         reference_vector: dict[str, float] | None = None,
         healthy: bool = True,
         fetch_error: Exception | None = None,
     ) -> None:
         self.row = row
+        self.history_rows = [] if history_rows is None else list(history_rows)
         self.reference_vector = {} if reference_vector is None else reference_vector
         self.healthy = healthy
         self.fetch_error = fetch_error
@@ -182,6 +184,35 @@ class FakeDatabase:
             and isinstance(self.row[feature_name], (int, float))
             and not isinstance(self.row[feature_name], bool)
         }
+
+    async def fetch_feature_history_rows(
+        self,
+        *,
+        symbol: str,
+        interval_minutes: int,
+        end_as_of_time,
+        limit: int,
+    ) -> list[dict]:
+        """Return ordered same-symbol history rows up to the requested scoring cutoff."""
+        del interval_minutes
+        if self.fetch_error is not None:
+            raise self.fetch_error
+        candidate_rows = (
+            list(self.history_rows)
+            if self.history_rows
+            else ([] if self.row is None else [self.row])
+        )
+        ordered_rows = sorted(
+            [
+                row
+                for row in candidate_rows
+                if row["symbol"] == symbol and row["as_of_time"] <= end_as_of_time
+            ],
+            key=lambda row: (row["as_of_time"], row["interval_begin"]),
+        )
+        if limit <= 0:
+            return []
+        return ordered_rows[-limit:]
 
 
 class FakeReliabilityStore:

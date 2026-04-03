@@ -16,16 +16,33 @@ from app.ensemble.schemas import (
     EnsembleResearchResult,
     EnsembleRosterSelection,
 )
+from app.inference.model_scoring import (
+    build_scoring_rows_for_dataset_sample,
+    required_sequence_lookback_candles,
+    sample_has_required_sequence_history,
+    score_binary_probabilities,
+)
 from app.inference.service import load_model_artifact
 from app.regime.config import load_regime_config
 from app.regime.dataset import RegimeSourceRow
 from app.regime.service import classify_row, fit_symbol_thresholds
 from app.training.dataset import (
     DatasetSample,
+    SourceFeatureRow,
     TrainingConfig,
     TrainingDataset,
     load_training_config,
     load_training_dataset,
+)
+from app.training.pretrained_forecasters import (
+    GENERALIST,
+    MODEL_FAMILY_AUTOGLUON,
+    MODEL_FAMILY_REGISTRY_CHAMPION_BASELINE,
+    PACKET2_GENERALIST_MODEL_FAMILIES,
+    PACKET2_RANGE_SPECIALIST_MODEL_FAMILIES,
+    PACKET2_TREND_SPECIALIST_MODEL_FAMILIES,
+    RANGE_SPECIALIST,
+    TREND_SPECIALIST,
 )
 from app.training.registry import (
     list_registry_entries,
@@ -33,11 +50,6 @@ from app.training.registry import (
     repo_root,
     write_json_atomic,
 )
-
-
-GENERALIST = "GENERALIST"
-TREND_SPECIALIST = "TREND_SPECIALIST"
-RANGE_SPECIALIST = "RANGE_SPECIALIST"
 
 SLICE_ALL = "ALL"
 SLICE_TREND_COMBINED = "TREND_COMBINED"
@@ -47,12 +59,6 @@ SLICE_HIGH_VOL = "HIGH_VOL"
 DEFAULT_SCOPE_REGIMES = ("TREND_UP", "TREND_DOWN", "RANGE", "HIGH_VOL")
 TREND_SCOPE_REGIMES = ("TREND_UP", "TREND_DOWN")
 RANGE_SCOPE_REGIMES = ("RANGE",)
-SPECIALIST_FAMILIES = {
-    "NEURALFORECAST_NHITS",
-    "NEURALFORECAST_NBEATSX",
-    "NEURALFORECAST_TFT",
-    "NEURALFORECAST_PATCHTST",
-}
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,19 +82,19 @@ def build_m20_candidate_inventory_truth(  # pylint: disable=too-many-locals
         result
         for result in candidate_results
         if result.candidate.candidate_role == GENERALIST
-        and result.candidate.model_family in {"AUTOGLUON", "REGISTRY_CHAMPION_BASELINE"}
+        and result.candidate.model_family in PACKET2_GENERALIST_MODEL_FAMILIES
     ]
     trend_specialists = [
         result
         for result in candidate_results
         if result.candidate.candidate_role == TREND_SPECIALIST
-        and result.candidate.model_family in SPECIALIST_FAMILIES
+        and result.candidate.model_family in PACKET2_TREND_SPECIALIST_MODEL_FAMILIES
     ]
     range_specialists = [
         result
         for result in candidate_results
         if result.candidate.candidate_role == RANGE_SPECIALIST
-        and result.candidate.model_family in SPECIALIST_FAMILIES
+        and result.candidate.model_family in PACKET2_RANGE_SPECIALIST_MODEL_FAMILIES
     ]
     best_generalist = (
         None if not generalists else _select_best_result(generalists, SLICE_ALL)
@@ -314,7 +320,7 @@ def load_registry_research_candidates(
             current_candidate = EnsembleResearchCandidate(
                 model_version=str(current_entry["model_version"]),
                 model_name=str(current_entry["model_name"]),
-                model_family="REGISTRY_CHAMPION_BASELINE",
+                model_family=MODEL_FAMILY_REGISTRY_CHAMPION_BASELINE,
                 candidate_role=str(
                     metadata.get("candidate_role", GENERALIST)
                 ),
@@ -353,15 +359,24 @@ def evaluate_registry_candidates(
     slippage_bps: float = 0.0,
 ) -> list[EnsembleResearchResult]:
     """Evaluate registry-backed candidates honestly across required Packet 2 slices."""
+    loaded_candidates = [
+        (candidate, load_model_artifact(candidate.artifact_path))
+        for candidate in candidates
+    ]
+    scoreable_samples = _resolve_scoreable_samples(
+        dataset=dataset,
+        loaded_candidates=loaded_candidates,
+    )
     results: list[EnsembleResearchResult] = []
-    for candidate in candidates:
+    for candidate, model_artifact in loaded_candidates:
         results.append(
             _evaluate_one_candidate(
                 candidate=candidate,
-                dataset=dataset,
+                model_artifact=model_artifact,
+                samples_to_score=scoreable_samples,
                 regime_labels_by_row_id=regime_labels_by_row_id,
-                training_config=training_config,
-                slippage_bps=slippage_bps,
+                cost_rate=training_config.round_trip_fee_rate + (slippage_bps / 10_000.0),
+                source_rows=dataset.source_rows,
             )
         )
     return results
@@ -375,19 +390,19 @@ def select_runtime_roster(
         result
         for result in candidate_results
         if result.candidate.candidate_role == GENERALIST
-        and result.candidate.model_family in {"AUTOGLUON", "REGISTRY_CHAMPION_BASELINE"}
+        and result.candidate.model_family in PACKET2_GENERALIST_MODEL_FAMILIES
     ]
     trend_specialists = [
         result
         for result in candidate_results
         if result.candidate.candidate_role == TREND_SPECIALIST
-        and result.candidate.model_family in SPECIALIST_FAMILIES
+        and result.candidate.model_family in PACKET2_TREND_SPECIALIST_MODEL_FAMILIES
     ]
     range_specialists = [
         result
         for result in candidate_results
         if result.candidate.candidate_role == RANGE_SPECIALIST
-        and result.candidate.model_family in SPECIALIST_FAMILIES
+        and result.candidate.model_family in PACKET2_RANGE_SPECIALIST_MODEL_FAMILIES
     ]
 
     if not generalists:
@@ -407,14 +422,14 @@ def select_runtime_roster(
         (
             result
             for result in generalists
-            if result.candidate.model_family == "REGISTRY_CHAMPION_BASELINE"
+            if result.candidate.model_family == MODEL_FAMILY_REGISTRY_CHAMPION_BASELINE
         ),
         None,
     )
     autogluon_generalists = [
         result
         for result in generalists
-        if result.candidate.model_family == "AUTOGLUON"
+        if result.candidate.model_family == MODEL_FAMILY_AUTOGLUON
     ]
     if incumbent_generalist is not None and autogluon_generalists:
         best_autogluon = _select_best_result(autogluon_generalists, SLICE_ALL)
@@ -528,22 +543,29 @@ def build_regime_labels_by_row_id(
 def _evaluate_one_candidate(  # pylint: disable=too-many-locals
     *,
     candidate: EnsembleResearchCandidate,
-    dataset: TrainingDataset,
+    model_artifact,
+    samples_to_score: tuple[DatasetSample, ...],
     regime_labels_by_row_id: dict[str, str],
-    training_config: TrainingConfig,
-    slippage_bps: float,
+    cost_rate: float,
+    source_rows: tuple[SourceFeatureRow, ...],
 ) -> EnsembleResearchResult:
-    model_artifact = load_model_artifact(candidate.artifact_path)
-    cost_rate = training_config.round_trip_fee_rate + (slippage_bps / 10_000.0)
     evaluated_rows: list[_EvaluatedRow] = []
 
-    for sample in dataset.samples:
+    for sample in samples_to_score:
         regime_label = regime_labels_by_row_id[sample.row_id]
-        feature_input = _sample_feature_input(sample, model_artifact.feature_columns)
-        probabilities = model_artifact.model.predict_proba([feature_input])
-        if len(probabilities) != 1 or len(probabilities[0]) != 2:
+        scoring_rows = build_scoring_rows_for_dataset_sample(
+            model=model_artifact.model,
+            feature_columns=model_artifact.feature_columns,
+            sample=sample,
+            source_rows=source_rows,
+        )
+        probabilities = score_binary_probabilities(
+            model=model_artifact.model,
+            scoring_rows=scoring_rows,
+        )
+        if len(probabilities) != 1:
             raise ValueError(
-                f"Candidate {candidate.model_version} must return binary probabilities",
+                f"Candidate {candidate.model_version} must return exactly one binary probability row",
             )
         prob_up = float(probabilities[0][1])
         predicted_up = prob_up >= 0.5
@@ -655,6 +677,43 @@ def _sample_feature_input(
             )
         feature_input[column] = sample.features[column]
     return feature_input
+
+
+def _resolve_scoreable_samples(
+    *,
+    dataset: TrainingDataset,
+    loaded_candidates: list[tuple[EnsembleResearchCandidate, Any]],
+) -> tuple[DatasetSample, ...]:
+    """Return the fair common scoring subset for flat and sequence candidates."""
+    required_lookbacks = [
+        required_sequence_lookback_candles(model_artifact.model)
+        for _, model_artifact in loaded_candidates
+    ]
+    max_required_lookback = max(
+        (
+            lookback_candles
+            for lookback_candles in required_lookbacks
+            if lookback_candles is not None
+        ),
+        default=None,
+    )
+    if max_required_lookback is None:
+        return dataset.samples
+    scoreable_samples = tuple(
+        sample
+        for sample in dataset.samples
+        if sample_has_required_sequence_history(
+            sample=sample,
+            source_rows=dataset.source_rows,
+            lookback_candles=max_required_lookback,
+        )
+    )
+    if not scoreable_samples:
+        raise ValueError(
+            "Packet 2 research could not build a fair common scoring subset for "
+            "sequence candidates because no samples had sufficient lookback history",
+        )
+    return scoreable_samples
 
 
 def _result_key(result: EnsembleResearchResult, slice_label: str) -> tuple[Any, ...]:

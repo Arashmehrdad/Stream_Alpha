@@ -117,6 +117,7 @@ def build_run_manifest(run_dir: Path) -> dict[str, Any]:
                 "model_name": winner_name,
                 "trained_at": model_payload["trained_at"],
                 "training_config": model_payload["training_model_config"],
+                "metadata": model_payload["registry_metadata"],
                 "metrics": winner_metrics,
                 "selection_rule": summary["winner"]["selection_rule"],
             },
@@ -299,8 +300,16 @@ def export_external_model_to_registry(
     shutil.copy2(source_path, target_artifact_path)
 
     metadata_payload = {}
-    if metadata is not None:
+    if metadata is None:
+        embedded_metadata = payload.get("registry_metadata")
+        metadata_payload = (
+            {}
+            if embedded_metadata is None
+            else make_json_safe(dict(embedded_metadata))
+        )
+    else:
         metadata_payload = make_json_safe(dict(metadata))
+    if metadata_payload:
         write_json_atomic(model_dir / "external_metadata.json", metadata_payload)
 
     comparison_path = None
@@ -374,6 +383,7 @@ def copy_run_snapshot_to_registry(
         "source_run_kind": manifest["source_run_kind"],
         "training_model_config": manifest["winner"]["training_config"],
         "promoted_at": to_rfc3339(utc_now()),
+        "metadata": dict(manifest["winner"].get("metadata") or {}),
     }
     write_json_atomic(model_dir / "registry_entry.json", entry)
     return entry
@@ -463,6 +473,7 @@ def _load_model_payload(model_path: Path) -> dict[str, Any]:
             str(name) for name in payload["expanded_feature_names"]
         ),
         "training_model_config": payload.get("training_model_config"),
+        "registry_metadata": payload.get("registry_metadata"),
     }
 
 

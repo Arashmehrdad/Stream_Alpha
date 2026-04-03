@@ -54,6 +54,12 @@ from app.explainability.config import (
 from app.explainability.schemas import PredictionExplanation, TopFeatureContribution
 from app.explainability.service import ExplainabilityService, build_regime_reason
 from app.inference.db import DatabaseUnavailableError, InferenceDatabase
+from app.inference.model_scoring import (
+    InsufficientSequenceHistoryError,
+    build_scoring_rows_for_runtime_row,
+    required_sequence_lookback_candles,
+    score_binary_probabilities,
+)
 from app.inference.schemas import (
     DailyOperationsSummaryResponse,
     FreshnessResponse,
@@ -99,6 +105,10 @@ from app.runtime.config import build_runtime_metadata, resolve_trading_config_pa
 from app.trading.config import load_paper_trading_config
 from app.trading.repository import TradingRepository
 from app.training.registry import load_registry_entry, resolve_inference_model_metadata
+from app.training.pretrained_forecasters import (
+    is_pretrained_forecaster_model,
+    validate_pretrained_forecaster_contract,
+)
 
 
 class InvalidSymbolError(ValueError):
@@ -233,6 +243,8 @@ def load_model_artifact(
     model = payload["model"]
     if not hasattr(model, "predict_proba"):
         raise ValueError("Loaded model artifact must expose predict_proba")
+    if is_pretrained_forecaster_model(model):
+        validate_pretrained_forecaster_contract(model)
 
     return LoadedModelArtifact(
         model_name=str(payload["model_name"]),
@@ -434,13 +446,13 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
                     raise ValueError(
                         "Candidate model_name did not match expected_model_name"
                     )
-                candidate_feature_input = self._build_feature_input(
+                candidate_scoring_rows = await self._build_scoring_rows_for_loaded_model_artifact(
                     row,
                     model_artifact=loaded_artifact,
                 )
                 candidate_prob_down, candidate_prob_up = self._score_loaded_model_artifact(
                     model_artifact=loaded_artifact,
-                    feature_input=candidate_feature_input,
+                    scoring_rows=candidate_scoring_rows,
                 )
                 candidate_scores.append(
                     {
@@ -597,15 +609,18 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
         self,
         *,
         model_artifact: LoadedModelArtifact,
-        feature_input: dict[str, Any],
+        scoring_rows: list[dict[str, Any]],
     ) -> tuple[float, float]:
-        """Score one loaded binary classifier artifact against one feature row."""
-        probabilities = model_artifact.model.predict_proba([feature_input])
-        if len(probabilities) != 1 or len(probabilities[0]) != 2:
+        """Score one loaded binary classifier artifact against one runtime scoring payload."""
+        probabilities = score_binary_probabilities(
+            model=model_artifact.model,
+            scoring_rows=scoring_rows,
+        )
+        if len(probabilities) != 1:
             raise ArtifactSchemaMismatchError(
-                "Model predict_proba must return binary probabilities",
+                "Runtime scoring must resolve exactly one binary probability row",
             )
-        return float(probabilities[0][0]), float(probabilities[0][1])
+        return probabilities[0]
 
     def _build_ensemble_pending_explainability(self) -> PredictionExplanation:
         """Return truthful Packet 1 explainability when ensemble is active."""
@@ -892,10 +907,11 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
     ) -> PredictionContext:
         """Build the prediction payload plus resolved regime details for reuse."""
         feature_input = self._build_feature_input(row)
+        scoring_rows = await self._build_scoring_rows_for_loaded_model_artifact(row)
         resolved_regime = self._resolve_regime(row)
         prob_down, prob_up = self._score_loaded_model_artifact(
             model_artifact=self.model_artifact,
-            feature_input=feature_input,
+            scoring_rows=scoring_rows,
         )
         predicted_class = "UP" if prob_up >= prob_down else "DOWN"
         base_buy_threshold, base_sell_threshold = self._default_thresholds(
@@ -1901,6 +1917,33 @@ class InferenceService:  # pylint: disable=too-many-instance-attributes,too-many
             column: row[column]
             for column in resolved_artifact.feature_columns
         }
+
+    async def _build_scoring_rows_for_loaded_model_artifact(
+        self,
+        row: dict[str, Any],
+        *,
+        model_artifact: LoadedModelArtifact | None = None,
+    ) -> list[dict[str, Any]]:
+        """Build the exact runtime scoring payload required by one saved artifact."""
+        resolved_artifact = self.model_artifact if model_artifact is None else model_artifact
+        history_rows: list[dict[str, Any]] | None = None
+        lookback_candles = required_sequence_lookback_candles(resolved_artifact.model)
+        if lookback_candles is not None:
+            history_rows = await self.database.fetch_feature_history_rows(
+                symbol=str(row["symbol"]),
+                interval_minutes=self.settings.kraken.ohlc_interval_minutes,
+                end_as_of_time=row["as_of_time"],
+                limit=lookback_candles,
+            )
+        try:
+            return build_scoring_rows_for_runtime_row(
+                model=resolved_artifact.model,
+                feature_columns=resolved_artifact.feature_columns,
+                row=row,
+                history_rows=history_rows,
+            )
+        except (InsufficientSequenceHistoryError, ValueError) as error:
+            raise ArtifactSchemaMismatchError(str(error)) from error
 
     def _validate_thresholds(self) -> None:
         buy_threshold = self.settings.inference.signal_buy_prob_up

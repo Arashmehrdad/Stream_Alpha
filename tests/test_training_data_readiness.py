@@ -234,3 +234,61 @@ def test_build_data_readiness_report_marks_insufficient_walk_forward_history(
 
     assert report.ready_for_training is False
     assert "configured walk-forward timestamp requirement" in report.readiness_detail
+
+
+def test_assert_training_data_ready_uses_lightweight_probe_without_full_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Training gate checks should stay fast and avoid rebuilding the full readiness report."""
+    del tmp_path
+    monkeypatch.setattr(
+        readiness_module,
+        "Settings",
+        SimpleNamespace(from_env=lambda: _fake_settings()),
+    )
+
+    async def _probe(**kwargs):
+        return readiness_module._TrainingGateCoverage(  # pylint: disable=protected-access
+            postgres_reachable=True,
+            postgres_error=None,
+            source_table_exists=True,
+            row_counts_by_symbol={"BTC/USD": 100, "ETH/USD": 100},
+            unique_timestamps=80,
+        )
+
+    monkeypatch.setattr(readiness_module, "_probe_training_gate_with_fallback", _probe)
+    monkeypatch.setattr(
+        readiness_module,
+        "build_data_readiness_report",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("full readiness report should not run during the training gate")
+        ),
+    )
+
+    readiness_module.assert_training_data_ready(_config())
+
+
+def test_assert_training_data_ready_fails_fast_when_probe_shows_too_few_timestamps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Training gate should fail clearly from the lightweight timestamp probe."""
+    monkeypatch.setattr(
+        readiness_module,
+        "Settings",
+        SimpleNamespace(from_env=lambda: _fake_settings()),
+    )
+
+    async def _probe(**kwargs):
+        return readiness_module._TrainingGateCoverage(  # pylint: disable=protected-access
+            postgres_reachable=True,
+            postgres_error=None,
+            source_table_exists=True,
+            row_counts_by_symbol={"BTC/USD": 100, "ETH/USD": 100},
+            unique_timestamps=4,
+        )
+
+    monkeypatch.setattr(readiness_module, "_probe_training_gate_with_fallback", _probe)
+
+    with pytest.raises(ValueError, match="configured walk-forward timestamp requirement"):
+        readiness_module.assert_training_data_ready(_config())

@@ -69,6 +69,7 @@ def write_run_dir(
     persistence_mean_long_only_net_value_proxy: float | None = None,
     dummy_mean_long_only_net_value_proxy: float | None = None,
     training_model_config: dict[str, Any] | None = None,
+    registry_metadata: dict[str, Any] | None = None,
 ) -> Path:
     """Create a minimal but valid training artifact directory for tests."""
     feature_columns = (
@@ -267,6 +268,7 @@ def write_run_dir(
             "feature_columns": feature_columns,
             "expanded_feature_names": expanded_feature_names,
             "training_model_config": training_model_config,
+            "registry_metadata": registry_metadata,
             "model": SerializableProbabilityModel(),
         },
         run_dir / "model.joblib",

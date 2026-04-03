@@ -5,16 +5,26 @@
 from __future__ import annotations
 
 import io
+from datetime import datetime, timedelta, timezone
+import json
 from pathlib import Path
 import zipfile
 
 import joblib
+import pandas as pd
 import pytest
 
 from app.inference.service import load_model_artifact
 from app.training import autogluon as autogluon_module
+from app.training import neuralforecast as neuralforecast_module
 from app.training import registry as registry_module
 from app.training.autogluon import build_autogluon_tabular_classifier
+from app.training.dataset import (
+    DatasetSample,
+    SourceFeatureRow,
+    build_sequence_context_rows,
+)
+from app.training.neuralforecast import build_neuralforecast_nhits_classifier
 from app.training.registry import write_json_atomic
 
 
@@ -27,6 +37,180 @@ class SerializableProbabilityModel:
     def predict_proba(self, rows: list[dict]) -> list[list[float]]:
         """Return a fixed binary probability for each requested row."""
         return [[1.0 - self._prob_up, self._prob_up] for _ in rows]
+
+
+class _FakeNeuralForecastModel:
+    def __init__(self, **kwargs) -> None:
+        self.h = int(kwargs["h"])
+        self.alias = str(kwargs["alias"])
+        self.forecast_return = float(kwargs.get("forecast_return", 0.02))
+
+
+class _FakeLoadedNeuralForecastCore:
+    def __init__(self, state: dict[str, object]) -> None:
+        self._alias = str(state["alias"])
+        self._horizon = int(state["horizon"])
+        self._frequency_minutes = int(state["frequency_minutes"])
+        self._forecast_return = float(state["forecast_return"])
+
+    def predict(self, df) -> pd.DataFrame:
+        frame = pd.DataFrame(df)
+        records: list[dict[str, object]] = []
+        for unique_id, group in frame.groupby("unique_id"):
+            ordered = group.sort_values("ds")
+            last_row = ordered.iloc[-1]
+            records.append(
+                {
+                    "unique_id": unique_id,
+                    "ds": pd.Timestamp(last_row["ds"])
+                    + pd.Timedelta(minutes=self._horizon * self._frequency_minutes),
+                    self._alias: float(last_row["y"]) * (1.0 + self._forecast_return),
+                }
+            )
+        return pd.DataFrame.from_records(records)
+
+
+class _FakeNeuralForecastCore(_FakeLoadedNeuralForecastCore):
+    def __init__(self, *, models: list[_FakeNeuralForecastModel], freq: str) -> None:
+        frequency_minutes = int(str(freq).removesuffix("min"))
+        model = models[0]
+        super().__init__(
+            {
+                "alias": model.alias,
+                "horizon": model.h,
+                "frequency_minutes": frequency_minutes,
+                "forecast_return": model.forecast_return,
+            }
+        )
+
+    def fit(self, df, val_size: int, sort_df: bool = True) -> "_FakeNeuralForecastCore":
+        assert val_size >= 0
+        if isinstance(df, list):
+            self._fit_df = None
+            self._fit_directories = list(df)
+            assert sort_df is False
+        else:
+            self._fit_df = pd.DataFrame(df).copy()
+            self._fit_directories = None
+        return self
+
+    def save(self, path: str, overwrite: bool, save_dataset: bool) -> None:
+        assert overwrite is True
+        assert save_dataset is True
+        target_dir = Path(path)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        (target_dir / "state.json").write_text(
+            json.dumps(
+                {
+                    "alias": self._alias,
+                    "horizon": self._horizon,
+                    "frequency_minutes": self._frequency_minutes,
+                    "forecast_return": self._forecast_return,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    @staticmethod
+    def load(path: str) -> _FakeLoadedNeuralForecastCore:
+        state = json.loads((Path(path) / "state.json").read_text(encoding="utf-8"))
+        return _FakeLoadedNeuralForecastCore(state)
+
+    def cross_validation(
+        self,
+        *,
+        df,
+        n_windows: int,
+        step_size: int,
+        verbose: bool,
+        refit: bool,
+        use_init_models: bool,
+    ) -> pd.DataFrame:
+        assert step_size == 1
+        assert verbose is False
+        assert use_init_models is True
+        assert isinstance(refit, bool)
+        frame = pd.DataFrame(df)
+        records: list[dict[str, object]] = []
+        for unique_id, group in frame.groupby("unique_id"):
+            ordered = group.sort_values("ds")
+            valid_cutoffs = ordered.iloc[: max(len(ordered) - self._horizon, 0)]
+            for _, cutoff_row in valid_cutoffs.tail(n_windows).iterrows():
+                cutoff = pd.Timestamp(cutoff_row["ds"])
+                records.append(
+                    {
+                        "unique_id": unique_id,
+                        "cutoff": cutoff,
+                        "ds": cutoff + pd.Timedelta(minutes=self._horizon * self._frequency_minutes),
+                        self._alias: float(cutoff_row["y"]) * (1.0 + self._forecast_return),
+                    }
+                )
+        return pd.DataFrame.from_records(records)
+
+
+def _install_fake_neuralforecast_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        neuralforecast_module,
+        "_import_neuralforecast_runtime",
+        lambda model_class_name: (_FakeNeuralForecastCore, _FakeNeuralForecastModel),
+    )
+
+
+def _sequence_source_rows() -> list[SourceFeatureRow]:
+    start = datetime(2026, 4, 1, 0, 0, tzinfo=timezone.utc)
+    rows: list[SourceFeatureRow] = []
+    for offset in range(8):
+        as_of_time = start + timedelta(minutes=5 * offset)
+        close_price = 100.0 + float(offset)
+        rows.append(
+            SourceFeatureRow(
+                row_id=f"BTC/USD|{as_of_time.isoformat()}",
+                symbol="BTC/USD",
+                interval_begin=as_of_time,
+                as_of_time=as_of_time,
+                close_price=close_price,
+                features={
+                    "symbol": "BTC/USD",
+                    "close_price": close_price,
+                    "realized_vol_12": 0.01 * (offset + 1),
+                    "momentum_3": 0.005 * offset,
+                    "macd_line_12_26": 0.003 * offset,
+                },
+            )
+        )
+    return rows
+
+
+def _sequence_samples() -> list[DatasetSample]:
+    start = datetime(2026, 4, 1, 0, 10, tzinfo=timezone.utc)
+    samples: list[DatasetSample] = []
+    for offset, label in enumerate((1, 0, 1)):
+        as_of_time = start + timedelta(minutes=5 * offset)
+        close_price = 102.0 + float(offset)
+        future_close_price = close_price * (1.02 if label == 1 else 0.98)
+        samples.append(
+            DatasetSample(
+                row_id=f"BTC/USD|{as_of_time.isoformat()}",
+                symbol="BTC/USD",
+                interval_begin=as_of_time,
+                as_of_time=as_of_time,
+                close_price=close_price,
+                future_close_price=future_close_price,
+                future_return_3=(future_close_price / close_price) - 1.0,
+                label=label,
+                persistence_prediction=label,
+                features={
+                    "symbol": "BTC/USD",
+                    "close_price": close_price,
+                    "realized_vol_12": 0.01 * (offset + 3),
+                    "momentum_3": 0.005 * (offset + 2),
+                    "macd_line_12_26": 0.003 * (offset + 2),
+                },
+            )
+        )
+    return samples
 
 
 def _write_artifact(
@@ -329,3 +513,56 @@ def test_autogluon_runtime_loader_relaxes_python_version_match(
     classifier._ensure_predictor()  # pylint: disable=protected-access
 
     assert recorded["require_py_version_match"] is False
+
+
+def test_load_model_artifact_supports_self_contained_neuralforecast_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """NeuralForecast artifacts should reload and keep the predict_proba contract."""
+    _install_fake_neuralforecast_runtime(monkeypatch)
+    model = build_neuralforecast_nhits_classifier(
+        {
+            "candidate_role": "TREND_SPECIALIST",
+            "input_size_candles": 2,
+            "calibration_windows": 2,
+            "max_steps": 5,
+            "model_kwargs": {"forecast_return": 0.03},
+            "scope_regimes": ["TREND_UP", "TREND_DOWN"],
+        }
+    )
+    source_rows = _sequence_source_rows()
+    samples = _sequence_samples()
+    model.fit_samples(samples, source_rows=source_rows)
+
+    run_dir = tmp_path / "artifacts" / "training" / "m20" / "20260403T120000Z"
+    run_dir.mkdir(parents=True, exist_ok=False)
+    artifact_path = run_dir / "model.joblib"
+    joblib.dump(
+        {
+            "model_name": "neuralforecast_nhits",
+            "trained_at": "2026-04-03T12:00:00Z",
+            "feature_columns": model.get_feature_columns(),
+            "expanded_feature_names": model.get_expanded_feature_names(),
+            "training_model_config": model.get_training_config(),
+            "registry_metadata": model.get_registry_metadata(),
+            "model": model,
+        },
+        artifact_path,
+    )
+
+    loaded = load_model_artifact(str(artifact_path))
+    context_rows = build_sequence_context_rows(
+        target_samples=[samples[-1]],
+        source_rows=source_rows,
+        feature_columns=tuple(loaded.feature_columns),
+        lookback_candles=model.input_size_candles,
+    )
+    probabilities = loaded.model.predict_proba(context_rows)
+
+    assert loaded.model_name == "neuralforecast_nhits"
+    assert loaded.model_version == "20260403T120000Z"
+    assert loaded.model.requires_sequence_context() is True
+    assert loaded.model.get_sequence_lookback_candles() == 2
+    assert len(probabilities) == 1
+    assert probabilities[0][1] > 0.0

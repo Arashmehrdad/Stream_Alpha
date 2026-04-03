@@ -9,7 +9,7 @@ import json
 import re
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +53,8 @@ LEGACY_ARCHIVED_MODEL_NAMES = frozenset(
         "hist_gradient_boosting",
     }
 )
+
+SEQUENCE_CONTEXT_KEY = "__sequence_context__"
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,10 +144,43 @@ class DatasetSample:  # pylint: disable=too-many-instance-attributes
 
 
 @dataclass(frozen=True, slots=True)
+class SourceFeatureRow:
+    """One ordered finalized feature row preserved for sequential training paths."""
+
+    row_id: str
+    symbol: str
+    interval_begin: datetime
+    as_of_time: datetime
+    close_price: float
+    features: dict[str, Any]
+
+    def to_feature_input(
+        self,
+        *,
+        feature_columns: tuple[str, ...],
+    ) -> dict[str, Any]:
+        """Return one flat feature input compatible with saved artifact contracts."""
+        feature_input: dict[str, Any] = {}
+        for column in feature_columns:
+            if column == "symbol":
+                feature_input[column] = self.symbol
+            elif column == "close_price":
+                feature_input[column] = self.close_price
+            else:
+                if column not in self.features:
+                    raise ValueError(
+                        f"Source feature row {self.row_id} is missing column {column}",
+                    )
+                feature_input[column] = self.features[column]
+        return feature_input
+
+
+@dataclass(frozen=True, slots=True)
 class TrainingDataset:
     """Labeled M3 dataset plus a compact manifest describing its construction."""
 
     samples: tuple[DatasetSample, ...]
+    source_rows: tuple[SourceFeatureRow, ...]
     source_schema: tuple[str, ...]
     manifest: dict[str, Any]
     feature_columns: tuple[str, ...]
@@ -156,6 +191,11 @@ class TrainingDataset:
     def timestamps(self) -> tuple[datetime, ...]:
         """Return the ordered sample timestamps used for walk-forward splitting."""
         return tuple(sample.as_of_time for sample in self.samples)
+
+    @property
+    def frequency_minutes(self) -> int:
+        """Return the inferred canonical feature-row cadence in minutes."""
+        return infer_source_frequency_minutes(self.source_rows)
 
 
 def load_training_config(config_path: Path) -> TrainingConfig:
@@ -238,10 +278,12 @@ async def _load_training_dataset(dsn: str, config: TrainingConfig) -> TrainingDa
     finally:
         await connection.close()
 
+    source_rows = _build_source_feature_rows(rows, config)
     samples, manifest = _build_labeled_samples(rows, config)
     ordered_samples = tuple(sorted(samples, key=lambda sample: (sample.as_of_time, sample.symbol)))
     return TrainingDataset(
         samples=ordered_samples,
+        source_rows=source_rows,
         source_schema=tuple(source_schema),
         manifest=manifest,
         feature_columns=config.all_feature_columns,
@@ -474,3 +516,120 @@ def _time_range_payload(samples: list[DatasetSample]) -> dict[str, str | None]:
         "min_as_of_time": to_rfc3339(min(sample.as_of_time for sample in samples)),
         "max_as_of_time": to_rfc3339(max(sample.as_of_time for sample in samples)),
     }
+
+
+def _build_source_feature_rows(
+    rows: list[dict[str, Any]],
+    config: TrainingConfig,
+) -> tuple[SourceFeatureRow, ...]:
+    """Return the full ordered feature-table truth used by sequential models."""
+    source_rows = [
+        SourceFeatureRow(
+            row_id=f"{row['symbol']}|{to_rfc3339(row[config.interval_column])}",
+            symbol=str(row["symbol"]),
+            interval_begin=row[config.interval_column],
+            as_of_time=row[config.time_column],
+            close_price=float(row[config.close_column]),
+            features={
+                column: row[column]
+                for column in config.all_feature_columns
+            },
+        )
+        for row in rows
+    ]
+    return tuple(
+        sorted(
+            source_rows,
+            key=lambda source_row: (source_row.as_of_time, source_row.symbol),
+        )
+    )
+
+
+def infer_source_frequency_minutes(
+    source_rows: tuple[SourceFeatureRow, ...] | list[SourceFeatureRow],
+) -> int:
+    """Infer the canonical cadence from ordered feature rows."""
+    by_symbol: dict[str, list[SourceFeatureRow]] = defaultdict(list)
+    for source_row in source_rows:
+        by_symbol[source_row.symbol].append(source_row)
+
+    deltas: list[int] = []
+    for symbol_rows in by_symbol.values():
+        ordered_rows = sorted(symbol_rows, key=lambda row: row.as_of_time)
+        for previous_row, current_row in zip(ordered_rows, ordered_rows[1:], strict=False):
+            delta_seconds = int(
+                (current_row.as_of_time - previous_row.as_of_time).total_seconds()
+            )
+            if delta_seconds <= 0:
+                continue
+            deltas.append(delta_seconds // 60)
+            break
+    if not deltas:
+        raise ValueError("Could not infer source frequency from fewer than two source rows")
+    return min(deltas)
+
+
+def build_sequence_context_rows(
+    *,
+    target_samples: list[DatasetSample],
+    source_rows: tuple[SourceFeatureRow, ...] | list[SourceFeatureRow],
+    feature_columns: tuple[str, ...],
+    lookback_candles: int,
+) -> list[dict[str, Any]]:
+    """Build ordered per-sample sequence contexts without leaking future rows."""
+    if lookback_candles <= 0:
+        raise ValueError("lookback_candles must be positive for sequence models")
+
+    by_symbol: dict[str, list[SourceFeatureRow]] = defaultdict(list)
+    for source_row in source_rows:
+        by_symbol[source_row.symbol].append(source_row)
+    for symbol, symbol_rows in by_symbol.items():
+        by_symbol[symbol] = sorted(symbol_rows, key=lambda row: row.as_of_time)
+
+    context_rows: list[dict[str, Any]] = []
+    for sample in target_samples:
+        history_rows = [
+            row
+            for row in by_symbol.get(sample.symbol, [])
+            if row.as_of_time <= sample.as_of_time
+        ]
+        if len(history_rows) < lookback_candles:
+            raise ValueError(
+                "Sequence model does not have enough lookback rows for "
+                f"{sample.row_id}: required {lookback_candles}, found {len(history_rows)}",
+            )
+        ordered_context = history_rows[-lookback_candles:]
+        context_feature_row = {
+            "symbol": sample.symbol,
+            "as_of_time": sample.as_of_time,
+            **{
+                column: (
+                    sample.symbol
+                    if column == "symbol"
+                    else sample.close_price
+                    if column == "close_price"
+                    else sample.features[column]
+                )
+                for column in feature_columns
+            },
+            SEQUENCE_CONTEXT_KEY: [
+                {
+                    "symbol": history_row.symbol,
+                    "as_of_time": history_row.as_of_time,
+                    **history_row.to_feature_input(feature_columns=feature_columns),
+                }
+                for history_row in ordered_context
+            ],
+        }
+        context_rows.append(context_feature_row)
+    return context_rows
+
+
+def future_target_timestamp(
+    *,
+    as_of_time: datetime,
+    horizon_candles: int,
+    frequency_minutes: int,
+) -> datetime:
+    """Return the expected future timestamp for one labeled horizon."""
+    return as_of_time + timedelta(minutes=horizon_candles * frequency_minutes)

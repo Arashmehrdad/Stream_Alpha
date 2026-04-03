@@ -1560,3 +1560,1007 @@
     - feature-table gaps remain
 - Honest blocker / limit:
   - the current local Kraken downloadable CSV files do not include VWAP, while the real `raw_ohlc` contract does. The importer keeps the real contract and records this explicitly in `import_operation.json`; when CSV VWAP is missing, it persists `vwap = close_price` as the bounded fallback needed to replay the existing feature path without creating a second raw schema.
+
+## Batch 2 - M20 NeuralForecast challenger wrappers and offline training integration
+
+- Added the minimum Batch 2 specialist-training breadth without touching production runtime scoring or Packet 2 selection:
+  - new module:
+    - `app/training/neuralforecast.py`
+  - new real wrappers:
+    - `NeuralForecastNHITSClassifier`
+    - `NeuralForecastPatchTSTClassifier`
+- Kept the role split honest:
+  - AutoGluon remains the real generalist baseline
+  - NHITS and PatchTST are now real offline specialist challenger wrappers only
+  - no production activation and no M20 strength claim in this batch
+- Extended the existing training data contract just enough for sequence-aware offline training:
+  - `app/training/dataset.py`
+    - added `SourceFeatureRow`
+    - `TrainingDataset` now carries ordered `source_rows`
+    - added `SEQUENCE_CONTEXT_KEY`
+    - added `infer_source_frequency_minutes(...)`
+    - added `build_sequence_context_rows(...)`
+    - added `future_target_timestamp(...)`
+  - the real source still remains:
+    - `feature_ohlc -> TrainingDataset`
+  - no fake offline dataset format was introduced
+- Extended the authoritative offline training path in:
+  - `app/training/service.py`
+    - `_AUTHORITATIVE_MODEL_BUILDERS` now supports:
+      - `neuralforecast_nhits`
+      - `neuralforecast_patchtst`
+    - fold evaluation now routes:
+      - flat estimators through the existing row-feature path
+      - sequence estimators through `fit_samples(...)` / `predict_proba_samples(...)`
+    - full-fit now persists every learned candidate under:
+      - `candidate_artifacts/<model_name>/model.joblib`
+    - root winner artifact behavior remains unchanged
+    - summary now records:
+      - winner registry metadata
+      - candidate artifact pointers and metadata
+- Kept specialist artifacts self-contained and reloadable:
+  - NeuralForecast backends are saved to a temporary backend directory, archived into the artifact payload, and lazily restored on reload
+  - artifacts still expose:
+    - `predict_proba(...)`
+    - stable `feature_columns`
+    - stable `expanded_feature_names`
+    - `get_training_config()`
+- Added the required honest forecast-to-probability bridge:
+  - `ForecastToProbabilityCalibrator`
+  - trained on rolling forecast outputs vs binary labels
+  - serialized inside the saved artifact
+  - no fabricated probabilities
+- Extended registry truth just enough for later honest M20 discovery:
+  - `app/training/registry.py`
+    - run manifests now carry winner metadata from artifact payload
+    - external exports fall back to embedded artifact metadata
+    - promoted registry entries persist `metadata`
+- Added the Batch 2 specialist config:
+  - `configs/training.m20.json`
+  - specialist-only challenger set:
+    - `neuralforecast_nhits`
+    - `neuralforecast_patchtst`
+- Added minimum dependency changes:
+  - `requirements.txt`
+    - `lightning>=2.2,<3`
+    - `neuralforecast>=1.7,<2`
+- Added focused tests:
+  - `tests/test_training_neuralforecast.py`
+    - calibrator serialization
+    - ordered/no-leakage sequence context building
+    - NHITS train/save/load/predict_proba
+    - PatchTST sample-aware fold scoring
+  - `tests/test_training_service.py`
+    - sequence estimator fold path
+    - flat estimator regression path
+    - winner metadata and candidate-artifact summary truth
+  - `tests/test_training_registry.py`
+    - specialist registry metadata propagation through manifest + promotion
+  - `tests/test_inference_model_loader.py`
+    - specialist artifact loadability and `predict_proba` compatibility
+  - `tests/training_workflow_helpers.py`
+    - added `registry_metadata` support
+  - `tests/test_ensemble_packet2.py`
+    - updated `TrainingDataset(...)` fixture construction for `source_rows`
+- Targeted validation passed:
+  - `python -m py_compile app\training\dataset.py app\training\neuralforecast.py app\training\service.py app\training\registry.py tests\test_training_neuralforecast.py tests\test_training_service.py tests\test_training_registry.py tests\test_inference_model_loader.py tests\test_ensemble_packet2.py tests\training_workflow_helpers.py`
+  - `python -m pytest tests\test_training_neuralforecast.py tests\test_training_service.py tests\test_training_registry.py tests\test_inference_model_loader.py tests\test_ensemble_packet2.py -q` -> `37 passed`
+- Honest status at the end of Batch 2:
+  - NHITS and PatchTST now have real offline wrapper/train/save/load support and registry-compatible metadata plumbing
+  - no real M20 usefulness claim has been made yet
+  - production runtime lookback-aware scoring is still not implemented
+  - Packet 2 specialist discovery/scoring is still unchanged
+  - M20 remains `ACTIVE_WEAK` until Batch 3 evidence exists
+
+## Batch 3 - Lookback-aware specialist scoring bridge for inference and Packet 2
+
+- Added the smallest shared scoring bridge needed for real sequence artifacts:
+  - new module:
+    - `app/inference/model_scoring.py`
+  - supports:
+    - flat-row artifacts through the unchanged `predict_proba([feature_input])` contract
+    - sequence-aware artifacts through explicit ordered lookback payloads keyed by `SEQUENCE_CONTEXT_KEY`
+  - added explicit failure surface:
+    - `InsufficientSequenceHistoryError`
+- Extended the NeuralForecast wrappers so saved specialist artifacts can declare their scoring needs honestly:
+  - `app/training/neuralforecast.py`
+    - added `requires_sequence_context()`
+    - added `get_sequence_lookback_candles()`
+- Extended inference DB access only as much as Batch 3 required:
+  - `app/inference/db.py`
+    - added `fetch_feature_history_rows(...)`
+    - returns the ordered finalized feature history needed for one exact runtime scoring cutoff
+- Wired the shared bridge into runtime-compatible scoring without changing the flat AutoGluon path:
+  - `app/inference/service.py`
+    - added `_build_scoring_rows_for_loaded_model_artifact(...)`
+    - `_build_prediction_context(...)` now scores through the shared bridge
+    - `_resolve_runtime_ensemble_state(...)` now scores roster candidates through the shared bridge
+    - flat artifacts still use the original one-row feature contract
+    - sequence artifacts now fail explicitly with `ArtifactSchemaMismatchError` when lookback history is insufficient
+- Reused the same bridge inside Packet 2 research:
+  - `app/ensemble/research.py`
+    - `evaluate_registry_candidates(...)` now loads candidate artifacts first
+    - sequence and flat candidates are compared on a fair common scoreable subset whenever any candidate requires lookback context
+    - `_evaluate_one_candidate(...)` now scores through the shared bridge instead of the old direct flat-row `predict_proba([feature_input])`
+- Added focused runtime and Packet 2 tests:
+  - `tests/test_inference_api.py`
+    - extended `FakeDatabase` with `fetch_feature_history_rows(...)`
+  - `tests/test_inference_service.py`
+    - sequence artifact scoring succeeds with sufficient history
+    - sequence artifact fails cleanly when history is insufficient
+  - `tests/test_inference_model_loader.py`
+    - loaded NeuralForecast artifacts now prove their lookback contract via `requires_sequence_context()` and `get_sequence_lookback_candles()`
+  - `tests/test_ensemble_packet2.py`
+    - Packet 2 now discovers and scores real saved NHITS and PatchTST wrapper artifacts in tests instead of only flat lookup stubs
+- Targeted validation passed:
+  - `python -m py_compile app\inference\model_scoring.py app\inference\db.py app\inference\service.py app\ensemble\research.py app\training\neuralforecast.py tests\test_inference_api.py tests\test_inference_service.py tests\test_inference_model_loader.py tests\test_ensemble_packet2.py tests\test_training_neuralforecast.py tests\test_training_service.py tests\test_training_registry.py`
+  - `python -m pytest tests\test_training_neuralforecast.py tests\test_training_service.py tests\test_training_registry.py tests\test_inference_api.py tests\test_inference_service.py tests\test_inference_model_loader.py tests\test_ensemble_packet2.py -q` -> `72 passed`
+- Honest project-state check after the Batch 3 code landed:
+  - current real registry entries still only include:
+    - historical logistic artifacts without M20 specialist metadata
+    - AutoGluon registry entries
+  - no real trained NHITS registry artifact exists yet
+  - no real trained PatchTST registry artifact exists yet
+  - no `artifacts/training/m20/` run directory exists yet
+  - local environment also still lacks the optional runtime deps:
+    - `neuralforecast`
+    - `lightning`
+- Honest status at the end of Batch 3:
+  - runtime-compatible scoring support for real saved specialist artifacts now exists
+  - Packet 2 can now score real registry-backed NHITS/PatchTST artifacts when they actually exist
+  - NHITS usefulness is still unproven on real project evidence because no trained registry-backed NHITS artifact exists yet
+  - PatchTST usefulness is still unproven on real project evidence because no trained registry-backed PatchTST artifact exists yet
+  - M20 therefore remains `ACTIVE_WEAK`
+  - remaining blocker:
+    - first real M20 training runs must be produced and exported to the registry with the new specialist wrappers before Packet 2 can make an evidence-backed regime/drawdown comparison against AutoGluon
+
+## Batch 4 - M20 specialist real-run preflight only
+
+- Scope for this batch is intentionally narrow:
+  - no long installs
+  - no real specialist training run
+  - no registry promotion
+  - no Packet 2 runtime/promotion claim change
+- Added one bounded preflight helper for manual M20 specialist runs:
+  - `app/training/preflight_m20.py`
+  - checks:
+    - `configs/training.m20.json` loadability
+    - NHITS/PatchTST wrapper instantiation from the checked-in config
+    - `lightning`, `neuralforecast`, and `torch` import availability
+    - CUDA visibility and visible device names
+    - current real registry-backed specialist candidate count
+  - reports blockers separately from warnings and never starts training
+- Added one PowerShell-first operator wrapper:
+  - `scripts/preflight_m20_training.ps1`
+  - supports:
+    - normal preflight summary
+    - `-RequireGpu` fail-fast mode
+    - `-DryRun`
+- Tightened the checked-in M20 config for conservative single-device preference without forcing GPU:
+  - `configs/training.m20.json`
+  - both NHITS and PatchTST now set:
+    - `model_kwargs.accelerator = "auto"`
+    - `model_kwargs.devices = 1`
+  - honest intent:
+    - use one GPU if the environment really exposes CUDA
+    - otherwise fall back to CPU rather than pretending GPU is present
+- Added focused tests:
+  - `tests/test_training_preflight.py`
+  - extended `tests/test_training_scripts.py`
+- Targeted validation passed:
+  - `python -m py_compile app\training\preflight_m20.py`
+  - `python -m pytest tests\test_training_preflight.py tests\test_training_scripts.py -q`
+  - `.\scripts\preflight_m20_training.ps1`
+- Honest current local-environment truth from the preflight:
+  - `lightning` missing
+  - `neuralforecast` missing
+  - `torch` present as `2.9.1+cpu`
+  - `torch.cuda.is_available() = False`
+  - no real registry-backed NHITS/PatchTST entries exist yet
+- Batch 4 conclusion:
+  - architecture is ready enough for the first real M20 specialist run
+  - the remaining blocker is environment readiness plus the first real specialist artifacts
+  - NHITS usefulness, PatchTST usefulness, and M20 strength remain undecided until that real run is executed and compared honestly
+
+## Batch 4b - M20 full-dataset operator readiness and progress visibility
+
+- Scope for this follow-up remained bounded to the same manual specialist-run prep:
+  - no real NHITS/PatchTST training run started
+  - no registry export
+  - no Packet 2 comparison run
+  - no runtime activation change
+- Confirmed the checked-in M20 config already trains from the real imported offline dataset path:
+  - `configs/training.m20.json`
+  - `source_table = feature_ohlc`
+  - `symbols = BTC/USD, ETH/USD, SOL/USD`
+  - this is the same real `raw_ohlc -> feature_ohlc -> training` contract populated by the local Kraken CSV import
+- Tightened operator truth for the preflight:
+  - `app/training/preflight_m20.py`
+    - now reports:
+      - `source_table`
+      - `symbols`
+      - current runtime dependency/GPU truth
+      - current real registry-backed specialist count
+  - `scripts/preflight_m20_training.ps1`
+    - now prints the training source table and configured symbols in addition to dependency/GPU truth
+- Added a bounded foreground M20 start helper:
+  - `scripts/start_m20_training.ps1`
+  - design:
+    - runs the existing M20 preflight first
+    - prints the real offline training source and configured models
+    - launches `python -m app.training --config .\configs\training.m20.json` in the foreground
+    - keeps NeuralForecast/Lightning console progress bars visible instead of hiding them behind redirected logs
+    - prints the newest M20 artifact summary after the run completes
+- Enabled visible NeuralForecast progress bars in the checked-in M20 config:
+  - `configs/training.m20.json`
+  - both:
+    - `neuralforecast_nhits.enable_progress_bar = true`
+    - `neuralforecast_patchtst.enable_progress_bar = true`
+  - `accelerator = auto` and `devices = 1` remain the conservative single-device default
+- Added focused tests:
+  - `tests/test_training_preflight.py`
+    - asserts the preflight reports the real `feature_ohlc` source and configured symbols
+  - `tests/test_training_scripts.py`
+    - added dry-run coverage for `scripts/start_m20_training.ps1`
+- Targeted validation passed:
+  - `python -m py_compile app\training\preflight_m20.py`
+  - `python -m pytest tests\test_training_preflight.py tests\test_training_scripts.py -q` -> `18 passed`
+  - `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start_m20_training.ps1 -DryRun`
+  - `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\preflight_m20_training.ps1`
+- Honest current local preflight truth after this pass:
+  - `lightning` installed
+  - `neuralforecast` installed
+  - `torch` present as `2.9.0+cu130`
+  - `torch.cuda.is_available() = True`
+  - visible device:
+    - `NVIDIA GeForce RTX 4060 Laptop GPU`
+  - current real registry-backed NHITS/PatchTST specialist count still `0`, as expected before the first real run
+- Batch 4b conclusion:
+  - the repo is now ready for you to start the first real GPU-backed M20 specialist training run manually against the full imported offline dataset
+  - NHITS usefulness, PatchTST usefulness, and M20 strength remain undecided until that run and its later registry/Packet 2 comparison complete honestly
+
+## Batch 4c - M20 specialist OOM fix for the full offline dataset
+
+- Real manual run finding from `.\scripts\start_m20_training.ps1`:
+  - preflight succeeded on the local CUDA environment
+  - the first real NHITS run started on the full imported `feature_ohlc` history
+  - the run then failed with a real `torch.OutOfMemoryError` on the 8 GB RTX 4060 during the NeuralForecast calibration path
+  - the failure occurred inside `app/training/neuralforecast.py` while using full-panel NeuralForecast `cross_validation(...)` for calibration on the full offline dataset
+- Applied the smallest bounded fix without changing runtime truth or the overall specialist architecture:
+  - `app/training/neuralforecast.py`
+    - removed the active dependence on full-panel `cross_validation(...)` for:
+      - calibrator fitting
+      - fold-evaluation probability scoring
+    - calibrator fitting now:
+      - selects a bounded recent chronological holdout from the training fold
+      - fits one temporary backend on the earlier prefix only
+      - scores only the bounded holdout through explicit lookback contexts
+      - fits the serialized forecast-to-probability calibrator from those bounded raw scores
+    - fold scoring now reuses the already-fitted backend and explicit lookback contexts instead of replaying full NeuralForecast panel cross-validation over the whole evaluation slice
+    - after the temporary calibration fit, CUDA cache is explicitly released when available before the final full backend fit starts
+  - `configs/training.m20.json`
+    - reduced the checked-in specialist memory pressure:
+      - `neuralforecast_nhits.batch_size = 16`
+      - `neuralforecast_patchtst.batch_size = 8`
+      - added bounded:
+        - `valid_batch_size`
+        - `windows_batch_size`
+        - `inference_windows_batch_size`
+    - intent:
+      - keep the real full offline dataset path
+      - keep GPU preferred
+      - avoid the default 1024-window memory spikes that are too large for the local 8 GB device
+- Focused validation passed:
+  - `python -m py_compile app\training\neuralforecast.py app\training\preflight_m20.py tests\test_training_neuralforecast.py tests\test_training_service.py tests\test_training_preflight.py tests\test_training_scripts.py`
+  - `python -m pytest tests\test_training_neuralforecast.py tests\test_training_service.py tests\test_training_preflight.py tests\test_training_scripts.py -q` -> `32 passed`
+  - `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start_m20_training.ps1 -DryRun`
+- Honest remaining caveat:
+  - this batch removes the known full-panel calibration OOM path and lowers the checked-in memory footprint, but the first full real M20 run still needs to be re-attempted by the operator
+  - if the full NHITS/PatchTST fit itself still exceeds the local 8 GB GPU budget, the next honest move would be another bounded model/config memory reduction rather than pretending the current device is sufficient
+
+## Batch 4d - Fast training gate for the full offline dataset
+
+- Real operator finding after Batch 4c:
+  - the next manual `.\scripts\start_m20_training.ps1` attempt was interrupted before model training started
+  - the interruption occurred during `assert_training_data_ready(...)`, which was still rebuilding the full operator-grade readiness report from the entire `feature_ohlc` history
+  - traceback ended in `KeyboardInterrupt`, which means the run was stopped during the expensive readiness/report path rather than failing on another model error
+- Applied the smallest bounded fix:
+  - `app/training/data_readiness.py`
+    - `assert_training_data_ready(...)` no longer rebuilds the full persisted readiness report on every training start
+    - it now uses a lightweight SQL sufficiency probe against the real configured source table:
+      - table exists
+      - configured symbols have enough rows to support labeling
+      - distinct timestamp count satisfies the configured walk-forward minimum
+    - the full readiness/report builder remains available unchanged for operator diagnostics and artifact writing
+  - `app/training/service.py`
+    - added explicit stage prints so full offline runs now show:
+      - readiness gate start/pass
+      - full dataset load start
+      - loaded source/labeled row counts
+      - fold progression
+      - winner selection and full-fit phase
+- Targeted validation passed:
+  - `python -m py_compile app\training\data_readiness.py app\training\service.py tests\test_training_data_readiness.py tests\test_training_service.py tests\test_training_scripts.py`
+  - `python -m pytest tests\test_training_data_readiness.py tests\test_training_service.py tests\test_training_scripts.py -q` -> `30 passed`
+  - `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start_m20_training.ps1 -DryRun`
+- Honest effect:
+  - M20 training starts now avoid the previous full-report rebuild bottleneck
+  - the run still trains on the same real imported offline `feature_ohlc` dataset
+  - the full operator-grade readiness artifact path is preserved; it is just no longer rebuilt automatically on every training launch
+
+## Batch 4e - NeuralForecast validation-tail fix for real specialist runs
+
+- Real manual run finding after Batch 4d:
+  - the first fold started correctly on the full offline dataset
+  - NHITS then failed before the first true fit because the wrapper still called NeuralForecast `fit(..., val_size=0)` while the checked-in config kept `early_stop_patience_steps > 0`
+  - NeuralForecast rejected that combination with:
+    - `Exception: Set val_size>0 if early stopping is enabled.`
+- Applied the smallest bounded fix:
+  - `app/training/neuralforecast.py`
+    - `_fit_backend(...)` no longer hard-codes `val_size=0`
+    - added `_resolve_fit_val_size(...)`
+    - when early stopping is enabled, the wrapper now reserves a small honest validation tail based on the available per-symbol history and the configured horizon
+    - when early stopping is disabled, it still uses `val_size=0`
+- Added focused regression coverage:
+  - `tests/test_training_neuralforecast.py`
+    - now proves the wrapper passes a positive `val_size` to the backend when early stopping is enabled
+- Targeted validation passed:
+  - `python -m py_compile app\training\neuralforecast.py tests\test_training_neuralforecast.py tests\test_training_service.py`
+  - `python -m pytest tests\test_training_neuralforecast.py tests\test_training_service.py -q` -> `15 passed`
+- Honest remaining caveat:
+  - this fixes the current fit-contract error
+  - the real full-dataset run still needs to be retried by the operator to see whether any remaining issue is now the true next blocker
+
+## Batch 4f - Bounded recent-history specialist fit for the first real laptop-GPU run
+
+- Real manual run finding after Batch 4e:
+  - the M20 run still failed on the 8 GB RTX 4060 with a real CUDA OOM during NeuralForecast window creation
+  - by that point:
+    - readiness gate had already passed
+    - the full offline dataset had already loaded from `feature_ohlc`
+    - the failure was no longer setup-related or calibration-cross-validation-related
+  - the true short-term blocker was still trying to fit NHITS/PatchTST on too much multi-year per-symbol history for the normal in-memory NeuralForecast path on this laptop GPU
+- Applied the smallest honest feasibility fix without changing the real source table, AutoGluon, runtime truth, or registry flow:
+  - `app/training/dataset.py`
+    - added `bound_recent_source_rows_per_symbol(...)`
+    - deterministic recent per-symbol row-cap helper for sequence models
+  - `app/training/neuralforecast.py`
+    - specialist wrappers now accept `max_training_rows_per_symbol`
+    - `fit_samples(...)` now bounds the training source history per symbol before:
+      - calibration fit
+      - final backend fit
+    - the bound is deterministic, non-random, and still comes from the real offline `feature_ohlc` history
+    - the wrapper now prints the applied bound, bounded row count, time window, and per-symbol counts during training
+    - saved training configs now persist `max_training_rows_per_symbol`
+  - `configs/training.m20.json`
+    - added conservative first-run history caps:
+      - `neuralforecast_nhits.max_training_rows_per_symbol = 12000`
+      - `neuralforecast_patchtst.max_training_rows_per_symbol = 8000`
+    - reduced specialist memory-heavy settings further:
+      - NHITS:
+        - `batch_size = 8`
+        - `valid_batch_size = 4`
+        - `windows_batch_size = 32`
+        - `inference_windows_batch_size = 16`
+      - PatchTST:
+        - `batch_size = 2`
+        - `valid_batch_size = 2`
+        - `windows_batch_size = 16`
+        - `inference_windows_batch_size = 16`
+  - `app/training/preflight_m20.py`
+    - preflight now reports `max_training_rows_per_symbol` per specialist model
+  - `scripts/start_m20_training.ps1`
+    - now prints the configured specialist history bounds before launch
+    - now sets `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` if the operator has not already set it
+    - this is explicitly an allocator-fragmentation aid, not a claim that allocator tuning alone solves VRAM limits
+- Focused validation passed:
+  - `python -m py_compile app\training\dataset.py app\training\neuralforecast.py app\training\preflight_m20.py tests\test_training_neuralforecast.py tests\test_training_service.py tests\test_training_preflight.py tests\test_training_scripts.py`
+  - `python -m pytest tests\test_training_neuralforecast.py tests\test_training_service.py tests\test_training_preflight.py tests\test_training_scripts.py -q`
+  - `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start_m20_training.ps1 -DryRun`
+- Honest remaining caveat:
+  - this batch prepares a more feasible first real specialist run on the current 8 GB GPU
+  - it does not prove NHITS usefulness, PatchTST usefulness, or stronger M20 evidence
+  - those remain undecided until a real run completes and Packet 2 compares the resulting artifacts honestly
+
+## Batch 4g - Full-history partitioned local-files specialist fit path
+
+- Real correction required after Batch 4f:
+  - the bounded recent-history shortcut improved feasibility but violated the intended full-history specialist-training goal
+  - the correct short-term fix is to keep the full real offline `feature_ohlc` history and move NHITS/PatchTST off the plain one-big-DataFrame fit path
+- Implemented the smallest honest full-history fix:
+  - `app/training/neuralforecast.py`
+    - specialist wrappers now support `dataset_mode`
+    - active M20 specialist mode is now `local_files_partitioned`
+    - full-history training exports per-series parquet partitions and trains through NeuralForecast's local-files dataset path instead of the plain in-memory DataFrame path
+    - calibrator fits also use the same partitioned local-files training path
+    - saved artifacts persist:
+      - `dataset_mode`
+      - `series_id_by_symbol`
+    - runtime-compatible scoring still works because context scoring now uses the persisted series-id mapping
+  - `app/training/service.py`
+    - walk-forward fold evaluation and full-fit specialist artifacts now pass persistent export roots under each run artifact:
+      - `artifacts/training/m20/<run_id>/specialist_local_files/...`
+    - AutoGluon and other flat-row models remain unchanged
+  - `configs/training.m20.json`
+    - removed the active bounded-history row caps from the checked-in M20 config
+    - added explicit `dataset_mode = "local_files_partitioned"` for NHITS and PatchTST
+    - kept conservative GPU memory knobs:
+      - NHITS:
+        - `batch_size = 8`
+        - `valid_batch_size = 4`
+        - `windows_batch_size = 32`
+        - `inference_windows_batch_size = 16`
+      - PatchTST:
+        - `batch_size = 2`
+        - `valid_batch_size = 2`
+        - `windows_batch_size = 16`
+        - `inference_windows_batch_size = 16`
+  - `app/training/preflight_m20.py`
+    - preflight now reports each specialist's `dataset_mode`
+  - `scripts/start_m20_training.ps1`
+    - operator output now explicitly shows the full-history specialist dataset mode instead of the old bounded-history display
+    - `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` remains a best-effort allocator hint only
+- Added focused validation coverage:
+  - deterministic partitioned parquet export with per-series time ordering
+  - specialist fit path now uses directory-based local-files training rather than the old one-big-DataFrame path
+  - AutoGluon flat path remains unchanged
+  - artifact save/load and calibrator serialization remain intact
+  - preflight/start-script dry runs now surface the partitioned local-files path
+- Targeted validation passed:
+  - `python -m py_compile app\training\dataset.py app\training\neuralforecast.py app\training\service.py app\training\preflight_m20.py tests\test_training_neuralforecast.py tests\test_training_service.py tests\test_training_preflight.py tests\test_training_scripts.py`
+  - `python -m pytest tests\test_training_neuralforecast.py tests\test_training_service.py tests\test_training_preflight.py tests\test_training_scripts.py -q` -> `35 passed, 1 warning`
+  - `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start_m20_training.ps1 -DryRun`
+  - `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\preflight_m20_training.ps1 -DryRun`
+- Honest remaining caveat:
+  - this batch restores the full-history specialist intent and removes reliance on the old in-memory DataFrame training path
+  - it still does not prove the first real NHITS/PatchTST run will finish on the current 8 GB GPU
+  - NHITS usefulness, PatchTST usefulness, and M20 strength remain undecided until a real run completes and Packet 2 compares the resulting artifacts honestly
+
+## Batch 4h - Specialist calibrator single-fit memory reduction
+
+- Real manual run finding after Batch 4g:
+  - the full-history partitioned local-files path remained correct and should stay in place
+  - the next real M20 run still failed with CUDA OOM on the 8 GB RTX 4060
+  - traceback showed the heavy path was now inside `app/training/neuralforecast.py` during:
+    - `_fit_calibrator(...) -> _fit_backend(...)`
+  - that meant the calibrator was still triggering a second heavy NeuralForecast backend fit on GPU after the main specialist fit logic had already been prepared
+- Applied the smallest honest memory fix without changing the dataset path, AutoGluon, runtime truth, or registry flow:
+  - `app/training/neuralforecast.py`
+    - `fit_samples(...)` now fits the specialist backend once on the full-history partitioned local-files path, then reuses that fitted backend for calibration predictions
+    - `_fit_calibrator(...)` no longer calls `_fit_backend(...)`
+    - calibration now:
+      - selects the bounded chronological holdout already defined for the calibrator
+      - builds explicit lookback contexts for those holdout samples
+      - generates raw forecast scores from the already-fitted backend
+      - trains only the lightweight logistic probability bridge on those raw scores
+    - `_build_unfitted_backend(...)` now honors specialist mixed precision while falling back safely to `32-true` if CUDA is unavailable
+  - `configs/training.m20.json`
+    - reduced per-step specialist memory pressure aggressively for the first real run:
+      - NHITS:
+        - `batch_size = 1`
+        - `valid_batch_size = 1`
+        - `windows_batch_size = 8`
+        - `inference_windows_batch_size = 8`
+        - `step_size = 16`
+        - `precision = 16-mixed`
+      - PatchTST:
+        - `batch_size = 1`
+        - `valid_batch_size = 1`
+        - `windows_batch_size = 4`
+        - `inference_windows_batch_size = 4`
+        - `step_size = 16`
+        - `precision = 16-mixed`
+  - `app/training/preflight_m20.py`
+    - preflight now surfaces the specialist memory controls explicitly:
+      - `batch_size`
+      - `valid_batch_size`
+      - `windows_batch_size`
+      - `inference_windows_batch_size`
+      - `step_size`
+      - `precision`
+  - `scripts/start_m20_training.ps1`
+    - dry-run and real-start output now show the specialist memory profile explicitly
+    - allocator normalization now accepts `PYTORCH_ALLOC_CONF` input while still setting the effective PyTorch CUDA allocator hint used by the runtime
+- Added focused validation coverage:
+  - specialist calibrator no longer triggers a second backend fit
+  - specialist mixed precision and reduced window settings flow through to the model constructor
+  - preflight reports the reduced memory settings
+  - start-script dry run reports the reduced memory settings and allocator hint
+  - existing AutoGluon flat-path regression coverage remains unchanged and still passes
+- Targeted validation passed:
+  - `python -m py_compile app\training\neuralforecast.py app\training\preflight_m20.py tests\test_training_neuralforecast.py tests\test_training_service.py tests\test_training_preflight.py tests\test_training_scripts.py`
+  - `python -m pytest tests\test_training_neuralforecast.py tests\test_training_service.py tests\test_training_preflight.py tests\test_training_scripts.py -q` -> `37 passed, 1 warning`
+  - `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start_m20_training.ps1 -DryRun`
+  - `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\preflight_m20_training.ps1 -DryRun`
+- Honest remaining caveat:
+  - this batch removes the known second heavy GPU fit from the calibrator path and lowers per-step specialist memory pressure materially
+  - it still does not prove the full real NHITS/PatchTST run will finish on the current 8 GB GPU until the operator retries it
+  - NHITS usefulness, PatchTST usefulness, and M20 strength remain undecided until a real run completes and Packet 2 compares the resulting artifacts honestly
+
+## Batch 4i - Forecast output compatibility for specialist prediction parsing
+
+- Real manual run finding after Batch 4h:
+  - the latest real M20 run completed specialist fitting and reached prediction/calibration
+  - the active blocker was no longer GPU memory
+  - the run failed in `app/training/neuralforecast.py` with:
+    - `KeyError: 'unique_id'`
+  - traceback showed the failure path:
+    - `_fit_calibrator(...)`
+    - `_predict_raw_scores_from_context_rows(...)`
+    - `_extract_forecast_value(...)`
+  - the current NeuralForecast environment did not always expose the series identifier as a plain `unique_id` column in prediction output
+- Applied the smallest honest compatibility fix:
+  - `app/training/neuralforecast.py`
+    - `_extract_forecast_value(...)` now normalizes prediction frames before lookup
+    - added compatibility recovery for forecast outputs where the series identifier arrives as:
+      - plain `unique_id` column
+      - named index level that becomes `unique_id` after `reset_index()`
+      - unnamed index/reset-index field such as `index` or similar recoverable id column
+    - timestamp lookup now also recovers the forecast time column safely after `reset_index()` when needed
+    - failure is now explicit only when no recoverable series-id or timestamp field can be found
+  - `scripts/start_m20_training.ps1`
+    - now sets `NIXTLA_ID_AS_COL=1` in the process environment if the operator has not already set it
+    - this is only a consistency aid; the code-level compatibility fix is authoritative
+- Added focused regression coverage:
+  - `tests/test_training_neuralforecast.py`
+    - forecast frame with plain `unique_id` column
+    - forecast frame with `unique_id` in the index
+    - forecast frame where `reset_index()` yields an index-style id field
+  - existing NeuralForecast wrapper tests still pass
+  - start-script dry run still passes
+- Targeted validation passed:
+  - `python -m py_compile app\training\neuralforecast.py tests\test_training_neuralforecast.py`
+  - `python -m pytest tests\test_training_neuralforecast.py tests\test_training_scripts.py -q` -> `27 passed, 1 warning`
+  - `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start_m20_training.ps1 -DryRun`
+- Honest remaining caveat:
+  - this batch fixes forecast-output compatibility only
+  - it does not prove NHITS usefulness, PatchTST usefulness, or stronger M20 evidence
+  - those remain undecided until a full real run completes and Packet 2 compares the resulting artifacts honestly
+
+## Batch 4j - Local-files specialist artifact-save compatibility
+
+- Real manual run finding after Batch 4i:
+  - the latest real M20 run got through specialist training and prediction/calibration
+  - the active blocker moved to artifact persistence during `fit_samples(...)`
+  - failure was:
+    - `AttributeError: 'NeuralForecast' object has no attribute 'ds'`
+  - traceback showed it came from `backend.save(...)` on a backend trained through the full-history local-files partitioned path
+  - this means the current NeuralForecast save path was still assuming in-memory dataset attributes that are absent in the active local-files specialist mode
+- Applied the smallest honest compatibility fix:
+  - `app/training/neuralforecast.py`
+    - added `_save_backend_archive(...)`
+    - wrapper now first attempts the normal `backend.save(..., save_dataset=True)` path
+    - if the backend shape exposes a known local-files/in-memory-dataset save incompatibility, the wrapper now retries with:
+      - `save_dataset=False`
+    - this keeps the saved artifact self-contained enough for the current Stream Alpha scoring contract, because:
+      - the wrapper already persists the backend archive, calibrator, feature schema, frequency, and series-id mapping
+      - restored scoring always passes explicit `df=...` context into `predict(...)`
+      - NeuralForecast `load(...)` tolerates missing dataset persistence and can still score with explicit input data
+    - the fallback is explicit and narrow; unknown save failures still raise
+- Added focused regression coverage:
+  - `tests/test_training_neuralforecast.py`
+    - local-files-trained specialist save path now simulates the real `save_dataset=True` incompatibility
+    - wrapper retries with `save_dataset=False`
+    - restored wrapper artifact still supports `predict_proba(...)`
+  - `tests/test_training_service.py`
+    - existing AutoGluon/flat-path regression coverage was rerun and still passes unchanged
+- Targeted validation passed:
+  - `python -m py_compile app\training\neuralforecast.py tests\test_training_neuralforecast.py tests\test_training_service.py`
+  - `python -m pytest tests\test_training_neuralforecast.py tests\test_training_service.py -q` -> `22 passed, 1 warning`
+- Honest remaining caveat:
+  - this batch fixes specialist artifact persistence compatibility only
+  - it does not prove NHITS usefulness, PatchTST usefulness, or stronger M20 evidence
+  - those remain undecided until a full real run completes and Packet 2 compares the resulting artifacts honestly
+
+## Batch 4k - Precautionary downstream specialist contract sweep
+
+- Follow-up scope:
+  - no production code redesign
+  - no new runtime behavior
+  - no Packet 2 logic change
+  - targeted downstream contract verification only after the specialist artifact-save compatibility fix
+- Checked the next likely fault lines after specialist artifact persistence:
+  - artifact loading
+  - registry export/import compatibility
+  - Packet 2 specialist candidate evaluation
+- Ran targeted downstream validation:
+  - `python -m pytest tests/test_inference_model_loader.py tests/test_ensemble_packet2.py tests/test_training_registry.py -q`
+  - `python -m py_compile tests/test_inference_model_loader.py tests/test_ensemble_packet2.py tests/test_training_registry.py`
+- Findings:
+  - no new production mismatch was found in:
+    - `app/training/registry.py`
+    - `app/inference/service.py`
+    - `app/ensemble/research.py`
+  - the only failures were stale specialist test doubles in `tests/test_inference_model_loader.py`
+    - they still assumed the old in-memory NeuralForecast contract:
+      - `fit(..., val_size=0)`
+      - no `sort_df=False` support for local-files fit
+    - updated the fake backend so it matches the current real specialist wrapper contract:
+      - accepts the local-files fit signature
+      - tolerates positive validation tails from early stopping
+- Result:
+  - downstream loader/registry/Packet 2 specialist tests now all pass again
+  - no additional code mismatch was identified further down the real production path from this precautionary sweep
+- Honest remaining caveat:
+  - this only reduces surprise from the next likely downstream contract boundary
+  - NHITS usefulness, PatchTST usefulness, and M20 strength still remain undecided until a full real run completes and Packet 2 compares the resulting artifacts honestly
+
+## Batch 4l - Windows launcher stderr compatibility for M20 specialist runs
+
+- Real operator finding after the latest manual run attempt:
+  - `scripts/start_m20_training.ps1` was aborting at the native Python invocation line even when the visible output was only Lightning stderr chatter like:
+    - `Seed set to 1`
+  - in this PowerShell environment, native-command stderr was being surfaced as a terminating `NativeCommandError` because `$ErrorActionPreference = "Stop"` was active
+  - that means the wrapper could fail before the real Python process exit code was evaluated, which is not the intended contract for long specialist runs
+- Applied the smallest honest fix:
+  - `scripts/start_m20_training.ps1`
+    - around the authoritative `python -m app.training --config ...` call, the script now temporarily disables `$PSNativeCommandUseErrorActionPreference`
+    - the wrapper still relies on `$LASTEXITCODE` immediately afterward for true success/failure
+    - result: harmless stderr output no longer kills the run, but real nonzero Python exits still fail the script exactly as before
+  - `tests/test_training_scripts.py`
+    - extended the existing fake Python launcher so it can stand in for `app.training.preflight_m20`
+    - added a focused Windows regression test proving the M20 start script succeeds when the fake training command prints stderr but exits `0`
+- Targeted validation passed:
+  - `python -m pytest tests\test_training_scripts.py -q`
+  - `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start_m20_training.ps1 -DryRun`
+- Honest remaining caveat:
+  - this batch only fixes PowerShell stderr/exit-code compatibility in the M20 launcher
+  - it does not prove NHITS usefulness, PatchTST usefulness, or stronger M20 evidence
+  - those remain undecided until a full real run completes and Packet 2 compares the resulting artifacts honestly
+
+## Batch 4m - Full-history specialist step-size memory correction
+
+- Real operator finding after retrying the full-history local-files path:
+  - the latest M20 specialist run was not crashing immediately, but it stalled in the first specialist fit after exporting parquet partitions
+  - the run directory only contained:
+    - `run_config.json`
+    - `dataset_manifest.json`
+    - `specialist_local_files/...`
+  - there were still no fold outputs or `summary.json`
+  - the Python process stayed alive with flat CPU deltas and near-idle GPU sampling
+- Targeted code inspection in the installed NeuralForecast runtime showed why:
+  - windows-based models build candidate windows in `_create_windows(...)` before applying `windows_batch_size`
+  - with full-history crypto series and `step_size=16`, the first fold still implied tens of thousands of windows per symbol
+  - so the existing tiny batch settings were not enough; the stride itself was still too dense for the current 8 GB laptop-GPU path
+- Applied the smallest honest fix:
+  - kept the full-history `feature_ohlc` local-files specialist path intact
+  - did **not** truncate history
+  - updated `configs/training.m20.json` so both checked-in specialist models now use:
+    - `step_size = 128`
+  - this preserves the full real dataset while drastically reducing the number of candidate windows materialized per training step in the active full-history path
+- Updated targeted operator/test surfaces:
+  - `tests/test_training_preflight.py`
+    - expected specialist preflight `step_size` updated to `128`
+  - `tests/test_training_scripts.py`
+    - expected start-script memory profile updated to show `step=128`
+- Targeted validation passed:
+  - `python -m pytest tests\test_training_preflight.py tests\test_training_scripts.py -q`
+  - `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start_m20_training.ps1 -DryRun`
+- Honest remaining caveat:
+  - this batch reduces full-history per-step window pressure; it does not prove the next real run will complete
+  - NHITS usefulness, PatchTST usefulness, and M20 strength remain undecided until a full real run completes and Packet 2 compares the resulting artifacts honestly
+
+## Batch 4n - Single-pass sequence fold scoring for M20 specialist evaluation
+
+- Real operator finding after the next full-history retry:
+  - the live `python -m app.training --config configs/training.m20.json` process was still active rather than dead:
+    - sampled PID `37744`
+    - CPU advanced by about `14.9` seconds over a `15` second wall-clock sample
+  - the run still looked stuck from the console because the first fold emitted a very long stream of repeated NeuralForecast `Predicting 1/1` lines with no higher-level model-progress message
+  - targeted code inspection showed one avoidable slowdown in `app/training/service.py`:
+    - `_predict_for_model(...)` called `predict_samples(...)`
+    - `predict_samples(...)` for the specialist wrappers already computes probabilities internally
+    - `_predict_for_model(...)` then called `predict_proba_samples(...)` again on the same test set
+  - for the active M20 sequence path, that meant one full fold-evaluation probability traversal was being repeated unnecessarily for every specialist model
+- Applied the smallest honest fix:
+  - `app/training/service.py`
+    - sequence estimators still use `fit_samples(...)`
+    - fold evaluation now calls `predict_proba_samples(...)` once
+    - labels are derived directly from that probability pass using the same `>= 0.5` threshold already used by the specialist wrappers
+    - flat/tabular estimators remain on the existing `fit(...)` / `predict(...)` / `predict_proba(...)` path unchanged
+- Added focused regression coverage:
+  - `tests/test_training_service.py`
+    - tightened the sequence-model contract test so it now proves:
+      - `predict_proba_samples(...)` is called exactly once
+      - `predict_samples(...)` is not used by `_predict_for_model(...)`
+- Targeted validation passed:
+  - `python -m pytest tests\test_training_service.py -q`
+- Blocker / operational note:
+  - the already-running manual M20 process is still executing the old code path and will not pick up this fix mid-run
+  - to benefit from the reduced fold-evaluation cost, the next manual M20 run must be started after this batch
+- Honest remaining caveat:
+  - this batch removes one duplicated specialist scoring pass only
+  - it does not prove the full real M20 run will finish quickly enough on the laptop GPU
+  - NHITS usefulness, PatchTST usefulness, and M20 strength remain undecided until a full real run completes and Packet 2 compares the resulting artifacts honestly
+
+## Batch 4o - Batched NeuralForecast sequence scoring for M20 folds
+
+- Targeted investigation on the failed `artifacts/training/m20/20260403T182201Z` retry:
+  - the artifact directory still stopped immediately after the first NHITS fold-local-files export
+  - a focused live repro showed the hot path was `app/training/neuralforecast.py::_predict_raw_scores_from_context_rows(...)`
+  - that scorer was calling the NeuralForecast backend once per test sample, which explains the huge stream of repeated `Predicting 1/1` lines and the effectively unbounded first-fold wall-clock time
+- Validated the replacement path before editing:
+  - ran a focused first-fold NHITS experiment using synthetic per-context series ids
+  - one batched backend `predict(...)` call produced the same raw scores as the current row-by-row contract on a first-fold slice
+  - measured equality on the targeted comparison script: `max_abs_diff = 0.0`
+- Applied the smallest honest performance fix:
+  - `app/training/neuralforecast.py`
+    - sequence raw-score evaluation now batches context rows into bounded synthetic-series predict calls instead of issuing one backend predict per sample
+    - added a small internal batch-size constant so fold scoring stays memory-bounded while eliminating the pathological per-sample call pattern
+    - hardened forecast-frame normalization so batched outputs that expose `unique_id` through the index are accepted directly after `reset_index()`
+- Added focused regression coverage:
+  - `tests/test_training_neuralforecast.py`
+    - added a batching-path test proving:
+      - synthetic-context batching preserves the expected raw-score contract
+      - batching reduces backend predict invocations from per-sample to per-batch
+- Targeted validation:
+  - pending this batch's focused pytest run
+- Honest remaining caveat:
+  - this batch addresses the dominant first-fold NHITS scoring bottleneck we reproduced locally
+  - it still does not prove the full real M20 run will complete end-to-end without another issue until a fresh manual run is executed on the patched code
+
+## Batch 4p - Artifact-backed M20 progress logs and ETA visibility
+
+- Targeted follow-up on the user's "is `Predicting 255/255` a black box?" question:
+  - the terminal line is Lightning's inner predict loop, so by itself it does not explain which fold/model/stage is active or what happens immediately after that bar finishes
+  - before this batch, the M20 run persisted no artifact-side heartbeat, so once the PowerShell window was noisy or truncated there was no durable place to inspect live scoring progress
+- Added explicit out-of-terminal progress artifacts:
+  - `app/training/service.py`
+    - added `_TrainingProgressRecorder`, which writes:
+      - `progress.log` as a human-readable rolling activity log
+      - `progress_status.json` as the latest machine-readable status snapshot
+    - run-level milestones now log setup, dataset load, fold start/finish, per-model evaluation start/finish, winner selection, full-fit start/finish, and terminal failure state
+    - added compact helper formatters so progress lines include a text bar plus elapsed and ETA values without relying on Lightning's terminal renderer
+  - `app/training/neuralforecast.py`
+    - sequence-model scoring already had batched callback hooks from Batch 4o; this batch now makes them operational through the service recorder so artifact logs show batched row-count progress during long NHITS/PatchTST scoring phases
+    - backend-archive dataset fallback messages are also mirrored into the artifact log instead of existing only as terminal output
+- Added focused regression coverage:
+  - `tests/test_training_service.py`
+    - added recorder coverage proving `progress.log` and `progress_status.json` are written with fold/model context, a rendered progress bar, ETA text, and archive-fallback notes
+  - `tests/test_training_neuralforecast.py`
+    - extended the batched sequence-scoring test to prove progress callback payloads emit start/progress/complete events with batch and ETA fields
+- Targeted validation passed:
+  - `python -m pytest tests\test_training_neuralforecast.py tests\test_training_service.py -q`
+  - result: `24 passed, 1 warning`
+- Honest remaining caveat:
+  - this batch improves observability only; it does not by itself prove the next full M20 run will succeed end-to-end
+  - the new progress artifacts appear only on fresh runs started after this patch
+
+## Batch 4q - Silence M20 terminal bars and point operators to artifact progress files
+
+- Small operator-facing follow-up after Batch 4p:
+  - the user explicitly asked for progress visibility outside the terminal, so keeping the checked-in M20 config on `enable_progress_bar=true` would still leave Lightning/NeuralForecast progress renderers spamming the console during long sequence scoring
+- Applied the smallest configuration/message fix:
+  - `configs/training.m20.json`
+    - set both `neuralforecast_nhits.enable_progress_bar` and `neuralforecast_patchtst.enable_progress_bar` to `false`
+  - `scripts/start_m20_training.ps1`
+    - updated the dry-run and live-run operator messaging so it now points to `progress.log` and `progress_status.json` inside the new artifact run directory instead of claiming Lightning progress bars will stream in the terminal
+- Targeted validation passed:
+  - `python -m pytest tests\test_training_scripts.py -k start_m20_training_script_dry_run_prints_full_dataset_training_truth -q`
+  - result: `1 passed, 15 deselected`
+- Honest remaining caveat:
+  - this changes the default checked-in M20 operator experience only
+  - any older artifact directories obviously will not gain the new files retroactively
+
+## Phase 3 - Pretrained challenger foundation
+
+### Batch matrix
+| Batch | Goal | Files | Status | Targeted checks | Notes |
+|---|---|---|---|---|---|
+| 1 | Build the shared pretrained challenger foundation without changing production runtime authority | training/inference/ensemble contract files, focused tests, PLANS.md | DONE | focused pytest plus targeted pylint | foundation only; no challenger weights, training runs, promotions, or Packet 2 activation in this batch |
+
+### Batch 1 log
+
+- Scope stayed tightly inside the requested contract surfaces:
+  - `app/training/service.py`
+  - `app/training/registry.py`
+  - `app/inference/service.py`
+  - `app/ensemble/research.py`
+  - `app/training/neuralforecast.py`
+  - plus the smallest required schema/test surfaces for Packet 2 metadata discovery truth
+- Added a shared pretrained challenger contract:
+  - created `app/training/pretrained_forecasters.py`
+  - added a generic pretrained-wrapper validation path, shared forecast-to-`P(UP)` calibrator, stable artifact/registry metadata helpers, and future-family constants for:
+    - `AMAZON_CHRONOS_2`
+    - `GOOGLE_TIMESFM_2_0_500M_PYTORCH`
+    - `MOIRAI_SMALL`
+    - `MOIRAI_BASE`
+- Kept the existing saved-artifact runtime contract intact:
+  - `app/training/service.py`
+    - sequence/pretrained wrappers now use an explicit shared validation path before challenger artifacts are saved
+    - the persisted artifact still exposes the existing binary `predict_proba` contract
+    - flat/tabular estimators remain on the old fit/predict path unchanged
+  - `app/inference/service.py`
+    - pretrained-style artifacts are now validated at load time without changing the runtime scoring contract
+- Preserved registry and Packet 2 discovery truth:
+  - `app/training/neuralforecast.py`
+    - existing NeuralForecast wrappers now share the generic calibrator/constants so they align with the staged pretrained interface
+  - `app/ensemble/research.py`
+    - Packet 2 family allowlists now recognize future pretrained generalist/trend/range metadata when real registry-backed artifacts appear later
+  - `app/ensemble/schemas.py`
+    - research candidate schema now accepts the staged future family identifiers instead of rejecting them at validation time
+- Added focused regression and foundation coverage:
+  - `tests/test_training_pretrained_forecasters.py`
+    - validates that a generic future-family wrapper can be instantiated, calibrated, and contract-validated
+    - proves invalid registry metadata fails before artifact save/load
+  - `tests/test_training_registry.py`
+    - proves run manifests and promoted registry entries preserve future pretrained metadata honestly
+  - `tests/test_ensemble_packet2.py`
+    - proves Packet 2 candidate discovery accepts future family metadata without requiring any real challenger implementation yet
+- Targeted checks passed:
+  - `python -m pytest tests/test_training_service.py tests/test_training_registry.py tests/test_training_neuralforecast.py tests/test_training_pretrained_forecasters.py tests/test_inference_model_loader.py tests/test_ensemble_packet2.py tests/test_training_autogluon.py -q`
+  - result: `59 passed, 3 warnings`
+- Blockers / targeted check notes:
+  - `python -m pylint app/training/pretrained_forecasters.py app/training/service.py app/training/neuralforecast.py app/inference/service.py app/ensemble/research.py app/ensemble/schemas.py tests/test_training_registry.py tests/test_training_pretrained_forecasters.py tests/test_ensemble_packet2.py`
+  - result remains non-zero because `app/training/service.py`, `app/training/neuralforecast.py`, and `app/ensemble/research.py` already carry pre-existing structural pylint findings (`too-many-lines`, `too-many-locals`, etc.)
+  - honest note: this batch cleaned the patch-local warning sources it introduced; the remaining pylint blocker is older module debt rather than new pretrained-activation behavior
+- Honest state after Batch 1:
+  - AutoGluon remains the only current real authoritative baseline
+  - no Chronos-2, TimesFM, or Moirai logic was activated in production
+  - no challenger artifact was trained, promoted, or evaluated in this batch
+
+### Batch 2 log
+
+- Scope stayed inside the requested Chronos-2 integration surfaces:
+  - `app/training/pretrained_forecasters.py`
+  - `app/training/service.py`
+  - `requirements.txt`
+  - focused Chronos/service tests
+- Added a real Amazon Chronos-2 challenger path without changing production activation:
+  - `app/training/pretrained_forecasters.py`
+    - added `Chronos2Forecaster`, which:
+      - loads `Chronos2Pipeline` from the official `chronos-forecasting` package using the public `amazon/chronos-2` source id
+      - scores existing Stream Alpha ordered source rows through Chronos-2 `predict_df(...)`
+      - converts terminal-horizon forecasts into raw forecast-return scores
+      - fits and applies the shared forecast-to-`P(UP)` calibrator introduced in Batch 1
+      - persists the smallest honest compatible artifact form by saving wrapper state plus calibrator while lazily reloading Chronos-2 weights on demand after artifact load
+    - added truthful Chronos-2 metadata:
+      - `model_family = AMAZON_CHRONOS_2`
+      - `candidate_role = GENERALIST`
+      - `scope_regimes = [TREND_UP, TREND_DOWN, RANGE, HIGH_VOL]`
+      - `pretrained_source = amazon/chronos-2`
+      - `license_name = Apache-2.0`
+      - `artifact_format = HF_REFERENCE_JOBLIB`
+- Wired Chronos-2 into the authoritative offline training stack:
+  - `app/training/service.py`
+    - registered `chronos2_generalist` in `_AUTHORITATIVE_MODEL_BUILDERS`
+    - ensured its horizon defaults to the checked-in training config horizon the same way the sequence challengers do
+- Kept artifact, registry, and runtime contracts honest:
+  - the saved artifact still exposes the repo's binary `predict_proba` contract unchanged
+  - registry-facing metadata continues to flow through the existing saved-artifact and run-manifest paths from Batch 1
+  - no production roster, current champion pointer, or inference default was changed
+- Dependency change stayed minimal:
+  - `requirements.txt`
+    - added `chronos-forecasting>=2.2.2,<2.3`
+    - no additional direct dependency pins were introduced in this batch
+- Added focused Chronos coverage:
+  - `tests/test_training_pretrained_chronos.py`
+    - proves the real Chronos-2 wrapper loads through the shared abstraction using a fake bounded runtime
+    - proves forecast-return outputs are calibrated into ordered `P(UP)` values
+    - proves a saved Chronos-2 artifact reloads through `load_model_artifact(...)` and lazily restores the pretrained runtime on first score
+  - `tests/test_training_service.py`
+    - added builder coverage proving the authoritative training service recognizes `chronos2_generalist`
+- Targeted validation passed:
+  - `python -m pytest tests/test_training_pretrained_chronos.py tests/test_training_service.py tests/test_training_pretrained_forecasters.py tests/test_training_registry.py tests/test_inference_model_loader.py tests/test_training_autogluon.py -q`
+  - result: `45 passed, 4 warnings`
+- Blockers:
+  - none for this batch's scoped code path
+- Honest state after Batch 2:
+  - AutoGluon remains the current real baseline
+  - Chronos-2 is now integrated as an offline challenger path only
+  - no production activation or promotion happened in this batch
+  - Chronos-2 usefulness remains undecided until a later Packet 2 comparison evaluates it against AutoGluon and the other challengers
+
+### Batch 3 log
+
+- Scope stayed inside the requested TimesFM integration surfaces:
+  - `app/training/pretrained_forecasters.py`
+  - `app/training/service.py`
+  - `requirements.txt`
+  - focused TimesFM/service tests
+- Added a real Google TimesFM 2.0 500M PyTorch challenger path without changing production activation:
+  - `app/training/pretrained_forecasters.py`
+    - added `TimesFm2Forecaster`, which:
+      - loads the archived open TimesFM 2.0 500M PyTorch checkpoint through the official `timesfm==1.3.0` API using `google/timesfm-2.0-500m-pytorch`
+      - maps Stream Alpha inputs honestly as univariate ordered `close_price` history only
+      - derives the TimesFM categorical frequency indicator from the saved source cadence
+      - generates raw forecast-return scores from the terminal forecast horizon
+      - calibrates those raw scores into `P(UP)` using the shared pretrained calibrator
+      - persists the smallest honest compatible artifact form by saving wrapper state plus calibrator while lazily reloading TimesFM weights after artifact load
+    - added truthful TimesFM metadata:
+      - `model_family = GOOGLE_TIMESFM_2_0_500M_PYTORCH`
+      - `candidate_role = TREND_SPECIALIST`
+      - `scope_regimes = [TREND_UP, TREND_DOWN]`
+      - `pretrained_source = google/timesfm-2.0-500m-pytorch`
+      - `license_name = Apache-2.0`
+      - `artifact_format = HF_REFERENCE_JOBLIB`
+      - `input_mapping = UNIVARIATE_CLOSE_PRICE_ONLY`
+- Kept the input contract honest:
+  - this wrapper does not claim covariate-native or multivariate support
+  - the saved feature schema for TimesFM is only `symbol` plus `close_price`, matching the actual model input path
+- Wired TimesFM into the authoritative offline training stack:
+  - `app/training/service.py`
+    - registered `timesfm_2_0_500m_pytorch_trend` in `_AUTHORITATIVE_MODEL_BUILDERS`
+    - ensured its horizon defaults to the checked-in training config horizon the same way the other pretrained sequence challengers do
+- Dependency change stayed minimal:
+  - `requirements.txt`
+    - added `timesfm==1.3.0`
+    - honest note: that upstream package also brings heavier transitive extras such as `wandb`
+- Added focused TimesFM coverage:
+  - `tests/test_training_pretrained_timesfm.py`
+    - proves the real TimesFM wrapper loads through the shared abstraction using a fake bounded runtime
+    - proves the wrapper passes only univariate close-price arrays plus the expected frequency indicator into the model
+    - proves forecast-return outputs are calibrated into ordered `P(UP)` values
+    - proves a saved TimesFM artifact reloads through `load_model_artifact(...)` and lazily restores the pretrained runtime on first score
+  - `tests/test_training_service.py`
+    - added builder coverage proving the authoritative training service recognizes `timesfm_2_0_500m_pytorch_trend`
+- Targeted validation passed:
+  - `python -m pytest tests/test_training_pretrained_timesfm.py tests/test_training_pretrained_chronos.py tests/test_training_pretrained_forecasters.py tests/test_training_service.py tests/test_training_registry.py tests/test_inference_model_loader.py tests/test_training_autogluon.py -q`
+  - result: `48 passed, 6 warnings`
+- Blockers:
+  - none for this batch's scoped code path
+- Honest state after Batch 3:
+  - AutoGluon remains the current real baseline
+  - TimesFM is now integrated as an offline trend-specialist challenger path only
+  - no production activation or promotion happened in this batch
+  - TimesFM usefulness remains undecided until a later Packet 2 comparison evaluates it against AutoGluon, Chronos-2, and the other challengers
+
+### Batch 4 log
+
+- Scope stayed inside the requested Moirai integration surfaces:
+  - `app/training/pretrained_forecasters.py`
+  - `app/training/service.py`
+  - `requirements.txt`
+  - focused Moirai/service/registry tests
+- Chose the license-clean path explicitly:
+  - integrated the Apache-2.0 `sktime/moirai-1.0-R-base` snapshot checkpoint
+  - did not use the Salesforce CC-BY-NC-4.0 checkpoint family in this batch
+  - saved that choice truthfully in code comments plus registry/training metadata through:
+    - `license_name = Apache-2.0`
+    - `license_notes = Using the sktime Apache-2.0 snapshot checkpoint; not the Salesforce CC-BY-NC-4.0 checkpoint family.`
+- Added a real Moirai range-specialist challenger path without changing production activation:
+  - `app/training/pretrained_forecasters.py`
+    - added `Moirai1RBaseForecaster`, which:
+      - loads the `sktime` Apache snapshot checkpoint through `sktime.forecasting.moirai_forecaster.MOIRAIForecaster`
+      - maps Stream Alpha inputs honestly as ordered univariate `close_price` history only with the symbol retained for sequence alignment
+      - generates raw forecast-return scores from the terminal forecast horizon
+      - calibrates those raw scores into `P(UP)` using the shared pretrained calibrator
+      - persists the smallest honest compatible artifact form by saving wrapper state plus calibrator while lazily reloading the pretrained runtime after artifact load
+    - added truthful Moirai metadata:
+      - `model_family = MOIRAI_BASE`
+      - `candidate_role = RANGE_SPECIALIST`
+      - `scope_regimes = [RANGE, HIGH_VOL]`
+      - `pretrained_source = sktime/moirai-1.0-R-base`
+      - `license_name = Apache-2.0`
+      - `artifact_format = HF_REFERENCE_JOBLIB`
+      - `input_mapping = UNIVARIATE_CLOSE_PRICE_ONLY`
+- Kept the input contract honest:
+  - this wrapper does not claim covariate-native or multivariate support
+  - the saved feature schema for Moirai is only `symbol` plus `close_price`, matching the actual wrapper input path
+- Wired Moirai into the authoritative offline training stack:
+  - `app/training/service.py`
+    - registered `moirai_1_0_r_base_range` in `_AUTHORITATIVE_MODEL_BUILDERS`
+    - ensured its horizon defaults to the checked-in training config horizon the same way the other pretrained sequence challengers do
+- Dependency change stayed minimal:
+  - `requirements.txt`
+    - added `sktime>=0.34.1,<0.35`
+- Added focused Moirai coverage:
+  - `tests/test_training_pretrained_moirai.py`
+    - proves the real Moirai wrapper loads through the shared abstraction using a fake bounded `sktime` runtime
+    - proves the wrapper uses the Apache snapshot checkpoint and surfaces the explicit license note
+    - proves forecast-return outputs are calibrated into ordered `P(UP)` values
+    - proves a saved Moirai artifact reloads through `load_model_artifact(...)` and lazily restores the pretrained runtime on first score
+  - `tests/test_training_service.py`
+    - added builder coverage proving the authoritative training service recognizes `moirai_1_0_r_base_range`
+  - `tests/test_training_registry.py`
+    - added registry coverage proving the explicit Apache snapshot `license_name` and `license_notes` survive manifest and promotion flows
+- Targeted validation passed:
+  - `python -m pytest tests/test_training_pretrained_moirai.py tests/test_training_pretrained_timesfm.py tests/test_training_pretrained_chronos.py tests/test_training_pretrained_forecasters.py tests/test_training_service.py tests/test_training_registry.py tests/test_inference_model_loader.py tests/test_training_autogluon.py -q`
+  - result: `52 passed, 8 warnings`
+- Blockers:
+  - none for this batch's scoped code path
+- Honest state after Batch 4:
+  - AutoGluon remains the current real baseline
+  - Moirai is now integrated as an offline range-specialist challenger path only
+  - no production activation or promotion happened in this batch
+  - Moirai usefulness remains undecided until a later Packet 2 comparison evaluates it against AutoGluon, Chronos-2, TimesFM, and the other challengers

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Callable
 
@@ -32,9 +34,21 @@ from app.training.data_readiness import assert_training_data_ready
 from app.training.dataset import (
     DatasetSample,
     LEGACY_ARCHIVED_MODEL_NAMES,
+    SourceFeatureRow,
     TrainingConfig,
     load_training_config,
     load_training_dataset,
+)
+from app.training.neuralforecast import (
+    build_neuralforecast_nhits_classifier,
+    build_neuralforecast_patchtst_classifier,
+)
+from app.training.pretrained_forecasters import (
+    build_chronos2_classifier,
+    build_moirai_1_0_r_base_range_classifier,
+    build_timesfm_2_0_500m_pytorch_classifier,
+    is_pretrained_forecaster_model,
+    validate_pretrained_forecaster_contract,
 )
 from app.training.splits import WalkForwardFold, build_walk_forward_splits
 from app.training.splits import minimum_required_unique_timestamps
@@ -44,6 +58,11 @@ _REGIME_CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "regime.
 _REQUIRED_PROMOTION_BASELINES = ("persistence_3", "dummy_most_frequent")
 _AUTHORITATIVE_MODEL_BUILDERS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "autogluon_tabular": build_autogluon_tabular_classifier,
+    "chronos2_generalist": build_chronos2_classifier,
+    "moirai_1_0_r_base_range": build_moirai_1_0_r_base_range_classifier,
+    "timesfm_2_0_500m_pytorch_trend": build_timesfm_2_0_500m_pytorch_classifier,
+    "neuralforecast_nhits": build_neuralforecast_nhits_classifier,
+    "neuralforecast_patchtst": build_neuralforecast_patchtst_classifier,
 }
 
 
@@ -99,12 +118,177 @@ class TrainingRegimeContext:
     labels_by_row_id: dict[str, str]
 
 
+@dataclass(frozen=True, slots=True)
+class SavedCandidateArtifact:
+    """One full-fit learned-model artifact bundle persisted for later challenger use."""
+
+    model_name: str
+    model_path: Path
+    fitted_model: Any
+    feature_columns: tuple[str, ...]
+    expanded_feature_names: list[str]
+    training_model_config: dict[str, Any] | None
+    registry_metadata: dict[str, Any] | None
+
+
+class _TrainingProgressRecorder:
+    """Artifact-backed progress trail for long-running offline training jobs."""
+
+    def __init__(self, artifact_dir: Path) -> None:
+        self.artifact_dir = artifact_dir
+        self.log_path = artifact_dir / "progress.log"
+        self.status_path = artifact_dir / "progress_status.json"
+        self._last_sequence_log_batches: dict[str, int] = {}
+
+    def record(
+        self,
+        *,
+        stage: str,
+        message: str,
+        state: str = "running",
+        **metadata: Any,
+    ) -> None:
+        timestamp = to_rfc3339(utc_now())
+        entry = {
+            "timestamp": timestamp,
+            "state": state,
+            "stage": stage,
+            "message": message,
+            **metadata,
+        }
+        self._append_log_line(
+            f"{timestamp} [{stage}] {message}{_format_log_metadata(metadata)}"
+        )
+        _write_json(self.status_path, entry)
+
+    def record_sequence_event(
+        self,
+        *,
+        model_name: str,
+        payload: dict[str, Any],
+        fold_index: int | None = None,
+        total_folds: int | None = None,
+    ) -> None:
+        timestamp = to_rfc3339(utc_now())
+        event = str(payload.get("event", "sequence_event"))
+        entry = {
+            "timestamp": timestamp,
+            "state": "running",
+            "stage": "sequence_scoring",
+            "event": event,
+            "model_name": model_name,
+            **payload,
+        }
+        if fold_index is not None:
+            entry["fold_index"] = fold_index + 1
+        if total_folds is not None:
+            entry["total_folds"] = total_folds
+        _write_json(self.status_path, entry)
+
+        fold_label = (
+            ""
+            if fold_index is None
+            else f" fold {fold_index + 1}/{total_folds}"
+            if total_folds is not None
+            else f" fold {fold_index + 1}"
+        )
+        prefix = f"{timestamp} [sequence_scoring]{fold_label} [{model_name}] "
+
+        if event == "sequence_scoring_start":
+            self._append_log_line(
+                prefix
+                + "started"
+                + _format_log_metadata(
+                    {
+                        "rows": payload.get("row_count"),
+                        "batches": payload.get("batch_count"),
+                        "batch_size": payload.get("batch_size"),
+                    }
+                )
+            )
+            return
+
+        if event == "sequence_scoring_progress":
+            completed_batches = int(payload.get("completed_batches", 0))
+            total_batches = max(1, int(payload.get("batch_count", 1)))
+            sequence_key = f"{fold_index}:{model_name}" if fold_index is not None else model_name
+            log_interval = max(1, total_batches // 20)
+            last_logged_batch = self._last_sequence_log_batches.get(sequence_key, 0)
+            should_log = (
+                completed_batches == 1
+                or completed_batches == total_batches
+                or (completed_batches - last_logged_batch) >= log_interval
+            )
+            if not should_log:
+                return
+            self._last_sequence_log_batches[sequence_key] = completed_batches
+            bar = _render_progress_bar(float(payload.get("progress", 0.0)))
+            self._append_log_line(
+                prefix
+                + f"{bar} batches={completed_batches}/{total_batches}"
+                + _format_log_metadata(
+                    {
+                        "rows": (
+                            f"{int(payload.get('completed_rows', 0))}/"
+                            f"{int(payload.get('row_count', 0))}"
+                        ),
+                        "elapsed": _format_eta_seconds(payload.get("elapsed_seconds")),
+                        "eta": _format_eta_seconds(payload.get("eta_seconds")),
+                    }
+                )
+            )
+            return
+
+        if event == "sequence_scoring_complete":
+            self._append_log_line(
+                prefix
+                + "completed"
+                + _format_log_metadata(
+                    {
+                        "rows": payload.get("row_count"),
+                        "batches": payload.get("batch_count"),
+                        "elapsed": _format_eta_seconds(payload.get("elapsed_seconds")),
+                    }
+                )
+            )
+            return
+
+        if event == "backend_archive_dataset_fallback":
+            self._append_log_line(prefix + str(payload.get("message", "archive fallback")))
+            return
+
+        self._append_log_line(
+            prefix
+            + event
+            + _format_log_metadata(
+                {
+                    key: value
+                    for key, value in payload.items()
+                    if key != "event"
+                }
+            )
+        )
+
+    def _append_log_line(self, line: str) -> None:
+        with self.log_path.open("a", encoding="utf-8") as output_file:
+            output_file.write(f"{line}\n")
+
+
 def run_training(config_path: Path) -> Path:  # pylint: disable=too-many-locals
     """Run the full offline M3 training flow and save artifacts to disk."""
     config = load_training_config(config_path)
     _validate_authoritative_model_stack(config)
+    print(f"[training] readiness gate: probing {config.source_table} for {list(config.symbols)}")
     assert_training_data_ready(config, config_path=config_path)
+    print("[training] readiness gate passed")
+    print(f"[training] loading full offline dataset from {config.source_table}")
     dataset = load_training_dataset(config)
+    print(
+        "[training] dataset loaded: "
+        f"source_rows={len(dataset.source_rows)}, "
+        f"labeled_rows={len(dataset.samples)}, "
+        f"unique_timestamps={int(dataset.manifest['unique_timestamps'])}"
+    )
     _validate_split_readiness(dataset, config)
     regime_context = _build_training_regime_context(dataset.samples, config)
     folds = build_walk_forward_splits(
@@ -126,70 +310,179 @@ def run_training(config_path: Path) -> Path:  # pylint: disable=too-many-locals
     )
 
     model_factories = _build_model_factories(config)
+    progress_recorder = _TrainingProgressRecorder(artifact_dir)
+    progress_recorder.record(
+        stage="setup",
+        message="training artifact directory created",
+        artifact_dir=str(artifact_dir),
+        config_path=str(config_path),
+        progress_log_path=str(progress_recorder.log_path),
+        progress_status_path=str(progress_recorder.status_path),
+    )
+    progress_recorder.record(
+        stage="dataset",
+        message="dataset manifest captured for offline training",
+        source_rows=len(dataset.source_rows),
+        labeled_rows=len(dataset.samples),
+        unique_timestamps=int(dataset.manifest["unique_timestamps"]),
+    )
     fold_metric_rows: list[dict[str, Any]] = []
     all_prediction_rows: list[PredictionRecord] = []
-
-    for fold in folds:
-        train_samples, test_samples = _partition_samples(dataset.samples, fold)
-        fold_metrics, fold_predictions = _evaluate_fold(
-            train_samples=train_samples,
-            test_samples=test_samples,
-            fold=fold,
-            model_factories=model_factories,
-            fee_rate=config.round_trip_fee_rate,
-            regime_labels_by_row_id=regime_context.labels_by_row_id,
+    try:
+        print(
+            "[training] evaluating "
+            f"{len(folds)} walk-forward folds across {len(model_factories)} models"
         )
-        fold_metric_rows.extend(fold_metrics)
-        all_prediction_rows.extend(fold_predictions)
+        progress_recorder.record(
+            stage="evaluation",
+            message="starting walk-forward evaluation",
+            total_folds=len(folds),
+            total_models=len(model_factories),
+        )
 
-    _write_csv(artifact_dir / "fold_metrics.csv", fold_metric_rows)
-    _write_csv(
-        artifact_dir / "oof_predictions.csv",
-        [record.to_csv_row() for record in all_prediction_rows],
-    )
+        for fold in folds:
+            train_samples, test_samples = _partition_samples(dataset.samples, fold)
+            train_source_rows, evaluation_source_rows = _partition_source_rows(
+                dataset.source_rows,
+                fold=fold,
+                horizon_candles=config.label_horizon_candles,
+                frequency_minutes=dataset.frequency_minutes,
+            )
+            print(
+                "[training] fold "
+                f"{fold.fold_index + 1}/{len(folds)}: "
+                f"train_rows={len(train_samples)} test_rows={len(test_samples)}"
+            )
+            progress_recorder.record(
+                stage="fold",
+                message="starting walk-forward fold",
+                fold_index=fold.fold_index + 1,
+                total_folds=len(folds),
+                train_rows=len(train_samples),
+                test_rows=len(test_samples),
+            )
+            fold_metrics, fold_predictions = _evaluate_fold(
+                train_samples=train_samples,
+                test_samples=test_samples,
+                train_source_rows=train_source_rows,
+                evaluation_source_rows=evaluation_source_rows,
+                artifact_dir=artifact_dir,
+                fold=fold,
+                model_factories=model_factories,
+                fee_rate=config.round_trip_fee_rate,
+                regime_labels_by_row_id=regime_context.labels_by_row_id,
+                progress_recorder=progress_recorder,
+                total_folds=len(folds),
+            )
+            fold_metric_rows.extend(fold_metrics)
+            all_prediction_rows.extend(fold_predictions)
+            progress_recorder.record(
+                stage="fold",
+                message="completed walk-forward fold",
+                fold_index=fold.fold_index + 1,
+                total_folds=len(folds),
+                prediction_rows=len(fold_predictions),
+            )
 
-    aggregate_summary = _build_aggregate_summary(
-        all_prediction_rows=all_prediction_rows,
-        fee_rate=config.round_trip_fee_rate,
-    )
-    winner_name = _select_winner(aggregate_summary)
-    saved_model, expanded_features = _fit_winner_on_full_dataset(
-        winner_name=winner_name,
-        model_factories=model_factories,
-        samples=dataset.samples,
-    )
-    winner_training_config = _extract_training_model_config(
-        winner_name=winner_name,
-        fitted_model=saved_model,
-    )
-    model_path = artifact_dir / "model.joblib"
-    _save_model_artifact(
-        model_path=model_path,
-        model_name=winner_name,
-        fitted_model=saved_model,
-        feature_columns=dataset.feature_columns,
-        expanded_feature_names=expanded_features,
-        training_model_config=winner_training_config,
-    )
-    _write_json(
-        artifact_dir / "feature_columns.json",
-        {
-            "configured_feature_columns": list(dataset.feature_columns),
-            "categorical_feature_columns": list(dataset.categorical_feature_columns),
-            "numeric_feature_columns": list(dataset.numeric_feature_columns),
-            "expanded_feature_names": expanded_features,
-        },
-    )
-    summary = _build_summary_payload(
-        config=config,
-        dataset_manifest=dataset.manifest,
-        aggregate_summary=aggregate_summary,
-        regime_context=regime_context,
-        winner_name=winner_name,
-        model_path=model_path,
-        winner_training_config=winner_training_config,
-    )
-    _write_json(artifact_dir / "summary.json", summary)
+        _write_csv(artifact_dir / "fold_metrics.csv", fold_metric_rows)
+        _write_csv(
+            artifact_dir / "oof_predictions.csv",
+            [record.to_csv_row() for record in all_prediction_rows],
+        )
+
+        aggregate_summary = _build_aggregate_summary(
+            all_prediction_rows=all_prediction_rows,
+            fee_rate=config.round_trip_fee_rate,
+        )
+        winner_name = _select_winner(aggregate_summary)
+        print(f"[training] winner by offline selection rule: {winner_name}")
+        progress_recorder.record(
+            stage="selection",
+            message="winner selected by offline rule",
+            winner_name=winner_name,
+        )
+        print("[training] fitting full-dataset challenger artifacts")
+        progress_recorder.record(
+            stage="full_fit",
+            message="starting full-dataset challenger fits",
+            learned_models=len(
+                [
+                    model_name
+                    for model_name in model_factories
+                    if model_name not in _REQUIRED_PROMOTION_BASELINES
+                ]
+            ),
+        )
+        learned_candidate_artifacts = _fit_learned_models_on_full_dataset(
+            model_factories=model_factories,
+            samples=dataset.samples,
+            source_rows=dataset.source_rows,
+            artifact_dir=artifact_dir,
+            configured_feature_columns=dataset.feature_columns,
+            progress_recorder=progress_recorder,
+        )
+        winner_candidate_artifact = learned_candidate_artifacts[winner_name]
+        _save_model_artifact(
+            model_path=artifact_dir / "model.joblib",
+            model_name=winner_candidate_artifact.model_name,
+            fitted_model=winner_candidate_artifact.fitted_model,
+            feature_columns=winner_candidate_artifact.feature_columns,
+            expanded_feature_names=winner_candidate_artifact.expanded_feature_names,
+            training_model_config=winner_candidate_artifact.training_model_config,
+            registry_metadata=winner_candidate_artifact.registry_metadata,
+        )
+        _write_json(
+            artifact_dir / "feature_columns.json",
+            {
+                "configured_feature_columns": list(winner_candidate_artifact.feature_columns),
+                "categorical_feature_columns": list(dataset.categorical_feature_columns),
+                "numeric_feature_columns": list(dataset.numeric_feature_columns),
+                "expanded_feature_names": winner_candidate_artifact.expanded_feature_names,
+            },
+        )
+        _write_json(
+            artifact_dir / "candidate_artifacts.json",
+            {
+                model_name: {
+                    "model_path": str(candidate_artifact.model_path),
+                    "feature_columns": list(candidate_artifact.feature_columns),
+                    "expanded_feature_names": list(candidate_artifact.expanded_feature_names),
+                    "training_config": candidate_artifact.training_model_config,
+                    "registry_metadata": candidate_artifact.registry_metadata,
+                }
+                for model_name, candidate_artifact in sorted(
+                    learned_candidate_artifacts.items()
+                )
+            },
+        )
+        summary = _build_summary_payload(
+            config=config,
+            dataset_manifest=dataset.manifest,
+            aggregate_summary=aggregate_summary,
+            regime_context=regime_context,
+            winner_name=winner_name,
+            model_path=artifact_dir / "model.joblib",
+            winner_training_config=winner_candidate_artifact.training_model_config,
+            winner_registry_metadata=winner_candidate_artifact.registry_metadata,
+            candidate_artifacts=learned_candidate_artifacts,
+        )
+        _write_json(artifact_dir / "summary.json", summary)
+        progress_recorder.record(
+            stage="complete",
+            message="training completed",
+            state="completed",
+            winner_name=winner_name,
+            summary_path=str(artifact_dir / "summary.json"),
+        )
+    except Exception as error:
+        progress_recorder.record(
+            stage="error",
+            message="training failed",
+            state="failed",
+            error_type=type(error).__name__,
+            error=str(error),
+        )
+        raise
     return artifact_dir
 
 
@@ -232,8 +525,14 @@ def _build_model_factories(
                 "No authoritative training builder exists yet for configured model(s): "
                 f"{sorted(config.models)}"
             )
+        resolved_model_config = dict(model_config)
+        if model_name.startswith(("neuralforecast_", "chronos2_", "timesfm_", "moirai_")):
+            resolved_model_config.setdefault(
+                "horizon_candles",
+                config.label_horizon_candles,
+            )
         model_factories[model_name] = (
-            lambda builder=builder, model_config=dict(model_config): builder(model_config)
+            lambda builder=builder, model_config=dict(resolved_model_config): builder(model_config)
         )
     return model_factories
 
@@ -287,26 +586,104 @@ def _partition_samples(
     return train_samples, test_samples
 
 
+def _partition_source_rows(
+    source_rows: tuple[SourceFeatureRow, ...],
+    *,
+    fold: WalkForwardFold,
+    horizon_candles: int,
+    frequency_minutes: int,
+) -> tuple[list[SourceFeatureRow], list[SourceFeatureRow]]:
+    """Return the ordered source rows needed for sequence-model fold fit and scoring."""
+    train_end = max(fold.train_timestamps)
+    test_end = max(fold.test_timestamps)
+    evaluation_end = test_end + timedelta(minutes=horizon_candles * frequency_minutes)
+    train_source_rows = [
+        source_row
+        for source_row in source_rows
+        if source_row.as_of_time <= train_end
+    ]
+    evaluation_source_rows = [
+        source_row
+        for source_row in source_rows
+        if source_row.as_of_time <= evaluation_end
+    ]
+    if not train_source_rows:
+        raise ValueError(f"Fold {fold.fold_index} has no sequence training source rows")
+    if not evaluation_source_rows:
+        raise ValueError(f"Fold {fold.fold_index} has no sequence evaluation source rows")
+    return train_source_rows, evaluation_source_rows
+
+
 # pylint: disable=too-many-arguments
 def _evaluate_fold(
     *,
     train_samples: list[DatasetSample],
     test_samples: list[DatasetSample],
+    train_source_rows: list[SourceFeatureRow],
+    evaluation_source_rows: list[SourceFeatureRow],
+    artifact_dir: Path,
     fold: WalkForwardFold,
     model_factories: dict[str, Callable[[], Any]],
     fee_rate: float,
     regime_labels_by_row_id: dict[str, str],
+    progress_recorder: _TrainingProgressRecorder | None = None,
+    total_folds: int | None = None,
 ) -> tuple[list[dict[str, Any]], list[PredictionRecord]]:
     # The explicit inputs keep the fold evaluation contract inspectable for M3/M7.
     fold_metrics: list[dict[str, Any]] = []
     prediction_rows: list[PredictionRecord] = []
     for model_name, factory in model_factories.items():
-        predicted_labels, probabilities = _predict_for_model(
-            model_name=model_name,
-            factory=factory,
-            train_samples=train_samples,
-            test_samples=test_samples,
-        )
+        if progress_recorder is not None:
+            progress_recorder.record(
+                stage="fold_model",
+                message="starting model evaluation",
+                fold_index=fold.fold_index + 1,
+                total_folds=total_folds,
+                model_name=model_name,
+                train_rows=len(train_samples),
+                test_rows=len(test_samples),
+            )
+
+        def _progress_callback(payload: dict[str, Any]) -> None:
+            if progress_recorder is None:
+                return
+            progress_recorder.record_sequence_event(
+                fold_index=fold.fold_index,
+                total_folds=total_folds,
+                model_name=model_name,
+                payload=payload,
+            )
+
+        try:
+            predicted_labels, probabilities = _predict_for_model(
+                model_name=model_name,
+                factory=factory,
+                train_samples=train_samples,
+                test_samples=test_samples,
+                train_source_rows=train_source_rows,
+                evaluation_source_rows=evaluation_source_rows,
+                sequence_export_root=(
+                    artifact_dir
+                    / "specialist_local_files"
+                    / f"fold_{fold.fold_index + 1:02d}"
+                    / model_name
+                ),
+                progress_callback=(
+                    _progress_callback if progress_recorder is not None else None
+                ),
+            )
+        except Exception as error:
+            if progress_recorder is not None:
+                progress_recorder.record(
+                    stage="fold_model_error",
+                    message="model evaluation failed",
+                    fold_index=fold.fold_index + 1,
+                    total_folds=total_folds,
+                    model_name=model_name,
+                    error_type=type(error).__name__,
+                    error=str(error),
+                )
+            raise
         model_predictions = _build_prediction_records(
             model_name=model_name,
             fold_index=fold.fold_index,
@@ -326,6 +703,19 @@ def _evaluate_fold(
                 **metrics["metrics"],
             }
         )
+        if progress_recorder is not None:
+            progress_recorder.record(
+                stage="fold_model",
+                message="completed model evaluation",
+                fold_index=fold.fold_index + 1,
+                total_folds=total_folds,
+                model_name=model_name,
+                prediction_rows=len(model_predictions),
+                directional_accuracy=metrics["metrics"]["directional_accuracy"],
+                mean_long_only_net_value_proxy=(
+                    metrics["metrics"]["mean_long_only_net_value_proxy"]
+                ),
+            )
         prediction_rows.extend(model_predictions)
     return fold_metrics, prediction_rows
 
@@ -336,6 +726,10 @@ def _predict_for_model(
     factory: Callable[[], Any],
     train_samples: list[DatasetSample],
     test_samples: list[DatasetSample],
+    train_source_rows: list[SourceFeatureRow],
+    evaluation_source_rows: list[SourceFeatureRow],
+    sequence_export_root: Path | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> tuple[list[int], list[float]]:
     if model_name == "persistence_3":
         baseline = factory().fit(train_samples)
@@ -351,6 +745,23 @@ def _predict_for_model(
         return [constant_label] * len(test_samples), [float(constant_label)] * len(test_samples)
 
     estimator = factory()
+    if is_pretrained_forecaster_model(estimator):
+        fit_kwargs: dict[str, Any] = {
+            "source_rows": train_source_rows,
+            "dataset_export_root": sequence_export_root,
+        }
+        if progress_callback is not None:
+            fit_kwargs["progress_callback"] = progress_callback
+        estimator.fit_samples(train_samples, **fit_kwargs)
+        predict_kwargs: dict[str, Any] = {
+            "source_rows": evaluation_source_rows,
+        }
+        if progress_callback is not None:
+            predict_kwargs["progress_callback"] = progress_callback
+        predicted_probabilities = estimator.predict_proba_samples(test_samples, **predict_kwargs)
+        probabilities = [float(probability[1]) for probability in predicted_probabilities]
+        predicted_labels = [1 if probability >= 0.5 else 0 for probability in probabilities]
+        return predicted_labels, probabilities
     estimator.fit([sample.features for sample in train_samples], train_labels)
     test_features = [sample.features for sample in test_samples]
     predicted_labels = [int(label) for label in estimator.predict(test_features)]
@@ -511,22 +922,123 @@ def _select_winner(aggregate_summary: dict[str, dict[str, Any]]) -> str:
     )[0][0]
 
 
-def _fit_winner_on_full_dataset(
+def _fit_learned_models_on_full_dataset(
     *,
-    winner_name: str,
     model_factories: dict[str, Callable[[], Any]],
     samples: tuple[DatasetSample, ...],
-) -> tuple[Any, list[str]]:
+    source_rows: tuple[SourceFeatureRow, ...],
+    artifact_dir: Path,
+    configured_feature_columns: tuple[str, ...],
+    progress_recorder: _TrainingProgressRecorder | None = None,
+) -> dict[str, SavedCandidateArtifact]:
+    """Full-fit and persist every learned candidate model for later challenger use."""
     train_labels = [sample.label for sample in samples]
     if len(set(train_labels)) < 2:
-        raise ValueError("Winner cannot be fit because the full dataset has only one class")
+        raise ValueError("Learned models cannot be fit because the full dataset has only one class")
 
-    fitted_model = model_factories[winner_name]()
-    fitted_model.fit([sample.features for sample in samples], train_labels)
-    feature_names = _resolve_expanded_feature_names(
-        fitted_model=fitted_model,
-    )
-    return fitted_model, feature_names
+    saved_candidates: dict[str, SavedCandidateArtifact] = {}
+    candidate_root = artifact_dir / "candidate_artifacts"
+    candidate_root.mkdir(parents=True, exist_ok=True)
+
+    for model_name, factory in model_factories.items():
+        if model_name in _REQUIRED_PROMOTION_BASELINES:
+            continue
+        if progress_recorder is not None:
+            progress_recorder.record(
+                stage="full_fit_model",
+                message="starting full-dataset challenger fit",
+                model_name=model_name,
+                sample_count=len(samples),
+            )
+        fitted_model = factory()
+        validated_pretrained_contract = None
+        if is_pretrained_forecaster_model(fitted_model):
+            fit_kwargs: dict[str, Any] = {
+                "source_rows": list(source_rows),
+                "dataset_export_root": (
+                    artifact_dir / "specialist_local_files" / "full_fit" / model_name
+                ),
+            }
+            if progress_recorder is not None:
+                def _progress_callback(
+                    payload: dict[str, Any],
+                    *,
+                    _model_name: str = model_name,
+                ) -> None:
+                    progress_recorder.record_sequence_event(
+                        model_name=_model_name,
+                        payload=payload,
+                    )
+
+                fit_kwargs["progress_callback"] = _progress_callback
+            fitted_model.fit_samples(list(samples), **fit_kwargs)
+            validated_pretrained_contract = validate_pretrained_forecaster_contract(
+                fitted_model,
+            )
+        else:
+            fitted_model.fit([sample.features for sample in samples], train_labels)
+        if validated_pretrained_contract is None:
+            feature_columns = _resolve_model_feature_columns(
+                fitted_model=fitted_model,
+                configured_feature_columns=configured_feature_columns,
+            )
+            expanded_feature_names = _resolve_expanded_feature_names(
+                fitted_model=fitted_model,
+            )
+            training_model_config = _extract_training_model_config(
+                fitted_model=fitted_model,
+            )
+            registry_metadata = _extract_registry_metadata(
+                fitted_model=fitted_model,
+            )
+        else:
+            feature_columns = validated_pretrained_contract.feature_columns
+            expanded_feature_names = list(
+                validated_pretrained_contract.expanded_feature_names
+            )
+            training_model_config = validated_pretrained_contract.training_config
+            registry_metadata = validated_pretrained_contract.registry_metadata
+        model_dir = candidate_root / model_name
+        model_dir.mkdir(parents=True, exist_ok=False)
+        model_path = model_dir / "model.joblib"
+        _save_model_artifact(
+            model_path=model_path,
+            model_name=model_name,
+            fitted_model=fitted_model,
+            feature_columns=feature_columns,
+            expanded_feature_names=expanded_feature_names,
+            training_model_config=training_model_config,
+            registry_metadata=registry_metadata,
+        )
+        saved_candidates[model_name] = SavedCandidateArtifact(
+            model_name=model_name,
+            model_path=model_path,
+            fitted_model=fitted_model,
+            feature_columns=feature_columns,
+            expanded_feature_names=expanded_feature_names,
+            training_model_config=training_model_config,
+            registry_metadata=registry_metadata,
+        )
+        if progress_recorder is not None:
+            progress_recorder.record(
+                stage="full_fit_model",
+                message="completed full-dataset challenger fit",
+                model_name=model_name,
+                model_path=str(model_path),
+            )
+    return saved_candidates
+
+
+def _resolve_model_feature_columns(
+    *,
+    fitted_model: Any,
+    configured_feature_columns: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Resolve the stable artifact feature schema across model families."""
+    if hasattr(fitted_model, "get_feature_columns"):
+        feature_columns = fitted_model.get_feature_columns()
+        return tuple(str(column) for column in feature_columns)
+    return tuple(str(column) for column in configured_feature_columns)
 
 
 def _resolve_expanded_feature_names(
@@ -549,6 +1061,7 @@ def _save_model_artifact(
     feature_columns: tuple[str, ...],
     expanded_feature_names: list[str],
     training_model_config: dict[str, Any] | None,
+    registry_metadata: dict[str, Any] | None,
 ) -> None:
     payload = {
         "model_name": model_name,
@@ -556,6 +1069,7 @@ def _save_model_artifact(
         "feature_columns": list(feature_columns),
         "expanded_feature_names": expanded_feature_names,
         "training_model_config": training_model_config,
+        "registry_metadata": registry_metadata,
         "model": fitted_model,
     }
     joblib.dump(payload, model_path)
@@ -573,6 +1087,8 @@ def _build_summary_payload(
     winner_name: str,
     model_path: Path,
     winner_training_config: dict[str, Any] | None = None,
+    winner_registry_metadata: dict[str, Any] | None = None,
+    candidate_artifacts: dict[str, SavedCandidateArtifact] | None = None,
 ) -> dict[str, Any]:
     winner_metrics = aggregate_summary[winner_name]
     learned_model_names = tuple(
@@ -641,12 +1157,25 @@ def _build_summary_payload(
             "model_name": winner_name,
             "model_path": str(model_path),
             "training_config": winner_training_config,
+            "metadata": winner_registry_metadata,
             "selection_rule": {
                 "primary": "mean_long_only_net_value_proxy",
                 "tie_break_1": "directional_accuracy",
                 "tie_break_2": "lower_brier_score",
             },
         },
+        "candidate_artifacts": (
+            {}
+            if candidate_artifacts is None
+            else {
+                model_name: {
+                    "model_path": str(candidate_artifact.model_path),
+                    "training_config": candidate_artifact.training_model_config,
+                    "metadata": candidate_artifact.registry_metadata,
+                }
+                for model_name, candidate_artifact in sorted(candidate_artifacts.items())
+            }
+        ),
         "acceptance": {
             "winner_after_cost_positive": winner_metrics["mean_long_only_net_value_proxy"]
             > 0.0,
@@ -665,21 +1194,78 @@ def _build_summary_payload(
 
 def _extract_training_model_config(
     *,
-    winner_name: str,
     fitted_model: Any,
 ) -> dict[str, Any] | None:
     """Return stable winner training config metadata when the model exposes it."""
-    if winner_name != "autogluon_tabular":
-        return None
     if not hasattr(fitted_model, "get_training_config"):
         return None
     training_config = fitted_model.get_training_config()
     if not isinstance(training_config, dict):
         raise ValueError(
-            "Authoritative AutoGluon artifacts must expose a dictionary "
+            "Authoritative model artifacts must expose a dictionary "
             "training config for auditability",
         )
     return dict(training_config)
+
+
+def _extract_registry_metadata(
+    *,
+    fitted_model: Any,
+) -> dict[str, Any] | None:
+    """Return optional registry discovery metadata when the model exposes it."""
+    if not hasattr(fitted_model, "get_registry_metadata"):
+        return None
+    metadata = fitted_model.get_registry_metadata()
+    if metadata is None:
+        return None
+    if not isinstance(metadata, dict):
+        raise ValueError(
+            "Authoritative model artifacts must expose dictionary registry metadata",
+        )
+    return dict(metadata)
+
+
+def _format_log_metadata(metadata: dict[str, Any]) -> str:
+    """Render compact metadata for one human-readable training log line."""
+    rendered_items: list[str] = []
+    for key, value in metadata.items():
+        if value is None:
+            continue
+        safe_value = make_json_safe(value)
+        if isinstance(safe_value, (dict, list, tuple)):
+            rendered_value = json.dumps(safe_value, sort_keys=True)
+        else:
+            rendered_value = str(safe_value)
+        rendered_items.append(f"{key}={rendered_value}")
+    if not rendered_items:
+        return ""
+    return " | " + ", ".join(rendered_items)
+
+
+def _render_progress_bar(progress: float, width: int = 20) -> str:
+    """Render a fixed-width textual progress bar for artifact-side logs."""
+    bounded_progress = max(0.0, min(1.0, float(progress)))
+    filled_width = min(width, max(0, int(round(bounded_progress * width))))
+    return (
+        "[" + ("#" * filled_width) + ("-" * (width - filled_width)) + "] "
+        f"{bounded_progress * 100.0:.1f}%"
+    )
+
+
+def _format_eta_seconds(value: Any) -> str:
+    """Render seconds as mm:ss or hh:mm:ss for log readability."""
+    try:
+        total_seconds = float(value)
+    except (TypeError, ValueError):
+        return "n/a"
+    if not math.isfinite(total_seconds) or total_seconds < 0.0:
+        return "n/a"
+    rounded_seconds = int(round(total_seconds))
+    minutes, seconds = divmod(rounded_seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours > 0:
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes:02d}:{seconds:02d}"
 
 
 def _build_training_regime_context(

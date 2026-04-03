@@ -100,7 +100,7 @@ def _write_fake_python_launcher(
                 "from pathlib import Path",
                 f"READINESS_PAYLOAD = {json.dumps(readiness_payload)!r}",
                 "args = sys.argv[1:]",
-                "if args[:2] == ['-m', 'app.training.readiness']:",
+                "if args[:2] in (['-m', 'app.training.readiness'], ['-m', 'app.training.preflight_m20']):",
                 "    print(READINESS_PAYLOAD)",
                 "    raise SystemExit(0)",
                 "if args[:2] == ['-m', 'app.training']:",
@@ -775,3 +775,166 @@ def test_live_policy_challenger_script_dry_run_prints_authoritative_command() ->
     assert "trading config: .\\configs\\paper_trading.paper.yaml" in result.stdout
     assert "training config: .\\configs\\training.m7.json" in result.stdout
     assert "command: python -m app.training.live_policy_challenger" in result.stdout
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32" or _POWERSHELL is None,
+    reason="These operator-script dry-run tests are Windows-specific.",
+)
+def test_m20_preflight_script_dry_run_prints_authoritative_command() -> None:
+    result = subprocess.run(
+        [
+            _POWERSHELL,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(_REPO_ROOT / "scripts" / "preflight_m20_training.ps1"),
+            "-DryRun",
+        ],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "M20 specialist preflight dry run" in result.stdout
+    assert "config path:" in result.stdout
+    assert "command: python -m app.training.preflight_m20" in result.stdout
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32" or _POWERSHELL is None,
+    reason="These operator-script tests are Windows-specific.",
+)
+def test_m20_preflight_script_dry_run_honors_require_gpu_flag() -> None:
+    result = subprocess.run(
+        [
+            _POWERSHELL,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(_REPO_ROOT / "scripts" / "preflight_m20_training.ps1"),
+            "-DryRun",
+            "-RequireGpu",
+        ],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "M20 specialist preflight dry run" in result.stdout
+    assert "gpu required: yes" in result.stdout
+    assert "--require-gpu" in result.stdout
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32" or _POWERSHELL is None,
+    reason="These operator-script dry-run tests are Windows-specific.",
+)
+def test_start_m20_training_script_dry_run_prints_full_dataset_training_truth() -> None:
+    result = subprocess.run(
+        [
+            _POWERSHELL,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(_REPO_ROOT / "scripts" / "start_m20_training.ps1"),
+            "-DryRun",
+        ],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "M20 specialist training dry run" in result.stdout
+    assert "training source table: feature_ohlc" in result.stdout
+    assert "symbols: BTC/USD, ETH/USD, SOL/USD" in result.stdout
+    assert "models: neuralforecast_nhits, neuralforecast_patchtst" in result.stdout
+    assert (
+        "specialist dataset mode: neuralforecast_nhits=local_files_partitioned, "
+        "neuralforecast_patchtst=local_files_partitioned"
+        in result.stdout
+    )
+    assert (
+        "specialist memory profile: neuralforecast_nhits(batch=1, valid=1, windows=8, "
+        "infer_windows=8, step=128, precision=16-mixed); "
+        "neuralforecast_patchtst(batch=1, valid=1, windows=4, infer_windows=4, step=128, precision=16-mixed)"
+        in result.stdout
+    )
+    assert "allocator hint: expandable_segments:True" in result.stdout
+    assert (
+        "progress output: terminal bars disabled by config; see progress.log and "
+        "progress_status.json inside the new artifact run directory"
+        in result.stdout
+    )
+    assert "command: python -m app.training --config" in result.stdout
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32" or _POWERSHELL is None,
+    reason="These operator-script tests are Windows-specific.",
+)
+def test_start_m20_training_script_tolerates_native_stderr_when_training_exits_zero(
+    tmp_path: Path,
+) -> None:
+    readiness_payload = {
+        "config_path": str(_REPO_ROOT / "configs" / "training.m20.json"),
+        "source_table": "feature_ohlc",
+        "symbols": ["BTC/USD", "ETH/USD", "SOL/USD"],
+        "configured_models": ["neuralforecast_nhits", "neuralforecast_patchtst"],
+        "preferred_execution_device": "gpu",
+        "ready_for_manual_training": True,
+        "warnings": [
+            "No real registry-backed NHITS or PatchTST specialist candidates exist yet; this batch only prepares the first real run."
+        ],
+        "blockers": [],
+        "registry": {
+            "specialist_entry_count": 0,
+        },
+        "runtime": {
+            "lightning": {"installed": True},
+            "neuralforecast": {"installed": True},
+            "torch": {
+                "version": "2.9.0+cu130",
+                "cuda_available": True,
+                "device_names": ["NVIDIA GeForce RTX 4060 Laptop GPU"],
+            },
+        },
+    }
+    _write_fake_python_launcher(tmp_path, readiness_payload=readiness_payload)
+    env = _script_env(tmp_path)
+    env["STREAMALPHA_TEST_ARTIFACT_ROOT"] = "artifacts/training/m20"
+    env["STREAMALPHA_TEST_ARTIFACT_STAMP"] = f"test-{int(time.time())}"
+    env["STREAMALPHA_TEST_TRAINING_EXIT_CODE"] = "0"
+
+    result = subprocess.run(
+        [
+            _POWERSHELL,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(_REPO_ROOT / "scripts" / "start_m20_training.ps1"),
+        ],
+        cwd=_REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "M20 specialist training completed" in result.stdout
+    assert "winner model name: autogluon_tabular" in result.stdout

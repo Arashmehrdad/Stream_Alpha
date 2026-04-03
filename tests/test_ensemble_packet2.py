@@ -36,8 +36,18 @@ from app.ensemble.schemas import (
     EnsembleResearchCandidate,
     EnsembleResearchResult,
 )
+from app.training.neuralforecast import (
+    build_neuralforecast_nhits_classifier,
+    build_neuralforecast_patchtst_classifier,
+)
+from app.training.pretrained_forecasters import (
+    MODEL_FAMILY_AMAZON_CHRONOS_2,
+    MODEL_FAMILY_GOOGLE_TIMESFM_2_0_500M_PYTORCH,
+    MODEL_FAMILY_MOIRAI_SMALL,
+)
 from app.training.dataset import (
     DatasetSample,
+    SourceFeatureRow,
     TrainingConfig,
     TrainingDataset,
 )
@@ -45,6 +55,7 @@ from app.training.registry import (
     export_external_model_to_registry,
     write_current_registry_entry,
 )
+from tests.test_inference_model_loader import _install_fake_neuralforecast_runtime
 
 
 class LookupProbabilityModel:
@@ -103,7 +114,11 @@ class _FakeEnsembleRepo:
         return self.profiles.get(profile_id)
 
 
-def test_packet2_research_selects_the_canonical_three_role_roster(tmp_path: Path) -> None:
+def test_packet2_research_selects_the_canonical_three_role_roster(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _install_fake_neuralforecast_runtime(monkeypatch)
     registry_root = tmp_path / "registry"
     _export_candidate(
         tmp_path,
@@ -132,6 +147,7 @@ def test_packet2_research_selects_the_canonical_three_role_roster(tmp_path: Path
         model_family="NEURALFORECAST_NHITS",
         candidate_role=TREND_SPECIALIST,
         mapping={1.0: 0.90, 2.0: 0.20, 3.0: 0.20, 4.0: 0.20, 5.0: 0.20},
+        specialist_forecast_return=0.03,
     )
     _export_candidate(
         tmp_path,
@@ -140,7 +156,7 @@ def test_packet2_research_selects_the_canonical_three_role_roster(tmp_path: Path
         model_name="tft_trend_specialist",
         model_family="NEURALFORECAST_TFT",
         candidate_role=TREND_SPECIALIST,
-        mapping={1.0: 0.60, 2.0: 0.55, 3.0: 0.20, 4.0: 0.20, 5.0: 0.20},
+        mapping={1.0: 0.20, 2.0: 0.55, 3.0: 0.20, 4.0: 0.20, 5.0: 0.20},
     )
     _export_candidate(
         tmp_path,
@@ -150,6 +166,7 @@ def test_packet2_research_selects_the_canonical_three_role_roster(tmp_path: Path
         model_family="NEURALFORECAST_PATCHTST",
         candidate_role=RANGE_SPECIALIST,
         mapping={1.0: 0.20, 2.0: 0.20, 3.0: 0.85, 4.0: 0.20, 5.0: 0.20},
+        specialist_forecast_return=-0.03,
     )
     _export_candidate(
         tmp_path,
@@ -171,10 +188,22 @@ def test_packet2_research_selects_the_canonical_three_role_roster(tmp_path: Path
     )
 
     selection = select_runtime_roster(results)
+    result_by_version = {
+        result.candidate.model_version: result
+        for result in results
+    }
 
     assert selection.generalist.candidate.model_version == "m20-autogluon-generalist-v2"
     assert selection.trend_specialist.candidate.model_version == "m20-nhits-trend-v1"
     assert selection.range_specialist.candidate.model_version == "m20-patchtst-range-v1"
+    assert (
+        result_by_version["m20-nhits-trend-v1"].candidate.model_family
+        == "NEURALFORECAST_NHITS"
+    )
+    assert (
+        result_by_version["m20-patchtst-range-v1"].candidate.model_family
+        == "NEURALFORECAST_PATCHTST"
+    )
     assert selection.evidence_summary_json["top_level_model_identity"]["model_name"] == (
         "dynamic_ensemble"
     )
@@ -182,6 +211,53 @@ def test_packet2_research_selects_the_canonical_three_role_roster(tmp_path: Path
         GENERALIST,
         TREND_SPECIALIST,
         RANGE_SPECIALIST,
+    }
+
+
+def test_packet2_candidate_discovery_accepts_future_pretrained_family_metadata(
+    tmp_path: Path,
+) -> None:
+    registry_root = tmp_path / "registry"
+    _export_candidate(
+        tmp_path,
+        registry_root=registry_root,
+        model_version="m20-chronos2-generalist-v0",
+        model_name="chronos2_smoke_scaffold",
+        model_family=MODEL_FAMILY_AMAZON_CHRONOS_2,
+        candidate_role=GENERALIST,
+        mapping={1.0: 0.60, 2.0: 0.40},
+    )
+    _export_candidate(
+        tmp_path,
+        registry_root=registry_root,
+        model_version="m20-timesfm-trend-v0",
+        model_name="timesfm_smoke_scaffold",
+        model_family=MODEL_FAMILY_GOOGLE_TIMESFM_2_0_500M_PYTORCH,
+        candidate_role=TREND_SPECIALIST,
+        mapping={1.0: 0.65, 2.0: 0.35},
+    )
+    _export_candidate(
+        tmp_path,
+        registry_root=registry_root,
+        model_version="m20-moirai-range-v0",
+        model_name="moirai_smoke_scaffold",
+        model_family=MODEL_FAMILY_MOIRAI_SMALL,
+        candidate_role=RANGE_SPECIALIST,
+        mapping={1.0: 0.55, 2.0: 0.45},
+    )
+
+    candidates = load_registry_research_candidates(
+        registry_root=registry_root,
+        include_current_generalist=False,
+    )
+
+    assert {
+        (candidate.model_family, candidate.candidate_role)
+        for candidate in candidates
+    } == {
+        (MODEL_FAMILY_AMAZON_CHRONOS_2, GENERALIST),
+        (MODEL_FAMILY_GOOGLE_TIMESFM_2_0_500M_PYTORCH, TREND_SPECIALIST),
+        (MODEL_FAMILY_MOIRAI_SMALL, RANGE_SPECIALIST),
     }
 
 
@@ -446,11 +522,68 @@ def _export_candidate(  # pylint: disable=too-many-arguments
     model_family: str,
     candidate_role: str,
     mapping: dict[float, float],
+    specialist_forecast_return: float | None = None,
     set_current: bool = False,
 ) -> None:
     artifact_path = tmp_path / f"{model_version}.joblib"
-    joblib.dump(
-        {
+    if model_family == "NEURALFORECAST_NHITS":
+        model = build_neuralforecast_nhits_classifier(
+            {
+                "candidate_role": candidate_role,
+                "input_size_candles": 1,
+                "calibration_windows": 2,
+                "max_steps": 5,
+                "scope_regimes": _scope_regimes_for_role(candidate_role),
+                "model_kwargs": {
+                    "forecast_return": (
+                        0.02
+                        if specialist_forecast_return is None
+                        else specialist_forecast_return
+                    )
+                },
+            }
+        )
+        dataset = _dataset()
+        model.fit_samples(list(dataset.samples), source_rows=list(dataset.source_rows))
+        payload = {
+            "model_name": model_name,
+            "trained_at": "2026-03-22T00:00:00Z",
+            "feature_columns": model.get_feature_columns(),
+            "expanded_feature_names": model.get_expanded_feature_names(),
+            "training_model_config": model.get_training_config(),
+            "registry_metadata": model.get_registry_metadata(),
+            "model": model,
+        }
+    elif model_family == "NEURALFORECAST_PATCHTST":
+        model = build_neuralforecast_patchtst_classifier(
+            {
+                "candidate_role": candidate_role,
+                "input_size_candles": 1,
+                "calibration_windows": 2,
+                "max_steps": 5,
+                "scope_regimes": _scope_regimes_for_role(candidate_role),
+                "model_kwargs": {
+                    "forecast_return": (
+                        0.02
+                        if specialist_forecast_return is None
+                        else specialist_forecast_return
+                    )
+                },
+            }
+        )
+        dataset = _dataset()
+        model.fit_samples(list(dataset.samples), source_rows=list(dataset.source_rows))
+        payload = {
+            "model_name": model_name,
+            "trained_at": "2026-03-22T00:00:00Z",
+            "feature_columns": model.get_feature_columns(),
+            "expanded_feature_names": model.get_expanded_feature_names(),
+            "training_model_config": model.get_training_config(),
+            "registry_metadata": model.get_registry_metadata(),
+            "model": model,
+        }
+    else:
+        payload = {
             "model_name": model_name,
             "trained_at": "2026-03-22T00:00:00Z",
             "feature_columns": [
@@ -468,9 +601,8 @@ def _export_candidate(  # pylint: disable=too-many-arguments
                 "macd_line_12_26",
             ],
             "model": LookupProbabilityModel(mapping),
-        },
-        artifact_path,
-    )
+        }
+    joblib.dump(payload, artifact_path)
     entry = export_external_model_to_registry(
         model_artifact_path=artifact_path,
         model_version=model_version,
@@ -582,8 +714,20 @@ def _dataset() -> TrainingDataset:
             macd_line_12_26=0.00,
         ),
     )
+    source_rows = tuple(
+        SourceFeatureRow(
+            row_id=sample.row_id,
+            symbol=sample.symbol,
+            interval_begin=sample.interval_begin,
+            as_of_time=sample.as_of_time,
+            close_price=sample.close_price,
+            features=dict(sample.features),
+        )
+        for sample in samples
+    )
     return TrainingDataset(
         samples=samples,
+        source_rows=source_rows,
         source_schema=(
             "symbol",
             "interval_begin",

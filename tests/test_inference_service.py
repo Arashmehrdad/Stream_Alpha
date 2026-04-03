@@ -8,6 +8,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import joblib
 import pytest
 
 from app.continual_learning.schemas import (
@@ -18,7 +19,12 @@ from app.continual_learning.schemas import (
     ContinualLearningRollbackRequest,
     ContinualLearningWorkflowResponse,
 )
-from app.inference.service import InferenceService, load_model_artifact
+from app.inference.service import (
+    ArtifactSchemaMismatchError,
+    InferenceService,
+    load_model_artifact,
+)
+from app.training.neuralforecast import build_neuralforecast_nhits_classifier
 from tests.test_inference_api import (  # Reuse existing deterministic stubs/helpers.
     FakeAlertRepository,
     FakeDatabase,
@@ -29,6 +35,11 @@ from tests.test_inference_api import (  # Reuse existing deterministic stubs/hel
     _build_settings,
     _feature_row,
     _write_artifact,
+)
+from tests.test_inference_model_loader import (
+    _install_fake_neuralforecast_runtime,
+    _sequence_samples,
+    _sequence_source_rows,
 )
 
 
@@ -184,8 +195,13 @@ def _build_service(
     database: FakeDatabase,
     continual_learning_service: RecordingContinualLearningService,
     prob_up: float = 0.7,
+    artifact_path: Path | None = None,
 ) -> InferenceService:
-    model_path = _write_artifact(tmp_path, prob_up=prob_up)
+    model_path = (
+        _write_artifact(tmp_path, prob_up=prob_up)
+        if artifact_path is None
+        else artifact_path
+    )
     artifact = load_model_artifact(str(model_path))
     return InferenceService(
         _build_settings(str(model_path)),
@@ -198,6 +214,55 @@ def _build_service(
         ensemble_service=NullEnsembleService(),
         continual_learning_service=continual_learning_service,
     )
+
+
+def _write_sequence_artifact(
+    tmp_path: Path,
+    *,
+    monkeypatch: pytest.MonkeyPatch,
+    input_size_candles: int,
+) -> tuple[Path, list[dict]]:
+    _install_fake_neuralforecast_runtime(monkeypatch)
+    model = build_neuralforecast_nhits_classifier(
+        {
+            "candidate_role": "TREND_SPECIALIST",
+            "input_size_candles": input_size_candles,
+            "calibration_windows": 2,
+            "max_steps": 5,
+            "model_kwargs": {"forecast_return": 0.03},
+            "scope_regimes": ["TREND_UP", "TREND_DOWN"],
+        }
+    )
+    source_rows = _sequence_source_rows()
+    samples = _sequence_samples()
+    model.fit_samples(samples, source_rows=source_rows)
+
+    run_dir = tmp_path / "artifacts" / "training" / "m20" / "20260403T120000Z"
+    run_dir.mkdir(parents=True, exist_ok=False)
+    artifact_path = run_dir / "model.joblib"
+    joblib.dump(
+        {
+            "model_name": "neuralforecast_nhits",
+            "trained_at": "2026-04-03T12:00:00Z",
+            "feature_columns": model.get_feature_columns(),
+            "expanded_feature_names": model.get_expanded_feature_names(),
+            "training_model_config": model.get_training_config(),
+            "registry_metadata": model.get_registry_metadata(),
+            "model": model,
+        },
+        artifact_path,
+    )
+    history_rows = [
+        {
+            "symbol": row.symbol,
+            "interval_begin": row.interval_begin,
+            "as_of_time": row.as_of_time,
+            "close_price": row.close_price,
+            **row.features,
+        }
+        for row in source_rows
+    ]
+    return artifact_path, history_rows
 
 
 def test_predict_from_row_adds_continual_learning_fields_without_score_change(
@@ -308,3 +373,60 @@ def test_continual_learning_rollback_profile_passes_canonical_health_and_freshne
     assert response.decision == "ROLLBACK"
     assert cl_service.rollback_calls[0]["health_overall_status"] == "HEALTHY"
     assert cl_service.rollback_calls[0]["freshness_status"] == "FRESH"
+
+
+def test_predict_from_row_scores_sequence_artifact_with_sufficient_lookback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact_path, history_rows = _write_sequence_artifact(
+        tmp_path,
+        monkeypatch=monkeypatch,
+        input_size_candles=2,
+    )
+    database = FakeDatabase(
+        row=history_rows[-1],
+        history_rows=history_rows,
+    )
+    cl_service = RecordingContinualLearningService()
+    service = _build_service(
+        tmp_path,
+        database=database,
+        continual_learning_service=cl_service,
+        artifact_path=artifact_path,
+    )
+
+    freshness = asyncio.run(service.freshness_evaluation(symbol="BTC/USD"))
+    prediction = asyncio.run(service.predict_from_row(history_rows[-1], freshness=freshness))
+
+    assert prediction.model_name == "neuralforecast_nhits"
+    assert prediction.prob_up >= 0.5
+    assert prediction.predicted_class == "UP"
+
+
+def test_predict_from_row_fails_cleanly_when_sequence_history_is_insufficient(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact_path, history_rows = _write_sequence_artifact(
+        tmp_path,
+        monkeypatch=monkeypatch,
+        input_size_candles=4,
+    )
+    database = FakeDatabase(
+        row=history_rows[1],
+        history_rows=history_rows[:2],
+    )
+    cl_service = RecordingContinualLearningService()
+    service = _build_service(
+        tmp_path,
+        database=database,
+        continual_learning_service=cl_service,
+        artifact_path=artifact_path,
+    )
+
+    with pytest.raises(
+        ArtifactSchemaMismatchError,
+        match="required 4 lookback rows, found 2",
+    ):
+        asyncio.run(service.predict_from_row(history_rows[1]))

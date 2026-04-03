@@ -162,6 +162,42 @@ class InferenceDatabase:
             if row[feature_name] is not None
         }
 
+    async def fetch_feature_history_rows(
+        self,
+        *,
+        symbol: str,
+        interval_minutes: int,
+        end_as_of_time: datetime,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """Fetch ordered finalized feature history rows up to one exact scoring cutoff."""
+        if limit <= 0:
+            raise ValueError("limit must be positive for feature-history queries")
+        try:
+            pool = await self._require_pool()
+            rows = await pool.fetch(
+                f"""
+                SELECT *
+                FROM {self._feature_table}
+                WHERE source_exchange = 'kraken'
+                  AND symbol = $1
+                  AND interval_minutes = $2
+                  AND as_of_time <= $3
+                ORDER BY as_of_time DESC, interval_begin DESC
+                LIMIT $4
+                """,
+                symbol,
+                interval_minutes,
+                end_as_of_time,
+                limit,
+            )
+        except Exception as error:  # pylint: disable=broad-exception-caught
+            raise DatabaseUnavailableError(f"Could not query PostgreSQL: {error}") from error
+        return [
+            dict(row)
+            for row in reversed(rows)
+        ]
+
     async def _require_pool(self) -> asyncpg.Pool | Any:
         if self._pool is None:
             await self.connect()

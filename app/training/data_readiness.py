@@ -137,6 +137,15 @@ class _TableCoverage:
     intervals_by_symbol: dict[str, tuple[datetime, ...]]
 
 
+@dataclass(frozen=True, slots=True)
+class _TrainingGateCoverage:
+    postgres_reachable: bool
+    postgres_error: str | None
+    source_table_exists: bool | None
+    row_counts_by_symbol: dict[str, int]
+    unique_timestamps: int | None
+
+
 def default_data_readiness_artifact_root() -> Path:
     """Return the default artifact root for readiness reports."""
     return Path(__file__).resolve().parents[2] / "artifacts" / "training" / "data_readiness"
@@ -301,10 +310,43 @@ def build_data_readiness_report(
 
 def assert_training_data_ready(config: TrainingConfig, *, config_path: Path | None = None) -> None:
     """Fail early with the shared readiness logic before a training run starts."""
-    report = build_data_readiness_report(config, config_path=config_path)
-    if report.ready_for_training:
-        return
-    raise ValueError(report.readiness_detail)
+    del config_path
+    settings = Settings.from_env()
+    required_unique_timestamps = minimum_required_unique_timestamps(
+        first_train_fraction=config.first_train_fraction,
+        test_fraction=config.test_fraction,
+        test_folds=config.test_folds,
+        purge_gap_candles=config.purge_gap_candles,
+    )
+    coverage = asyncio.run(
+        _probe_training_gate_with_fallback(
+            settings=settings,
+            config=config,
+        )
+    )
+    if not coverage.postgres_reachable:
+        raise ValueError(
+            "PostgreSQL is not reachable for training readiness checks: "
+            f"{coverage.postgres_error}"
+        )
+    if coverage.source_table_exists is False:
+        raise ValueError(f"{config.source_table} does not exist yet for training.")
+    missing_symbols = [
+        symbol
+        for symbol in config.symbols
+        if coverage.row_counts_by_symbol.get(symbol, 0) <= config.label_horizon_candles
+    ]
+    if missing_symbols:
+        raise ValueError(
+            f"{config.source_table} is still missing configured symbols required for training: "
+            f"{missing_symbols}."
+        )
+    actual_unique_timestamps = int(coverage.unique_timestamps or 0)
+    if actual_unique_timestamps < required_unique_timestamps:
+        raise ValueError(
+            "feature_ohlc does not yet satisfy the configured walk-forward timestamp "
+            f"requirement ({actual_unique_timestamps}/{required_unique_timestamps})."
+        )
 
 
 def write_data_readiness_artifacts(
@@ -408,6 +450,120 @@ async def _load_table_coverage_with_fallback(
     if last_error is None:
         raise ValueError("No PostgreSQL DSN candidates were available for readiness checks")
     raise ValueError(f"Could not connect to PostgreSQL for readiness checks: {last_error}") from last_error
+
+
+async def _probe_training_gate_with_fallback(
+    *,
+    settings: Settings,
+    config: TrainingConfig,
+) -> _TrainingGateCoverage:
+    last_error: Exception | None = None
+    for dsn in candidate_dsns(settings.postgres):
+        try:
+            return await _probe_training_gate(
+                dsn=dsn,
+                table_name=config.source_table,
+                symbols=config.symbols,
+                time_column=config.time_column,
+            )
+        except (OSError, asyncpg.PostgresConnectionError) as error:
+            last_error = error
+            continue
+    if last_error is None:
+        return _TrainingGateCoverage(
+            postgres_reachable=False,
+            postgres_error="No PostgreSQL DSN candidates were available for readiness checks",
+            source_table_exists=None,
+            row_counts_by_symbol={symbol: 0 for symbol in config.symbols},
+            unique_timestamps=None,
+        )
+    return _TrainingGateCoverage(
+        postgres_reachable=False,
+        postgres_error=str(last_error),
+        source_table_exists=None,
+        row_counts_by_symbol={symbol: 0 for symbol in config.symbols},
+        unique_timestamps=None,
+    )
+
+
+async def _probe_training_gate(
+    *,
+    dsn: str,
+    table_name: str,
+    symbols: tuple[str, ...],
+    time_column: str,
+) -> _TrainingGateCoverage:
+    connection = await asyncpg.connect(dsn)
+    try:
+        schema_name, relation_name = _split_table_name(table_name)
+        source_table_exists = bool(
+            await connection.fetchval(
+                """
+                SELECT EXISTS(
+                    SELECT 1
+                    FROM information_schema.tables
+                    WHERE table_schema = $1 AND table_name = $2
+                )
+                """,
+                schema_name,
+                relation_name,
+            )
+        )
+        if not source_table_exists:
+            return _TrainingGateCoverage(
+                postgres_reachable=True,
+                postgres_error=None,
+                source_table_exists=False,
+                row_counts_by_symbol={symbol: 0 for symbol in symbols},
+                unique_timestamps=0,
+            )
+
+        quoted_table_name = _quote_table_name(table_name)
+        quoted_time_column = _quote_identifier(time_column)
+        row_count_rows = await connection.fetch(
+            f"""
+            SELECT symbol, COUNT(*) AS row_count
+            FROM {quoted_table_name}
+            WHERE symbol = ANY($1::text[])
+            GROUP BY symbol
+            """,
+            list(symbols),
+        )
+        row_counts_by_symbol = {
+            symbol: 0
+            for symbol in symbols
+        }
+        for row in row_count_rows:
+            row_counts_by_symbol[str(row["symbol"])] = int(row["row_count"])
+
+        unique_timestamps = int(
+            await connection.fetchval(
+                f"""
+                SELECT COUNT(DISTINCT {quoted_time_column})
+                FROM {quoted_table_name}
+                WHERE symbol = ANY($1::text[])
+                """,
+                list(symbols),
+            )
+        )
+        return _TrainingGateCoverage(
+            postgres_reachable=True,
+            postgres_error=None,
+            source_table_exists=True,
+            row_counts_by_symbol=row_counts_by_symbol,
+            unique_timestamps=unique_timestamps,
+        )
+    finally:
+        await connection.close()
+
+
+def _split_table_name(table_name: str) -> tuple[str, str]:
+    parts = table_name.split(".")
+    if not 1 <= len(parts) <= 2:
+        raise ValueError(f"Unsupported table name format: {table_name}")
+    if len(parts) == 1:
+        return "public", parts[0]
+    return parts[0], parts[1]
 
 
 async def _load_table_coverage(

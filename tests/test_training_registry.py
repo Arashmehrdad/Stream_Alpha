@@ -11,6 +11,14 @@ import pytest
 
 from app.training.compare import compare_run_to_current, write_comparison_artifact
 from app.training.promote import promote_run
+from app.training.pretrained_forecasters import (
+    DEFAULT_PRETRAINED_ARTIFACT_FORMAT,
+    DEFAULT_MOIRAI_1_0_R_BASE_LICENSE_NOTES,
+    GENERALIST,
+    MODEL_FAMILY_AMAZON_CHRONOS_2,
+    MODEL_FAMILY_MOIRAI_BASE,
+    RANGE_SPECIALIST,
+)
 from app.training.registry import (
     build_run_manifest,
     load_current_registry_entry,
@@ -185,6 +193,123 @@ def test_run_manifest_and_registry_entry_record_autogluon_training_config(
 
     assert manifest["winner"]["training_config"] == training_model_config
     assert current["training_model_config"] == training_model_config
+
+
+def test_run_manifest_and_registry_entry_record_specialist_registry_metadata(
+    tmp_path: Path,
+) -> None:
+    """Registry paths should preserve specialist model-family discovery metadata."""
+    registry_metadata = {
+        "model_family": "NEURALFORECAST_NHITS",
+        "candidate_role": "TREND_SPECIALIST",
+        "scope_regimes": ["TREND_UP", "TREND_DOWN"],
+    }
+    run_dir = write_run_dir(
+        tmp_path / "m20",
+        "20260403T120000Z",
+        model_name="neuralforecast_nhits",
+        mean_long_only_net_value_proxy=0.001,
+        directional_accuracy=0.57,
+        brier_score=0.23,
+        training_model_config={"model_family": "NEURALFORECAST_NHITS"},
+        registry_metadata=registry_metadata,
+    )
+
+    manifest = build_run_manifest(run_dir)
+    current = promote_run(
+        run_dir,
+        model_version="m20-20260403T120000Z",
+        registry_root=tmp_path / "registry",
+    )
+
+    assert manifest["winner"]["metadata"] == registry_metadata
+    assert current["metadata"] == registry_metadata
+
+
+def test_run_manifest_and_registry_entry_record_future_pretrained_metadata(
+    tmp_path: Path,
+) -> None:
+    """Registry paths should preserve staged metadata for future pretrained challengers."""
+    registry_metadata = {
+        "model_family": MODEL_FAMILY_AMAZON_CHRONOS_2,
+        "candidate_role": GENERALIST,
+        "scope_regimes": ["TREND_UP", "TREND_DOWN", "RANGE", "HIGH_VOL"],
+        "artifact_format": DEFAULT_PRETRAINED_ARTIFACT_FORMAT,
+        "pretrained_source": "amazon/chronos-2",
+    }
+    run_dir = write_run_dir(
+        tmp_path / "m20",
+        "20260403T123000Z",
+        model_name="chronos2_smoke_scaffold",
+        mean_long_only_net_value_proxy=0.0005,
+        directional_accuracy=0.56,
+        brier_score=0.23,
+        training_model_config={
+            "adapter": "calibrated_forecast_score",
+            "model_family": MODEL_FAMILY_AMAZON_CHRONOS_2,
+        },
+        registry_metadata=registry_metadata,
+    )
+
+    manifest = build_run_manifest(run_dir)
+    current = promote_run(
+        run_dir,
+        model_version="m20-20260403T123000Z",
+        registry_root=tmp_path / "registry",
+    )
+
+    assert manifest["winner"]["metadata"]["model_family"] == MODEL_FAMILY_AMAZON_CHRONOS_2
+    assert manifest["winner"]["metadata"]["candidate_role"] == GENERALIST
+    assert current["metadata"]["model_family"] == MODEL_FAMILY_AMAZON_CHRONOS_2
+    assert current["metadata"]["candidate_role"] == GENERALIST
+    assert current["metadata"]["artifact_format"] == DEFAULT_PRETRAINED_ARTIFACT_FORMAT
+
+
+def test_run_manifest_and_registry_entry_preserve_moirai_license_notes(
+    tmp_path: Path,
+) -> None:
+    """Registry metadata should keep the explicit Apache snapshot note for Moirai."""
+    registry_metadata = {
+        "model_family": MODEL_FAMILY_MOIRAI_BASE,
+        "candidate_role": RANGE_SPECIALIST,
+        "scope_regimes": ["RANGE", "HIGH_VOL"],
+        "artifact_format": DEFAULT_PRETRAINED_ARTIFACT_FORMAT,
+        "pretrained_source": "sktime/moirai-1.0-R-base",
+        "license_name": "Apache-2.0",
+        "license_notes": DEFAULT_MOIRAI_1_0_R_BASE_LICENSE_NOTES,
+    }
+    run_dir = write_run_dir(
+        tmp_path / "m20",
+        "20260403T131500Z",
+        model_name="moirai_range_smoke_scaffold",
+        mean_long_only_net_value_proxy=0.0004,
+        directional_accuracy=0.55,
+        brier_score=0.24,
+        training_model_config={
+            "adapter": "calibrated_forecast_score",
+            "model_family": MODEL_FAMILY_MOIRAI_BASE,
+        },
+        registry_metadata=registry_metadata,
+    )
+
+    manifest = build_run_manifest(run_dir)
+    current = promote_run(
+        run_dir,
+        model_version="m20-20260403T131500Z",
+        registry_root=tmp_path / "registry",
+    )
+
+    assert manifest["winner"]["metadata"]["model_family"] == MODEL_FAMILY_MOIRAI_BASE
+    assert manifest["winner"]["metadata"]["candidate_role"] == RANGE_SPECIALIST
+    assert manifest["winner"]["metadata"]["license_name"] == "Apache-2.0"
+    assert (
+        manifest["winner"]["metadata"]["license_notes"]
+        == DEFAULT_MOIRAI_1_0_R_BASE_LICENSE_NOTES
+    )
+    assert current["metadata"]["model_family"] == MODEL_FAMILY_MOIRAI_BASE
+    assert current["metadata"]["candidate_role"] == RANGE_SPECIALIST
+    assert current["metadata"]["license_name"] == "Apache-2.0"
+    assert current["metadata"]["license_notes"] == DEFAULT_MOIRAI_1_0_R_BASE_LICENSE_NOTES
 
 
 def test_promote_run_rejects_legacy_archived_sklearn_winner(tmp_path: Path) -> None:
