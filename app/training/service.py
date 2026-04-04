@@ -394,19 +394,26 @@ def run_training(
     config_path: Path,
     *,
     resume_artifact_dir: Path | None = None,
+    parquet_dir: Path | None = None,
 ) -> Path:
     """Run the full offline M3 training flow and save artifacts to disk.
 
     If *resume_artifact_dir* is given, the run continues from the last
     completed fold checkpoint found inside that directory.
+
+    If *parquet_dir* is given, load training data from exported parquet files
+    instead of PostgreSQL.
     """
     config = load_training_config(config_path)
     _validate_authoritative_model_stack(config)
-    print(f"[training] readiness gate: probing {config.source_table} for {list(config.symbols)}")
-    assert_training_data_ready(config, config_path=config_path)
-    print("[training] readiness gate passed")
-    print(f"[training] loading full offline dataset from {config.source_table}")
-    dataset = load_training_dataset(config)
+    if parquet_dir is not None:
+        print(f"[training] loading dataset from parquet: {parquet_dir}")
+    else:
+        print(f"[training] readiness gate: probing {config.source_table} for {list(config.symbols)}")
+        assert_training_data_ready(config, config_path=config_path)
+        print("[training] readiness gate passed")
+        print(f"[training] loading full offline dataset from {config.source_table}")
+    dataset = load_training_dataset(config, parquet_dir=parquet_dir)
     print(
         "[training] dataset loaded: "
         f"source_rows={len(dataset.source_rows)}, "

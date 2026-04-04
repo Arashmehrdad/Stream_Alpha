@@ -23,10 +23,20 @@ def main() -> None:
         default=None,
         help="Path to an existing artifact directory to resume from its checkpoint",
     )
+    parser.add_argument(
+        "--parquet-dir",
+        default=None,
+        help="Path to exported parquet dataset (skip PostgreSQL loading)",
+    )
     arguments = parser.parse_args()
     try:
         resume_dir = Path(arguments.resume) if arguments.resume else None
-        run_training(Path(arguments.config), resume_artifact_dir=resume_dir)
+        parquet_dir = Path(arguments.parquet_dir) if arguments.parquet_dir else None
+        run_training(
+            Path(arguments.config),
+            resume_artifact_dir=resume_dir,
+            parquet_dir=parquet_dir,
+        )
     except ValueError as error:
         raise SystemExit(str(error)) from error
 

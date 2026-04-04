@@ -240,9 +240,19 @@ def load_training_config(config_path: Path) -> TrainingConfig:
     )
 
 
-def load_training_dataset(config: TrainingConfig) -> TrainingDataset:
-    """Load the configured source table from PostgreSQL and construct labeled samples."""
-    dataset = load_training_dataset_preview(config)
+def load_training_dataset(
+    config: TrainingConfig,
+    *,
+    parquet_dir: Path | None = None,
+) -> TrainingDataset:
+    """Load the configured source table from PostgreSQL and construct labeled samples.
+
+    If *parquet_dir* is given, read from exported parquet files instead of PostgreSQL.
+    """
+    if parquet_dir is not None:
+        dataset = _load_training_dataset_from_parquet(parquet_dir, config)
+    else:
+        dataset = load_training_dataset_preview(config)
     return _require_non_empty_training_dataset(dataset, config)
 
 
@@ -250,6 +260,56 @@ def load_training_dataset_preview(config: TrainingConfig) -> TrainingDataset:
     """Load the configured source table without requiring that labeled rows already exist."""
     settings = Settings.from_env()
     return asyncio.run(_load_training_dataset_with_fallback(settings, config))
+
+
+def _load_training_dataset_from_parquet(
+    parquet_dir: Path,
+    config: TrainingConfig,
+) -> TrainingDataset:
+    """Load training data from exported parquet files instead of PostgreSQL."""
+    import pyarrow.parquet as pq  # noqa: E402  # deferred import
+
+    selected_columns = _selected_source_columns(config)
+    all_rows: list[dict[str, Any]] = []
+
+    for symbol in config.symbols:
+        safe_symbol = symbol.replace("/", "_")
+        symbol_dir = parquet_dir / safe_symbol
+        if not symbol_dir.is_dir():
+            raise ValueError(
+                f"Parquet directory for symbol {symbol} not found at {symbol_dir}"
+            )
+        part_files = sorted(symbol_dir.glob("*.parquet"))
+        if not part_files:
+            raise ValueError(f"No parquet files found in {symbol_dir}")
+        for part_file in part_files:
+            table = pq.read_table(part_file, columns=selected_columns)
+            df = table.to_pandas()
+            all_rows.extend(df.to_dict(orient="records"))
+
+    all_rows.sort(
+        key=lambda row: (
+            str(row["symbol"]),
+            row[config.time_column],
+            row[config.interval_column],
+        )
+    )
+
+    source_schema = list(all_rows[0].keys()) if all_rows else selected_columns
+    source_rows = _build_source_feature_rows(all_rows, config)
+    samples, manifest = _build_labeled_samples(all_rows, config)
+    ordered_samples = tuple(
+        sorted(samples, key=lambda sample: (sample.as_of_time, sample.symbol))
+    )
+    return TrainingDataset(
+        samples=ordered_samples,
+        source_rows=source_rows,
+        source_schema=tuple(source_schema),
+        manifest=manifest,
+        feature_columns=config.all_feature_columns,
+        categorical_feature_columns=config.categorical_feature_columns,
+        numeric_feature_columns=config.numeric_feature_columns,
+    )
 
 
 async def _load_training_dataset_with_fallback(
