@@ -37,8 +37,8 @@ notebook["cells"] = [
         "\n"
         "**Before running:**\n"
         "1. Set runtime to **GPU** (Runtime \u2192 Change runtime type \u2192 T4 GPU)\n"
-        "2. Upload your exported parquet dataset to Google Drive at:\n"
-        "   `My Drive/Stream_Alpha/feature_ohlc_for_colab/`\n"
+        "2. Upload your exported `exports/` folder to Google Drive at:\n"
+        "   `My Drive/Stream_Alpha/exports/feature_ohlc_for_colab/`\n"
     ),
     md("## 1. Mount Google Drive"),
     code(
@@ -46,7 +46,7 @@ notebook["cells"] = [
         "drive.mount('/content/drive')\n"
         "\n"
         "import os\n"
-        "DATASET_DIR = '/content/drive/MyDrive/Stream_Alpha/feature_ohlc_for_colab'\n"
+        "DATASET_DIR = '/content/drive/MyDrive/Stream_Alpha/exports/feature_ohlc_for_colab'\n"
         "assert os.path.isdir(DATASET_DIR), f'Dataset not found at {DATASET_DIR}'\n"
         "print('Dataset folders:', os.listdir(DATASET_DIR))\n"
     ),

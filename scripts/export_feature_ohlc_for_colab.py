@@ -37,6 +37,7 @@ async def export_feature_ohlc(
     config_path: Path,
     output_root: Path,
     rows_per_file: int,
+    host_override: str | None = None,
 ) -> None:
     config = json.loads(config_path.read_text(encoding="utf-8-sig"))
     source_table = str(config["source_table"])
@@ -46,6 +47,11 @@ async def export_feature_ohlc(
 
     settings = Settings.from_env()
     dsn = settings.postgres.dsn
+    if host_override:
+        # Replace Docker-internal hostname (e.g. 'postgres') with host-reachable name
+        from urllib.parse import urlparse, urlunparse
+        parsed = urlparse(dsn)
+        dsn = urlunparse(parsed._replace(netloc=f"{parsed.username}:{parsed.password}@{host_override}:{parsed.port}"))
 
     output_root.mkdir(parents=True, exist_ok=True)
 
@@ -125,6 +131,11 @@ def main() -> None:
         default=200000,
         help="Number of rows per parquet file",
     )
+    parser.add_argument(
+        "--host",
+        default="localhost",
+        help="Postgres host (default: localhost, override Docker-internal name)",
+    )
     args = parser.parse_args()
 
     asyncio.run(
@@ -132,6 +143,7 @@ def main() -> None:
             config_path=Path(args.config),
             output_root=Path(args.out),
             rows_per_file=int(args.rows_per_file),
+            host_override=args.host,
         )
     )
 

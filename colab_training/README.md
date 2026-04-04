@@ -13,8 +13,8 @@ Run the M20 training pipeline on Google Colab with GPU, bypassing local RAM limi
 
 2. **Upload to Google Drive**:
    - Create a folder on Google Drive: `My Drive/Stream_Alpha/`
-   - Upload the entire `exports/feature_ohlc_for_colab/` folder there
-   - Final path should be: `My Drive/Stream_Alpha/feature_ohlc_for_colab/BTC_USD/*.parquet`
+   - Upload the entire `exports/` folder there (keeping the subfolder structure)
+   - Final path should be: `My Drive/Stream_Alpha/exports/feature_ohlc_for_colab/BTC_USD/*.parquet`
 
 3. **Open the notebook** in Colab:
    - Upload `colab_training/M20_Training.ipynb` to Google Colab
