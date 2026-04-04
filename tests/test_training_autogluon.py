@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import pickle
 from pathlib import Path
 
+import numpy.random._pickle as numpy_random_pickle
+from numpy.random._mt19937 import MT19937
 import pytest
 
 from app.training import autogluon as autogluon_module
@@ -14,6 +17,11 @@ from app.training.autogluon import (
 from app.training.workdirs import (
     STREAMALPHA_LOCAL_TRAINING_TEMP_ROOT_ENV,
     resolve_local_training_temp_root,
+)
+
+
+_ORIGINAL_NUMPY_BIT_GENERATOR_CTOR = getattr(
+    numpy_random_pickle, "__bit_generator_ctor"
 )
 
 
@@ -54,8 +62,31 @@ class _FakeLoadedPredictor:
         return _FakeProbabilityTable([{0: 0.2, 1: 0.8} for _ in range(len(frame))])
 
 
+class _LegacyRandomStateLoadedPredictor(_FakeLoadedPredictor):
+    """Simulate one legacy NumPy-random unpickle during AutoGluon restore and score."""
+
+    @staticmethod
+    def _trigger_legacy_ctor() -> None:
+        pickle.loads(_legacy_mt19937_pickle())
+
+    def predict(self, frame) -> _FakePredictionList:
+        self._trigger_legacy_ctor()
+        return super().predict(frame)
+
+    def predict_proba(
+        self,
+        frame,
+        *,
+        as_multiclass: bool,
+    ) -> _FakeProbabilityTable:
+        self._trigger_legacy_ctor()
+        return super().predict_proba(frame, as_multiclass=as_multiclass)
+
+
 def _install_fake_tabular_predictor(
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    loaded_predictor_class: type[_FakeLoadedPredictor] = _FakeLoadedPredictor,
 ) -> dict[str, object]:
     recorded: dict[str, object] = {}
 
@@ -83,7 +114,7 @@ def _install_fake_tabular_predictor(
         def load(path: str, **kwargs) -> _FakeLoadedPredictor:
             recorded["load_path"] = path
             recorded["load_kwargs"] = kwargs
-            return _FakeLoadedPredictor()
+            return loaded_predictor_class()
 
     monkeypatch.setattr(
         autogluon_module,
@@ -99,6 +130,26 @@ def _rows() -> list[dict[str, object]]:
         {"symbol": "ETH/USD", "close_price": 99.5},
         {"symbol": "SOL/USD", "close_price": 103.2},
     ]
+
+
+class _LegacyMt19937StateFixture:
+    """Recreate the legacy MT19937 pickle shape used inside older AutoGluon artifacts."""
+
+    def __reduce__(self):
+        state = MT19937().__getstate__()
+        return (
+            _ORIGINAL_NUMPY_BIT_GENERATOR_CTOR,
+            (MT19937,),
+            (state, None),
+        )
+
+
+def _legacy_mt19937_pickle() -> bytes:
+    """Return one legacy MT19937 pickle payload that current NumPy rejects without compat."""
+    return bytes(_LEGACY_MT19937_PAYLOAD)
+
+
+_LEGACY_MT19937_PAYLOAD = pickle.dumps(_LegacyMt19937StateFixture())
 
 
 def test_build_autogluon_tabular_classifier_preserves_none_hyperparameters() -> None:
@@ -277,3 +328,43 @@ def test_predict_contract_uses_local_temp_root_for_runtime_restore(
     assert Path(recorded["load_path"]).is_relative_to(temp_root.resolve())
     assert predictions == [1, 1, 1]
     assert probabilities == [[0.2, 0.8], [0.2, 0.8], [0.2, 0.8]]
+
+
+def test_predict_contract_handles_legacy_numpy_random_pickles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Runtime restore should tolerate legacy MT19937 class-object pickles."""
+    recorded = _install_fake_tabular_predictor(
+        monkeypatch,
+        loaded_predictor_class=_LegacyRandomStateLoadedPredictor,
+    )
+    temp_root = tmp_path / "autogluon-temp-root"
+    monkeypatch.setenv(STREAMALPHA_LOCAL_TRAINING_TEMP_ROOT_ENV, str(temp_root))
+    classifier = build_autogluon_tabular_classifier(
+        {
+            "presets": "high_quality",
+            "time_limit": 900,
+        }
+    )
+
+    classifier.fit(_rows(), [1, 0, 1])
+    predictions = classifier.predict(_rows())
+    probabilities = classifier.predict_proba(_rows())
+
+    assert Path(recorded["load_path"]).is_relative_to(temp_root.resolve())
+    assert predictions == [1, 1, 1]
+    assert probabilities == [[0.2, 0.8], [0.2, 0.8], [0.2, 0.8]]
+
+
+def test_numpy_random_pickle_compat_restores_legacy_mt19937_state() -> None:
+    """The compatibility shim should normalize both class-based ctor args and tuple state."""
+    payload = _legacy_mt19937_pickle()
+
+    with pytest.raises(ValueError):
+        pickle.loads(payload)
+
+    with autogluon_module._numpy_random_pickle_compat():
+        restored = pickle.loads(payload)
+
+    assert restored.state["bit_generator"] == "MT19937"

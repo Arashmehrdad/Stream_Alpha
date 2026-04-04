@@ -602,6 +602,7 @@ def test_predict_for_model_uses_sequence_fit_and_single_probability_pass() -> No
             samples: list[DatasetSample],
             *,
             source_rows: list[SourceFeatureRow],
+            progress_callback=None,
         ) -> list[list[float]]:
             self.predict_proba_samples_calls += 1
             self.predicted_source_rows = list(source_rows)

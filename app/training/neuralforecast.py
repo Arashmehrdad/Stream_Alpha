@@ -103,6 +103,12 @@ class _BaseNeuralForecastClassifier:  # pylint: disable=too-many-instance-attrib
         self._backend: Any | None = None
         self._calibrator: ForecastToProbabilityCalibrator | None = None
 
+    # PatchTST rejects hist_exog_list at construction time.
+    _MODELS_WITHOUT_HIST_EXOG = frozenset({"PatchTST"})
+
+    def _model_supports_hist_exog(self) -> bool:
+        return self.model_class_name not in self._MODELS_WITHOUT_HIST_EXOG
+
     def fit(
         self,
         rows: list[dict[str, Any]],
@@ -152,10 +158,16 @@ class _BaseNeuralForecastClassifier:  # pylint: disable=too-many-instance-attrib
                 ),
             )
             self._backend = backend
+            calibration_raw_scores, calibration_labels = (
+                self._build_calibration_training_data(
+                    samples=samples,
+                    source_rows=source_rows,
+                    fitted_backend=backend,
+                )
+            )
             self._calibrator = self._fit_calibrator(
-                samples=samples,
-                source_rows=source_rows,
-                fitted_backend=backend,
+                raw_scores=calibration_raw_scores,
+                labels=calibration_labels,
             )
             self._save_backend_archive(
                 backend=backend,
@@ -208,13 +220,40 @@ class _BaseNeuralForecastClassifier:  # pylint: disable=too-many-instance-attrib
             raise ValueError(
                 f"{self.model_class_name} requires source_rows for sequence evaluation",
             )
+        grouped = _group_source_rows_by_symbol(source_rows)
+        scoreable_mask = [
+            len(
+                [
+                    r
+                    for r in grouped.get(sample.symbol, [])
+                    if r.as_of_time <= sample.as_of_time
+                ]
+            )
+            >= self.input_size_candles
+            for sample in test_samples
+        ]
+        scoreable_samples = [
+            sample
+            for sample, ok in zip(test_samples, scoreable_mask)
+            if ok
+        ]
+        if not scoreable_samples:
+            return [[0.5, 0.5] for _ in test_samples]
         raw_scores = self._cross_validated_raw_scores(
-            target_samples=test_samples,
+            target_samples=scoreable_samples,
             source_rows=source_rows,
             progress_callback=progress_callback,
         )
         calibrator = self._require_calibrator()
-        return calibrator.predict_proba(raw_scores)
+        scored_probabilities = calibrator.predict_proba(raw_scores)
+        results: list[list[float]] = []
+        score_iter = iter(scored_probabilities)
+        for ok in scoreable_mask:
+            if ok:
+                results.append(next(score_iter))
+            else:
+                results.append([0.5, 0.5])
+        return results
 
     def requires_sequence_context(self) -> bool:
         """Return whether runtime scoring must provide ordered lookback rows."""
@@ -346,16 +385,24 @@ class _BaseNeuralForecastClassifier:  # pylint: disable=too-many-instance-attrib
     def _fit_calibrator(
         self,
         *,
+        raw_scores: list[float],
+        labels: list[int],
+    ) -> ForecastToProbabilityCalibrator:
+        return ForecastToProbabilityCalibrator().fit(raw_scores, labels)
+
+    def _build_calibration_training_data(
+        self,
+        *,
         samples: list[DatasetSample],
         source_rows: list[SourceFeatureRow],
         fitted_backend: Any,
-    ) -> ForecastToProbabilityCalibrator:
+    ) -> tuple[list[float], list[int]]:
         calibration_samples = self._select_calibration_holdout(
             samples=samples,
             source_rows=source_rows,
         )
         if not calibration_samples:
-            return ForecastToProbabilityCalibrator().fit([], [sample.label for sample in samples])
+            return [], [int(sample.label) for sample in samples]
 
         calibration_rows = self._build_sequence_context_inputs(
             target_samples=calibration_samples,
@@ -366,7 +413,7 @@ class _BaseNeuralForecastClassifier:  # pylint: disable=too-many-instance-attrib
             backend=fitted_backend,
         )
         labels = [int(sample.label) for sample in calibration_samples]
-        return ForecastToProbabilityCalibrator().fit(raw_scores, labels)
+        return raw_scores, labels
 
     def _cross_validated_raw_scores(
         self,
@@ -375,9 +422,19 @@ class _BaseNeuralForecastClassifier:  # pylint: disable=too-many-instance-attrib
         source_rows: list[SourceFeatureRow],
         progress_callback: ProgressCallback | None = None,
     ) -> list[float]:
+        sample_count = len(target_samples)
+        print(
+            f"\r             building {sample_count} context rows...",
+            end="", flush=True,
+        )
         scoring_rows = self._build_sequence_context_inputs(
             target_samples=target_samples,
             source_rows=source_rows,
+        )
+        print(
+            f"\r             building {sample_count} context rows... done"
+            + " " * 20,
+            flush=True,
         )
         return self._predict_raw_scores_from_context_rows(
             scoring_rows,
@@ -657,23 +714,27 @@ class _BaseNeuralForecastClassifier:  # pylint: disable=too-many-instance-attrib
             and not _torch_cuda_is_available()
         ):
             resolved_model_kwargs["precision"] = "32-true"
-        model = model_class(
-            h=self.horizon_candles,
-            input_size=self.input_size_candles,
-            hist_exog_list=list(self._resolved_hist_exog_columns(source_rows)),
-            scaler_type=self.scaler_type,
-            learning_rate=self.learning_rate,
-            max_steps=self.max_steps,
-            batch_size=self.batch_size,
-            early_stop_patience_steps=self.early_stop_patience_steps,
-            val_check_steps=self.val_check_steps,
-            random_seed=self.random_seed,
-            alias=self.model_alias,
-            enable_checkpointing=True,
-            enable_progress_bar=self.enable_progress_bar,
-            logger=self.logger,
+        model_init_kwargs: dict[str, Any] = {
+            "h": self.horizon_candles,
+            "input_size": self.input_size_candles,
+            "scaler_type": self.scaler_type,
+            "learning_rate": self.learning_rate,
+            "max_steps": self.max_steps,
+            "batch_size": self.batch_size,
+            "early_stop_patience_steps": self.early_stop_patience_steps,
+            "val_check_steps": self.val_check_steps,
+            "random_seed": self.random_seed,
+            "alias": self.model_alias,
+            "enable_checkpointing": True,
+            "enable_progress_bar": self.enable_progress_bar,
+            "logger": self.logger,
             **resolved_model_kwargs,
-        )
+        }
+        if self._model_supports_hist_exog():
+            model_init_kwargs["hist_exog_list"] = list(
+                self._resolved_hist_exog_columns(source_rows)
+            )
+        model = model_class(**model_init_kwargs)
         return neuralforecast_core(
             models=[model],
             freq=f"{infer_source_frequency_minutes(source_rows)}min",
@@ -1027,6 +1088,8 @@ class _BaseNeuralForecastClassifier:  # pylint: disable=too-many-instance-attrib
         self,
         source_rows: list[SourceFeatureRow],
     ) -> tuple[str, ...]:
+        if not self._model_supports_hist_exog():
+            return ()
         if self._hist_exog_columns:
             return self._hist_exog_columns
         resolved = _resolve_hist_exog_columns(

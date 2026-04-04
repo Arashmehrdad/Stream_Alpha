@@ -403,6 +403,128 @@ def test_neuralforecast_wrapper_calibrator_reuses_single_backend_fit(
     assert _FakeNeuralForecastCore.fit_call_count == 1
 
 
+def test_neuralforecast_wrapper_fit_calibrator_does_not_refit_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Calibration should train only the probability bridge from held-out raw scores."""
+    _install_fake_neuralforecast_runtime(monkeypatch)
+    classifier = build_neuralforecast_nhits_classifier(
+        {
+            "input_size_candles": 2,
+            "calibration_windows": 2,
+            "max_steps": 5,
+        }
+    )
+
+    monkeypatch.setattr(
+        classifier,
+        "_fit_backend",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("_fit_calibrator must not call _fit_backend")
+        ),
+    )
+
+    calibrator = classifier._fit_calibrator(  # pylint: disable=protected-access
+        raw_scores=[-0.2, -0.05, 0.05, 0.2],
+        labels=[0, 0, 1, 1],
+    )
+
+    probabilities = calibrator.predict_proba([-0.1, 0.1])
+
+    assert probabilities[0][1] < probabilities[1][1]
+
+
+def test_neuralforecast_wrapper_builds_calibration_scores_from_fitted_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Calibration raw scores should come from the already-fitted backend instance."""
+    _install_fake_neuralforecast_runtime(monkeypatch)
+    classifier = build_neuralforecast_nhits_classifier(
+        {
+            "input_size_candles": 2,
+            "calibration_windows": 2,
+            "max_steps": 5,
+        }
+    )
+    start = datetime(2026, 4, 1, 0, 0, tzinfo=timezone.utc)
+    source_rows: list[SourceFeatureRow] = []
+    for offset in range(12):
+        as_of_time = start + timedelta(minutes=5 * offset)
+        close_price = 100.0 + float(offset)
+        source_rows.append(
+            SourceFeatureRow(
+                row_id=f"BTC/USD|{as_of_time.isoformat()}",
+                symbol="BTC/USD",
+                interval_begin=as_of_time,
+                as_of_time=as_of_time,
+                close_price=close_price,
+                features={
+                    "symbol": "BTC/USD",
+                    "close_price": close_price,
+                    "realized_vol_12": 0.01 * (offset + 1),
+                    "momentum_3": 0.005 * offset,
+                    "macd_line_12_26": 0.003 * offset,
+                },
+            )
+        )
+    samples: list[DatasetSample] = []
+    for offset in range(3):
+        as_of_time = start + timedelta(minutes=5 * (7 + offset))
+        close_price = 107.0 + float(offset)
+        future_close_price = close_price * 1.02
+        samples.append(
+            DatasetSample(
+                row_id=f"BTC/USD|{as_of_time.isoformat()}",
+                symbol="BTC/USD",
+                interval_begin=as_of_time,
+                as_of_time=as_of_time,
+                close_price=close_price,
+                future_close_price=future_close_price,
+                future_return_3=(future_close_price / close_price) - 1.0,
+                label=1,
+                persistence_prediction=1,
+                features={
+                    "symbol": "BTC/USD",
+                    "close_price": close_price,
+                    "realized_vol_12": 0.01 * (offset + 8),
+                    "momentum_3": 0.005 * (offset + 7),
+                    "macd_line_12_26": 0.003 * (offset + 7),
+                },
+            )
+        )
+    classifier._feature_columns = (  # pylint: disable=protected-access
+        "symbol",
+        "close_price",
+        "realized_vol_12",
+        "momentum_3",
+        "macd_line_12_26",
+    )
+    sentinel_backend = object()
+    recorded: dict[str, object] = {}
+
+    def _record_scores(rows, *, backend, progress_callback=None):
+        del progress_callback
+        recorded["row_count"] = len(rows)
+        recorded["backend"] = backend
+        return [0.1 for _ in rows]
+
+    monkeypatch.setattr(
+        classifier,
+        "_predict_raw_scores_from_context_rows",
+        _record_scores,
+    )
+
+    raw_scores, labels = classifier._build_calibration_training_data(  # pylint: disable=protected-access
+        samples=samples,
+        source_rows=source_rows,
+        fitted_backend=sentinel_backend,
+    )
+
+    assert recorded["backend"] is sentinel_backend
+    assert recorded["row_count"] == len(labels)
+    assert raw_scores == [0.1 for _ in labels]
+
+
 def test_neuralforecast_wrapper_uses_positive_val_size_when_early_stopping_enabled(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -625,3 +747,124 @@ def test_predict_raw_scores_from_context_rows_batches_sequence_contexts(
     assert progress_events[2]["completed_batches"] == 2
     assert progress_events[2]["progress"] == pytest.approx(1.0)
     assert progress_events[3]["elapsed_seconds"] >= 0.0
+
+
+def test_predict_proba_samples_skips_insufficient_lookback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fold test scoring should return neutral predictions for samples without enough history."""
+    _install_fake_neuralforecast_runtime(monkeypatch)
+    classifier = build_neuralforecast_nhits_classifier(
+        {
+            "input_size_candles": 4,
+            "calibration_windows": 2,
+            "max_steps": 5,
+        }
+    )
+    start = datetime(2026, 4, 1, 0, 0, tzinfo=timezone.utc)
+
+    # BTC has 20 rows (plenty of lookback)
+    source_rows: list[SourceFeatureRow] = []
+    for offset in range(20):
+        as_of_time = start + timedelta(minutes=5 * offset)
+        close_price = 100.0 + float(offset)
+        source_rows.append(
+            SourceFeatureRow(
+                row_id=f"BTC/USD|{as_of_time.isoformat()}",
+                symbol="BTC/USD",
+                interval_begin=as_of_time,
+                as_of_time=as_of_time,
+                close_price=close_price,
+                features={
+                    "symbol": "BTC/USD",
+                    "close_price": close_price,
+                    "realized_vol_12": 0.01,
+                    "momentum_3": 0.005,
+                    "macd_line_12_26": 0.003,
+                },
+            )
+        )
+    # SOL has only 2 rows (< input_size_candles=4)
+    for offset in range(2):
+        as_of_time = start + timedelta(minutes=5 * (18 + offset))
+        close_price = 50.0 + float(offset)
+        source_rows.append(
+            SourceFeatureRow(
+                row_id=f"SOL/USD|{as_of_time.isoformat()}",
+                symbol="SOL/USD",
+                interval_begin=as_of_time,
+                as_of_time=as_of_time,
+                close_price=close_price,
+                features={
+                    "symbol": "SOL/USD",
+                    "close_price": close_price,
+                    "realized_vol_12": 0.01,
+                    "momentum_3": 0.005,
+                    "macd_line_12_26": 0.003,
+                },
+            )
+        )
+
+    # Test samples: 2 BTC (scoreable) + 1 SOL (unscorable)
+    test_samples: list[DatasetSample] = []
+    for offset in range(2):
+        as_of_time = start + timedelta(minutes=5 * (10 + offset))
+        close_price = 110.0 + float(offset)
+        future_close_price = close_price * 1.02
+        test_samples.append(
+            DatasetSample(
+                row_id=f"BTC/USD|{as_of_time.isoformat()}",
+                symbol="BTC/USD",
+                interval_begin=as_of_time,
+                as_of_time=as_of_time,
+                close_price=close_price,
+                future_close_price=future_close_price,
+                future_return_3=(future_close_price / close_price) - 1.0,
+                label=1,
+                persistence_prediction=1,
+                features={
+                    "symbol": "BTC/USD",
+                    "close_price": close_price,
+                    "realized_vol_12": 0.01,
+                    "momentum_3": 0.005,
+                    "macd_line_12_26": 0.003,
+                },
+            )
+        )
+    sol_time = start + timedelta(minutes=5 * 18)
+    test_samples.append(
+        DatasetSample(
+            row_id=f"SOL/USD|{sol_time.isoformat()}",
+            symbol="SOL/USD",
+            interval_begin=sol_time,
+            as_of_time=sol_time,
+            close_price=50.0,
+            future_close_price=51.0,
+            future_return_3=0.02,
+            label=1,
+            persistence_prediction=1,
+            features={
+                "symbol": "SOL/USD",
+                "close_price": 50.0,
+                "realized_vol_12": 0.01,
+                "momentum_3": 0.005,
+                "macd_line_12_26": 0.003,
+            },
+        )
+    )
+
+    # Give the classifier a trained backend and calibrator
+    classifier.fit_samples(
+        _samples(),
+        source_rows=_source_rows(),
+    )
+
+    probabilities = classifier.predict_proba_samples(
+        test_samples,
+        source_rows=source_rows,
+    )
+
+    # All samples get results, SOL gets neutral 0.5/0.5
+    assert len(probabilities) == 3
+    assert probabilities[2] == [0.5, 0.5]  # SOL sample
+    assert all(len(row) == 2 for row in probabilities)

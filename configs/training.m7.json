@@ -25,7 +25,8 @@
                                              "num_stack_levels":  1,
                                              "presets":  "high_quality",
                                              "time_limit":  900,
-                                             "verbosity":  0
+                                             "verbosity":  0,
+                                             "num_gpus":  1
                                          }
                },
     "numeric_feature_columns":  [

@@ -18,9 +18,15 @@ def main() -> None:
         required=True,
         help="Path to the JSON training config file",
     )
+    parser.add_argument(
+        "--resume",
+        default=None,
+        help="Path to an existing artifact directory to resume from its checkpoint",
+    )
     arguments = parser.parse_args()
     try:
-        run_training(Path(arguments.config))
+        resume_dir = Path(arguments.resume) if arguments.resume else None
+        run_training(Path(arguments.config), resume_artifact_dir=resume_dir)
     except ValueError as error:
         raise SystemExit(str(error)) from error
 

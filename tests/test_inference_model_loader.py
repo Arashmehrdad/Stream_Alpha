@@ -7,10 +7,13 @@ from __future__ import annotations
 import io
 from datetime import datetime, timedelta, timezone
 import json
+import pickle
 from pathlib import Path
 import zipfile
 
 import joblib
+import numpy.random._pickle as numpy_random_pickle
+from numpy.random._mt19937 import MT19937
 import pandas as pd
 import pytest
 
@@ -26,6 +29,11 @@ from app.training.dataset import (
 )
 from app.training.neuralforecast import build_neuralforecast_nhits_classifier
 from app.training.registry import write_json_atomic
+
+
+_ORIGINAL_NUMPY_BIT_GENERATOR_CTOR = getattr(
+    numpy_random_pickle, "__bit_generator_ctor"
+)
 
 
 class SerializableProbabilityModel:
@@ -485,6 +493,122 @@ def test_load_model_artifact_supports_self_contained_autogluon_artifact(
     assert predictions == [1, 1]
     assert len(probabilities) == 2
     assert probabilities == [[0.25, 0.75], [0.25, 0.75]]
+
+
+def test_load_model_artifact_supports_autogluon_legacy_numpy_random_pickle_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Loaded AutoGluon artifacts should score through legacy MT19937 pickle paths."""
+
+    class _LegacyMt19937StateFixture:
+        def __reduce__(self):
+            state = MT19937().__getstate__()
+            return (
+                _ORIGINAL_NUMPY_BIT_GENERATOR_CTOR,
+                (MT19937,),
+                (state, None),
+            )
+
+    legacy_payload = pickle.dumps(_LegacyMt19937StateFixture())
+
+    class _FakePredictionList:
+        def __init__(self, values: list[int]) -> None:
+            self._values = values
+
+        def tolist(self) -> list[int]:
+            return list(self._values)
+
+    class _FakeProbabilityTable:
+        def __init__(self, rows: list[dict[int, float]]) -> None:
+            self._rows = rows
+
+        def to_dict(self, orient: str) -> list[dict[int, float]]:
+            assert orient == "records"
+            return list(self._rows)
+
+    class _LegacyLoadedPredictor:
+        @staticmethod
+        def _trigger_legacy_ctor() -> None:
+            pickle.loads(legacy_payload)
+
+        def predict(self, frame) -> _FakePredictionList:
+            self._trigger_legacy_ctor()
+            return _FakePredictionList([1 for _ in range(len(frame))])
+
+        def predict_proba(self, frame, *, as_multiclass: bool) -> _FakeProbabilityTable:
+            assert as_multiclass is True
+            self._trigger_legacy_ctor()
+            return _FakeProbabilityTable([{0: 0.25, 1: 0.75} for _ in range(len(frame))])
+
+    archive_buffer = io.BytesIO()
+    with zipfile.ZipFile(archive_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("metadata.json", "{}")
+
+    monkeypatch.setattr(
+        autogluon_module.TabularPredictor,
+        "load",
+        staticmethod(lambda path, **kwargs: _LegacyLoadedPredictor()),
+    )
+    model = build_autogluon_tabular_classifier(
+        {
+            "calibrate_decision_threshold": False,
+            "fit_weighted_ensemble": True,
+            "hyperparameters": None,
+            "num_bag_folds": 5,
+            "num_bag_sets": 1,
+            "num_stack_levels": 1,
+            "presets": "high",
+            "time_limit": 900,
+            "verbosity": 0,
+        }
+    )
+    model._predictor_archive = archive_buffer.getvalue()  # pylint: disable=protected-access
+    model._feature_columns = (  # pylint: disable=protected-access
+        "symbol",
+        "realized_vol_12",
+        "momentum_3",
+        "macd_line_12_26",
+    )
+    run_dir = tmp_path / "artifacts" / "training" / "m7" / "20260404T090000Z"
+    run_dir.mkdir(parents=True, exist_ok=False)
+    artifact_path = run_dir / "model.joblib"
+    joblib.dump(
+        {
+            "model_name": "autogluon_tabular",
+            "trained_at": "2026-04-04T09:00:00Z",
+            "feature_columns": [
+                "symbol",
+                "realized_vol_12",
+                "momentum_3",
+                "macd_line_12_26",
+            ],
+            "expanded_feature_names": [
+                "symbol",
+                "realized_vol_12",
+                "momentum_3",
+                "macd_line_12_26",
+            ],
+            "training_model_config": model.get_training_config(),
+            "model": model,
+        },
+        artifact_path,
+    )
+
+    loaded = load_model_artifact(str(artifact_path))
+    probabilities = loaded.model.predict_proba(
+        [
+            {
+                "symbol": "BTC/USD",
+                "realized_vol_12": 0.10,
+                "momentum_3": 0.02,
+                "macd_line_12_26": 0.50,
+            }
+        ]
+    )
+
+    assert loaded.model_name == "autogluon_tabular"
+    assert probabilities == [[0.25, 0.75]]
 
 
 def test_autogluon_runtime_loader_relaxes_python_version_match(

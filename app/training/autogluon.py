@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from contextlib import contextmanager
 import io
 import shutil
 import zipfile
@@ -33,10 +34,12 @@ class AutoGluonTabularClassifier:  # pylint: disable=too-many-instance-attribute
         dynamic_stacking: Any | None = None,
         calibrate_decision_threshold: bool = False,
         verbosity: int = 0,
+        num_gpus: int = 0,
     ) -> None:
         self.presets = str(presets)
         self.time_limit = None if time_limit is None else int(time_limit)
         self.eval_metric = str(eval_metric)
+        self.num_gpus = int(num_gpus)
         self.hyperparameters = _copy_optional_value(hyperparameters)
         self.fit_weighted_ensemble = bool(fit_weighted_ensemble)
         self.num_bag_folds = int(num_bag_folds)
@@ -105,6 +108,8 @@ class AutoGluonTabularClassifier:  # pylint: disable=too-many-instance-attribute
                 fit_kwargs["dynamic_stacking"] = _copy_optional_value(
                     self.dynamic_stacking
                 )
+            if self.num_gpus > 0:
+                fit_kwargs["ag_args_fit"] = {"num_gpus": self.num_gpus}
             predictor.fit(**fit_kwargs)
             self._predictor_archive = _archive_predictor_dir(predictor_dir)
         finally:
@@ -117,7 +122,8 @@ class AutoGluonTabularClassifier:  # pylint: disable=too-many-instance-attribute
     def predict(self, rows: list[dict[str, Any]]) -> list[int]:
         """Return binary class predictions for the requested feature rows."""
         predictor = self._ensure_predictor()
-        prediction_frame = predictor.predict(pd.DataFrame(rows))
+        with _numpy_random_pickle_compat():
+            prediction_frame = predictor.predict(pd.DataFrame(rows))
         values = (
             prediction_frame.tolist()
             if hasattr(prediction_frame, "tolist")
@@ -128,10 +134,11 @@ class AutoGluonTabularClassifier:  # pylint: disable=too-many-instance-attribute
     def predict_proba(self, rows: list[dict[str, Any]]) -> list[list[float]]:
         """Return binary probabilities in the existing Stream Alpha artifact contract."""
         predictor = self._ensure_predictor()
-        probabilities = predictor.predict_proba(
-            pd.DataFrame(rows),
-            as_multiclass=True,
-        )
+        with _numpy_random_pickle_compat():
+            probabilities = predictor.predict_proba(
+                pd.DataFrame(rows),
+                as_multiclass=True,
+            )
         return _coerce_binary_probabilities(probabilities)
 
     def get_expanded_feature_names(self) -> list[str]:
@@ -205,7 +212,10 @@ class AutoGluonTabularClassifier:  # pylint: disable=too-many-instance-attribute
         self._predictor = None
 
     def __del__(self) -> None:
-        self._cleanup_runtime_dir()
+        try:
+            self._cleanup_runtime_dir()
+        except Exception:  # pragma: no cover - interpreter shutdown best effort only
+            pass
 
     def _ensure_predictor(self) -> TabularPredictor:
         """Restore the predictor from the bundled archive on first use."""
@@ -222,10 +232,11 @@ class AutoGluonTabularClassifier:  # pylint: disable=too-many-instance-attribute
             try:
                 _restore_predictor_dir(self._predictor_archive, predictor_dir)
                 # Local-first runs can train on Windows and score inside Linux containers.
-                self._predictor = TabularPredictor.load(
-                    str(predictor_dir),
-                    require_py_version_match=False,
-                )
+                with _numpy_random_pickle_compat():
+                    self._predictor = TabularPredictor.load(
+                        str(predictor_dir),
+                        require_py_version_match=False,
+                    )
                 self._runtime_dir = runtime_root
             except Exception:
                 shutil.rmtree(runtime_root, ignore_errors=True)
@@ -287,6 +298,7 @@ def build_autogluon_tabular_classifier(
             model_config.get("calibrate_decision_threshold", False)
         ),
         verbosity=int(model_config.get("verbosity", 0)),
+        num_gpus=int(model_config.get("num_gpus", 0)),
     )
 
 
@@ -306,6 +318,124 @@ def _restore_predictor_dir(archive_bytes: bytes, predictor_dir: Path) -> None:
     predictor_dir.mkdir(parents=True, exist_ok=False)
     with zipfile.ZipFile(io.BytesIO(archive_bytes), mode="r") as archive:
         archive.extractall(predictor_dir)
+
+
+@contextmanager
+def _numpy_random_pickle_compat():
+    """Temporarily normalize legacy NumPy MT19937 pickles during artifact restore/score."""
+    try:
+        import numpy.random._pickle as numpy_random_pickle  # pylint: disable=import-outside-toplevel
+        from numpy.random.mtrand import RandomState  # pylint: disable=import-outside-toplevel
+    except Exception:  # pragma: no cover - numpy is always present in runtime tests
+        yield
+        return
+
+    original_bit_generator_ctor = getattr(
+        numpy_random_pickle, "__bit_generator_ctor", None
+    )
+    original_randomstate_ctor = getattr(numpy_random_pickle, "__randomstate_ctor", None)
+    if (
+        original_bit_generator_ctor is None
+        or original_randomstate_ctor is None
+        or (
+            _bit_generator_ctor_accepts_legacy_types(original_bit_generator_ctor)
+            and _bit_generator_accepts_legacy_state_tuples()
+        )
+    ):
+        yield
+        return
+
+    class _LegacyBitGeneratorProxy:
+        """Bridge legacy pickle state into the current immutable NumPy bit-generator API."""
+
+        def __init__(self, bit_generator: Any) -> None:
+            self._bit_generator = bit_generator
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._bit_generator, name)
+
+        def __setstate__(self, state: Any) -> None:
+            normalized_state = _normalize_legacy_bit_generator_state(state)
+            self._bit_generator.__setstate__(normalized_state)
+
+        def unwrap(self) -> Any:
+            return self._bit_generator
+
+    def _compat_bit_generator_ctor(bit_generator_name: Any = "MT19937"):
+        normalized_name = _normalize_legacy_bit_generator_name(bit_generator_name)
+        bit_generator = original_bit_generator_ctor(normalized_name)
+        return _LegacyBitGeneratorProxy(bit_generator)
+
+    def _compat_randomstate_ctor(
+        bit_generator_name: Any = "MT19937",
+        bit_generator_ctor: Any = _compat_bit_generator_ctor,
+    ):
+        if isinstance(bit_generator_name, _LegacyBitGeneratorProxy):
+            return RandomState(bit_generator_name.unwrap())
+        bit_generator = bit_generator_ctor(bit_generator_name)
+        if isinstance(bit_generator, _LegacyBitGeneratorProxy):
+            bit_generator = bit_generator.unwrap()
+        return RandomState(bit_generator)
+
+    numpy_random_pickle.__bit_generator_ctor = _compat_bit_generator_ctor
+    numpy_random_pickle.__randomstate_ctor = _compat_randomstate_ctor
+    try:
+        yield
+    finally:
+        numpy_random_pickle.__bit_generator_ctor = original_bit_generator_ctor
+        numpy_random_pickle.__randomstate_ctor = original_randomstate_ctor
+
+
+def _bit_generator_ctor_accepts_legacy_types(bit_generator_ctor: Any) -> bool:
+    """Return whether the active NumPy pickle helper already accepts class objects."""
+    try:
+        from numpy.random._mt19937 import MT19937  # pylint: disable=import-outside-toplevel
+    except Exception:  # pragma: no cover - numpy is always present in runtime tests
+        return True
+
+    try:
+        bit_generator_ctor(MT19937)
+    except ValueError as error:
+        return "BitGenerator module" not in str(error)
+    except Exception:
+        return True
+    return True
+
+
+def _bit_generator_accepts_legacy_state_tuples() -> bool:
+    """Return whether the active NumPy MT19937 runtime still accepts tuple legacy state."""
+    try:
+        from numpy.random._mt19937 import MT19937  # pylint: disable=import-outside-toplevel
+    except Exception:  # pragma: no cover - numpy is always present in runtime tests
+        return True
+
+    bit_generator = MT19937()
+    legacy_state = (bit_generator.__getstate__(), None)
+    try:
+        bit_generator.__setstate__(legacy_state)
+    except ValueError as error:
+        return "legacy MT19937 state" not in str(error)
+    except Exception:
+        return True
+    return True
+
+
+def _normalize_legacy_bit_generator_name(bit_generator_name: Any) -> Any:
+    """Map legacy pickled NumPy bit-generator class objects back to stable names."""
+    if isinstance(bit_generator_name, str):
+        return bit_generator_name
+    module_name = str(getattr(bit_generator_name, "__module__", ""))
+    name = getattr(bit_generator_name, "__name__", None)
+    if name is not None and module_name.startswith("numpy.random"):
+        return str(name)
+    return bit_generator_name
+
+
+def _normalize_legacy_bit_generator_state(state: Any) -> Any:
+    """Strip the deprecated gaussian-cache tuple wrapper from legacy MT19937 state."""
+    if isinstance(state, tuple) and len(state) == 2 and isinstance(state[0], dict):
+        return state[0]
+    return state
 
 
 def _coerce_binary_probabilities(probabilities: Any) -> list[list[float]]:

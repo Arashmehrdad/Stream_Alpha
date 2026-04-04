@@ -60,7 +60,8 @@
       "fold_fitting_strategy": "sequential_local",
       "dynamic_stacking": false,
       "calibrate_decision_threshold": false,
-      "verbosity": 0
+      "verbosity": 0,
+      "num_gpus": 1
     }
   }
 }

@@ -2556,6 +2556,27 @@
     - added registry coverage proving the explicit Apache snapshot `license_name` and `license_notes` survive manifest and promotion flows
 - Targeted validation passed:
   - `python -m pytest tests/test_training_pretrained_moirai.py tests/test_training_pretrained_timesfm.py tests/test_training_pretrained_chronos.py tests/test_training_pretrained_forecasters.py tests/test_training_service.py tests/test_training_registry.py tests/test_inference_model_loader.py tests/test_training_autogluon.py -q`
+
+### Batch 6: NeuralForecast lookback guard for fold test scoring (2026-04-04)
+
+**Root cause**: M20 specialist training (run `20260403T211637Z`) failed with
+`ValueError: Sequence model does not have enough lookback rows for SOL/USD|2021-06-17T18:10:00Z: required 96, found 4`.
+SOL/USD starts late in the dataset; fold 1 test samples include early SOL timestamps
+with only a few source rows of history. `predict_proba_samples` passed **all** test
+samples (every symbol) to `build_sequence_context_rows`, which hard-crashed on the
+first sample without enough lookback.
+
+**Fix**: `predict_proba_samples` in `neuralforecast.py` now pre-filters test samples
+by per-symbol lookback availability. Samples with insufficient history get neutral
+`[0.5, 0.5]` probabilities; scoreable samples are scored normally; results are merged
+back in original ordering.
+
+**Changed files**:
+- `app/training/neuralforecast.py` — lookback guard in `predict_proba_samples`
+- `tests/test_training_neuralforecast.py` — regression test `test_predict_proba_samples_skips_insufficient_lookback`
+- `PLANS.md`
+
+**Validation**: `python -m pytest tests/test_training_neuralforecast.py tests/test_training_service.py -q` → 30 passed, 2 warnings
   - result: `52 passed, 8 warnings`
 - Blockers:
   - none for this batch's scoped code path
@@ -2564,3 +2585,82 @@
   - Moirai is now integrated as an offline range-specialist challenger path only
   - no production activation or promotion happened in this batch
   - Moirai usefulness remains undecided until a later Packet 2 comparison evaluates it against AutoGluon, Chronos-2, TimesFM, and the other challengers
+
+## Batch 5a - AutoGluon champion MT19937 artifact/runtime compatibility repair
+
+- Scope stayed inside the requested narrow repair surfaces:
+  - `app/training/autogluon.py`
+  - focused AutoGluon and inference loader tests
+- Exact root cause:
+  - the current registry champion artifact at `artifacts/registry/models/m7-20260401T043003Z/model.joblib` loads at the outer joblib layer, but the embedded AutoGluon predictor archive fails later when the weighted ensemble is lazily restored for scoring
+  - the failing object lives inside `models/WeightedEnsemble_L2/model.pkl`
+  - that pickle stores a legacy NumPy `RandomState` / `MT19937` restore path that is incompatible with the present environment in two places:
+    - it passes the `numpy.random._mt19937.MT19937` class object into `numpy.random._pickle.__bit_generator_ctor`, while current NumPy expects a stable string name like `"MT19937"`
+    - it also restores the MT19937 state as the older two-item tuple shape `(state_dict, gaussian_cache)` while current NumPy accepts only the inner legacy state dict for `MT19937.__setstate__(...)`
+  - together those incompatibilities caused the observed live rescoring failure and blocked a fresh Packet 2 rerun
+- Applied the smallest honest compatibility-safe repair:
+  - `app/training/autogluon.py`
+    - wrapped AutoGluon predictor restore plus `predict(...)` / `predict_proba(...)` with a local `_numpy_random_pickle_compat()` context
+    - the shim patches only NumPy's pickle helper functions while the AutoGluon restore/score call is in flight
+    - it normalizes legacy bit-generator class objects back to stable names
+    - it unwraps the deprecated tuple MT19937 state back to the inner dict before current NumPy applies it
+    - it reconstructs `RandomState(...)` from the normalized bit generator without altering registry metadata, role logic, or artifact contents
+    - it also hardens `__del__` cleanup so interpreter shutdown no longer emits a best-effort cleanup traceback after ad-hoc validation scripts
+- Kept truth and lineage intact:
+  - no registry overwrite happened
+  - no new baseline was fabricated
+  - no migration or rebuild step was required for the current champion artifact
+  - the existing champion remains the same baseline artifact; only the runtime compatibility path changed
+- Added focused regression coverage:
+  - `tests/test_training_autogluon.py`
+    - proves the AutoGluon wrapper now survives a synthetic legacy MT19937 pickle payload that reproduces both the class-based ctor mismatch and the tuple-state mismatch
+    - proves the compatibility shim can directly unpickle that legacy payload into a usable MT19937-backed object
+  - `tests/test_inference_model_loader.py`
+    - proves `load_model_artifact(...)` can still reload a self-contained AutoGluon artifact and score through the same synthetic legacy MT19937 pickle path
+- Targeted validation passed:
+  - `python -m pytest tests/test_training_autogluon.py tests/test_inference_model_loader.py tests/test_training_registry.py tests/test_training_service.py -q`
+  - result: `47 passed in 3.62s`
+  - real champion smoke validation also passed:
+    - `load_model_artifact("")` loaded the current registry champion
+    - scoring one row from the artifact's own archived `utils/data/X_val.pkl` now succeeds again in the present environment
+    - observed smoke output:
+      - `model_version = m7-20260401T043003Z`
+      - `predictions = [1]`
+      - `probabilities = [[0.4730539321899414, 0.5269460678100586]]`
+- Blockers:
+  - none for this narrow compatibility repair itself
+  - Packet 2 evidence still needs to be rerun before any broader M20 claims change
+- Honest state after Batch 5a:
+  - this pass fixes baseline artifact/runtime compatibility only
+  - it does not change M20 role logic, promotion logic, or challenger evidence
+  - `M20` remains `ACTIVE_WEAK` unless and until Packet 2 is rerun and real challenger evidence changes the result
+
+## Batch 5b - NeuralForecast calibrator single-fit repair
+
+- Scope stayed inside the requested narrow repair surfaces:
+  - `app/training/neuralforecast.py`
+  - `tests/test_training_neuralforecast.py`
+- Exact root cause addressed:
+  - NeuralForecast specialist calibration previously allowed the calibrator path to remain coupled to backend-fitting concerns
+  - even when the live code path had already moved away from an obvious second `backend.fit(...)` call, the helper contract still accepted training inputs plus a fitted backend and did not make the single-fit design explicit enough to guard against regressions
+- Applied the smallest honest design repair:
+  - `app/training/neuralforecast.py`
+    - `fit_samples(...)` now performs the heavyweight specialist fit exactly once via `_fit_backend(...)`
+    - held-out calibration raw scores and labels are prepared separately by `_build_calibration_training_data(...)` using the already-fitted backend instance
+    - `_fit_calibrator(...)` is now reduced to the lightweight probability-bridge step only: it consumes `raw_scores` and `labels` and trains `ForecastToProbabilityCalibrator`
+    - this keeps NHITS and PatchTST calibration from ever retraining the NeuralForecast backend inside the calibrator helper
+- Kept truth and runtime contracts intact:
+  - AutoGluon code path is unchanged
+  - NeuralForecast artifact save/load behavior stays unchanged
+  - `predict_proba(...)` and `predict_proba_samples(...)` still return the same binary probability contract
+- Added focused regression coverage:
+  - `tests/test_training_neuralforecast.py`
+    - keeps the existing single-fit regression proving `fit_samples(...)` triggers only one backend fit
+    - adds a direct regression proving `_fit_calibrator(...)` does not call `_fit_backend(...)`
+    - adds a direct regression proving calibration raw scores are generated from the already-fitted backend instance rather than a new backend fit
+- Targeted validation passed:
+  - `C:\Users\arash\AppData\Local\Programs\Python\Python311\python.exe -m pytest tests/test_training_neuralforecast.py -q`
+  - result: `15 passed, 2 warnings in 1.98s`
+  - focused editor diagnostics for the touched files reported no errors
+- Blockers:
+  - none for this scoped repair

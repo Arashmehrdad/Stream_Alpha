@@ -5,6 +5,9 @@ from __future__ import annotations
 import csv
 import json
 import math
+import signal
+import sys
+import time
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
@@ -274,8 +277,129 @@ class _TrainingProgressRecorder:
             output_file.write(f"{line}\n")
 
 
-def run_training(config_path: Path) -> Path:  # pylint: disable=too-many-locals
-    """Run the full offline M3 training flow and save artifacts to disk."""
+class _ConsoleProgress:
+    """Live console ETA progress display for the walk-forward evaluation loop."""
+
+    def __init__(self, total_folds: int, total_models: int) -> None:
+        self.total_folds = total_folds
+        self.total_models = total_models
+        self.total_units = total_folds * total_models
+        self.completed_units = 0
+        self.start_time = time.monotonic()
+
+    def tick(self, *, fold_index: int, model_name: str) -> None:
+        self.completed_units += 1
+        elapsed = time.monotonic() - self.start_time
+        remaining_units = self.total_units - self.completed_units
+        if self.completed_units > 0:
+            per_unit = elapsed / self.completed_units
+            eta = per_unit * remaining_units
+        else:
+            eta = 0.0
+        pct = self.completed_units / self.total_units
+        bar = _render_progress_bar(pct, width=30)
+        eta_str = _format_eta_seconds(eta)
+        elapsed_str = _format_eta_seconds(elapsed)
+        print(
+            f"\r[training] {bar}  "
+            f"fold {fold_index + 1}/{self.total_folds} | "
+            f"{model_name} done  "
+            f"elapsed={elapsed_str} eta={eta_str}    ",
+            end="",
+            flush=True,
+        )
+        if self.completed_units == self.total_units:
+            print()
+
+    def model_start(self, *, fold_index: int, model_name: str) -> None:
+        elapsed = time.monotonic() - self.start_time
+        elapsed_str = _format_eta_seconds(elapsed)
+        pct = self.completed_units / self.total_units
+        bar = _render_progress_bar(pct, width=30)
+        print(
+            f"\r[training] {bar}  "
+            f"fold {fold_index + 1}/{self.total_folds} | "
+            f"scoring {model_name}...  "
+            f"elapsed={elapsed_str}       ",
+            end="",
+            flush=True,
+        )
+
+
+def _save_fold_checkpoint(
+    artifact_dir: Path,
+    *,
+    fold_metric_rows: list[dict[str, Any]],
+    all_prediction_rows: list[PredictionRecord],
+    completed_fold_indices: list[int],
+    partial_fold_index: int | None = None,
+    completed_models_in_partial_fold: list[str] | None = None,
+) -> None:
+    """Persist checkpoint so the run can be resumed after interruption.
+
+    Supports both fold-level and model-level granularity.
+    """
+    checkpoint: dict[str, Any] = {
+        "completed_fold_indices": completed_fold_indices,
+        "fold_metric_rows": fold_metric_rows,
+        "all_prediction_rows": [row.to_csv_row() for row in all_prediction_rows],
+    }
+    if partial_fold_index is not None:
+        checkpoint["partial_fold_index"] = partial_fold_index
+        checkpoint["completed_models_in_partial_fold"] = (
+            completed_models_in_partial_fold or []
+        )
+    _write_json(artifact_dir / "checkpoint.json", checkpoint)
+
+
+@dataclass
+class _CheckpointState:
+    """Loaded checkpoint state for resume."""
+
+    completed_fold_indices: list[int]
+    fold_metric_rows: list[dict[str, Any]]
+    all_prediction_rows: list[PredictionRecord]
+    partial_fold_index: int | None = None
+    completed_models_in_partial_fold: list[str] | None = None
+
+
+def _load_fold_checkpoint(artifact_dir: Path) -> _CheckpointState | None:
+    """Load a saved checkpoint. Returns None if no checkpoint exists."""
+    checkpoint_path = artifact_dir / "checkpoint.json"
+    if not checkpoint_path.exists():
+        return None
+    raw = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    return _CheckpointState(
+        completed_fold_indices=raw["completed_fold_indices"],
+        fold_metric_rows=raw["fold_metric_rows"],
+        all_prediction_rows=[
+            PredictionRecord(**row) for row in raw["all_prediction_rows"]
+        ],
+        partial_fold_index=raw.get("partial_fold_index"),
+        completed_models_in_partial_fold=raw.get(
+            "completed_models_in_partial_fold"
+        ),
+    )
+
+
+def _remove_checkpoint(artifact_dir: Path) -> None:
+    """Remove the checkpoint file after successful completion."""
+    checkpoint_path = artifact_dir / "checkpoint.json"
+    if checkpoint_path.exists():
+        checkpoint_path.unlink()
+
+
+# pylint: disable=too-many-locals,too-many-branches,too-many-statements
+def run_training(
+    config_path: Path,
+    *,
+    resume_artifact_dir: Path | None = None,
+) -> Path:
+    """Run the full offline M3 training flow and save artifacts to disk.
+
+    If *resume_artifact_dir* is given, the run continues from the last
+    completed fold checkpoint found inside that directory.
+    """
     config = load_training_config(config_path)
     _validate_authoritative_model_stack(config)
     print(f"[training] readiness gate: probing {config.source_table} for {list(config.symbols)}")
@@ -298,7 +422,39 @@ def run_training(config_path: Path) -> Path:  # pylint: disable=too-many-locals
         test_folds=config.test_folds,
         purge_gap_candles=config.purge_gap_candles,
     )
-    artifact_dir = _create_artifact_dir(config)
+
+    # --- resume vs. fresh run ---
+    completed_fold_indices: list[int] = []
+    resume_partial_fold_index: int | None = None
+    resume_completed_models: list[str] | None = None
+    if resume_artifact_dir is not None:
+        artifact_dir = resume_artifact_dir
+        loaded = _load_fold_checkpoint(artifact_dir)
+        if loaded is not None:
+            completed_fold_indices = loaded.completed_fold_indices
+            fold_metric_rows = loaded.fold_metric_rows
+            all_prediction_rows = loaded.all_prediction_rows
+            resume_partial_fold_index = loaded.partial_fold_index
+            resume_completed_models = loaded.completed_models_in_partial_fold
+            partial_msg = ""
+            if resume_partial_fold_index is not None:
+                partial_msg = (
+                    f" (fold {resume_partial_fold_index + 1} partially done: "
+                    f"{len(resume_completed_models or [])} models)"
+                )
+            print(
+                f"[training] resuming from checkpoint — "
+                f"{len(completed_fold_indices)}/{len(folds)} folds done{partial_msg}"
+            )
+        else:
+            raise ValueError(
+                f"--resume specified but no checkpoint.json found in {artifact_dir}"
+            )
+    else:
+        artifact_dir = _create_artifact_dir(config)
+        fold_metric_rows = []
+        all_prediction_rows = []
+
     _write_json(artifact_dir / "run_config.json", config.to_dict())
     _write_json(
         artifact_dir / "dataset_manifest.json",
@@ -313,7 +469,11 @@ def run_training(config_path: Path) -> Path:  # pylint: disable=too-many-locals
     progress_recorder = _TrainingProgressRecorder(artifact_dir)
     progress_recorder.record(
         stage="setup",
-        message="training artifact directory created",
+        message=(
+            "resumed from checkpoint"
+            if resume_artifact_dir is not None
+            else "training artifact directory created"
+        ),
         artifact_dir=str(artifact_dir),
         config_path=str(config_path),
         progress_log_path=str(progress_recorder.log_path),
@@ -326,21 +486,83 @@ def run_training(config_path: Path) -> Path:  # pylint: disable=too-many-locals
         labeled_rows=len(dataset.samples),
         unique_timestamps=int(dataset.manifest["unique_timestamps"]),
     )
-    fold_metric_rows: list[dict[str, Any]] = []
-    all_prediction_rows: list[PredictionRecord] = []
+
+    # --- pause flag: Ctrl+C sets this, loop checks between folds ---
+    pause_requested = False
+    original_sigint = signal.getsignal(signal.SIGINT)
+
+    def _handle_pause(signum: int, frame: Any) -> None:  # noqa: ARG001
+        nonlocal pause_requested
+        pause_requested = True
+        print(
+            "\n[training] pause requested — "
+            "will checkpoint after the current fold finishes. "
+            "Press Ctrl+C again to force-kill."
+        )
+        signal.signal(signal.SIGINT, original_sigint)
+
+    signal.signal(signal.SIGINT, _handle_pause)
+
+    console_progress = _ConsoleProgress(
+        total_folds=len(folds),
+        total_models=len(model_factories),
+    )
+    # advance the counter for already-completed folds on resume
+    console_progress.completed_units = (
+        len(completed_fold_indices) * len(model_factories)
+    )
+    if resume_completed_models:
+        console_progress.completed_units += len(resume_completed_models)
+
     try:
+        remaining_folds = [
+            fold for fold in folds
+            if fold.fold_index not in completed_fold_indices
+        ]
         print(
             "[training] evaluating "
-            f"{len(folds)} walk-forward folds across {len(model_factories)} models"
+            f"{len(remaining_folds)} remaining walk-forward folds "
+            f"across {len(model_factories)} models"
         )
         progress_recorder.record(
             stage="evaluation",
             message="starting walk-forward evaluation",
             total_folds=len(folds),
+            remaining_folds=len(remaining_folds),
             total_models=len(model_factories),
         )
 
-        for fold in folds:
+        # accumulators for crash-recovery (initialised before loop so the
+        # except block can always reference them safely)
+        _completed_models_this_fold: list[str] = []
+        _fold_metrics_this_fold: list[dict[str, Any]] = []
+        _fold_predictions_this_fold: list[PredictionRecord] = []
+        _current_fold_index: int = -1
+
+        for fold in remaining_folds:
+            if pause_requested:
+                _save_fold_checkpoint(
+                    artifact_dir,
+                    fold_metric_rows=fold_metric_rows,
+                    all_prediction_rows=all_prediction_rows,
+                    completed_fold_indices=completed_fold_indices,
+                )
+                progress_recorder.record(
+                    stage="paused",
+                    message="training paused by user",
+                    state="paused",
+                    completed_folds=len(completed_fold_indices),
+                    total_folds=len(folds),
+                    checkpoint_path=str(artifact_dir / "checkpoint.json"),
+                )
+                print(
+                    f"\n[training] paused after {len(completed_fold_indices)}/{len(folds)} folds. "
+                    f"Resume with: python -m app.training --config {config_path} "
+                    f"--resume {artifact_dir}"
+                )
+                signal.signal(signal.SIGINT, original_sigint)
+                return artifact_dir
+
             train_samples, test_samples = _partition_samples(dataset.samples, fold)
             train_source_rows, evaluation_source_rows = _partition_source_rows(
                 dataset.source_rows,
@@ -349,7 +571,7 @@ def run_training(config_path: Path) -> Path:  # pylint: disable=too-many-locals
                 frequency_minutes=dataset.frequency_minutes,
             )
             print(
-                "[training] fold "
+                f"\n[training] fold "
                 f"{fold.fold_index + 1}/{len(folds)}: "
                 f"train_rows={len(train_samples)} test_rows={len(test_samples)}"
             )
@@ -361,6 +583,48 @@ def run_training(config_path: Path) -> Path:  # pylint: disable=too-many-locals
                 train_rows=len(train_samples),
                 test_rows=len(test_samples),
             )
+
+            # determine which models to skip on resume
+            skip_models: set[str] = set()
+            if (
+                resume_partial_fold_index is not None
+                and fold.fold_index == resume_partial_fold_index
+                and resume_completed_models
+            ):
+                skip_models = set(resume_completed_models)
+                print(
+                    f"[training] resuming fold {fold.fold_index + 1} — "
+                    f"skipping {len(skip_models)} already-scored models: "
+                    f"{sorted(skip_models)}"
+                )
+
+            # track which models finish for mid-fold checkpoint state
+            _current_fold_index = fold.fold_index
+            _completed_models_this_fold = list(skip_models)
+            _fold_metrics_this_fold = []
+            _fold_predictions_this_fold = []
+
+            def _model_checkpoint_callback(
+                model_name: str,
+                model_metrics: list[dict[str, Any]],
+                model_predictions: list[PredictionRecord],
+            ) -> None:
+                _completed_models_this_fold.append(model_name)
+                _fold_metrics_this_fold.extend(model_metrics)
+                _fold_predictions_this_fold.extend(model_predictions)
+                _save_fold_checkpoint(
+                    artifact_dir,
+                    fold_metric_rows=fold_metric_rows + _fold_metrics_this_fold,
+                    all_prediction_rows=(
+                        all_prediction_rows + _fold_predictions_this_fold
+                    ),
+                    completed_fold_indices=completed_fold_indices,
+                    partial_fold_index=fold.fold_index,
+                    completed_models_in_partial_fold=list(
+                        _completed_models_this_fold
+                    ),
+                )
+
             fold_metrics, fold_predictions = _evaluate_fold(
                 train_samples=train_samples,
                 test_samples=test_samples,
@@ -373,15 +637,29 @@ def run_training(config_path: Path) -> Path:  # pylint: disable=too-many-locals
                 regime_labels_by_row_id=regime_context.labels_by_row_id,
                 progress_recorder=progress_recorder,
                 total_folds=len(folds),
+                console_progress=console_progress,
+                skip_models=skip_models,
+                model_checkpoint_callback=_model_checkpoint_callback,
             )
             fold_metric_rows.extend(fold_metrics)
             all_prediction_rows.extend(fold_predictions)
+            completed_fold_indices.append(fold.fold_index)
+            # clear partial-fold resume state after first use
+            resume_partial_fold_index = None
+            resume_completed_models = None
             progress_recorder.record(
                 stage="fold",
                 message="completed walk-forward fold",
                 fold_index=fold.fold_index + 1,
                 total_folds=len(folds),
                 prediction_rows=len(fold_predictions),
+            )
+            # checkpoint after every fold so we can resume
+            _save_fold_checkpoint(
+                artifact_dir,
+                fold_metric_rows=fold_metric_rows,
+                all_prediction_rows=all_prediction_rows,
+                completed_fold_indices=completed_fold_indices,
             )
 
         _write_csv(artifact_dir / "fold_metrics.csv", fold_metric_rows)
@@ -467,6 +745,7 @@ def run_training(config_path: Path) -> Path:  # pylint: disable=too-many-locals
             candidate_artifacts=learned_candidate_artifacts,
         )
         _write_json(artifact_dir / "summary.json", summary)
+        _remove_checkpoint(artifact_dir)
         progress_recorder.record(
             stage="complete",
             message="training completed",
@@ -475,6 +754,42 @@ def run_training(config_path: Path) -> Path:  # pylint: disable=too-many-locals
             summary_path=str(artifact_dir / "summary.json"),
         )
     except Exception as error:
+        # on crash, save a checkpoint (model-level callback may have already
+        # saved mid-fold state, but re-save to be safe with full accumulator)
+        _has_progress = completed_fold_indices or _completed_models_this_fold
+        if _has_progress:
+            _save_fold_checkpoint(
+                artifact_dir,
+                fold_metric_rows=fold_metric_rows + _fold_metrics_this_fold,
+                all_prediction_rows=(
+                    all_prediction_rows + _fold_predictions_this_fold
+                ),
+                completed_fold_indices=completed_fold_indices,
+                partial_fold_index=(
+                    _current_fold_index
+                    if _completed_models_this_fold
+                    else None
+                ),
+                completed_models_in_partial_fold=(
+                    list(_completed_models_this_fold)
+                    if _completed_models_this_fold
+                    else None
+                ),
+            )
+            print(
+                f"\n[training] crashed after {len(completed_fold_indices)} full folds"
+                + (
+                    f" + {len(_completed_models_this_fold)} models in fold "
+                    f"{_current_fold_index + 1}"
+                    if _completed_models_this_fold
+                    else ""
+                )
+                + f"/{len(folds)} folds. "
+                f"Checkpoint saved. Resume with:\n"
+                f"  python -m app.training --config {config_path} "
+                f"--resume {artifact_dir}",
+                file=sys.stderr,
+            )
         progress_recorder.record(
             stage="error",
             message="training failed",
@@ -483,6 +798,8 @@ def run_training(config_path: Path) -> Path:  # pylint: disable=too-many-locals
             error=str(error),
         )
         raise
+    finally:
+        signal.signal(signal.SIGINT, original_sigint)
     return artifact_dir
 
 
@@ -628,11 +945,27 @@ def _evaluate_fold(
     regime_labels_by_row_id: dict[str, str],
     progress_recorder: _TrainingProgressRecorder | None = None,
     total_folds: int | None = None,
+    console_progress: _ConsoleProgress | None = None,
+    skip_models: set[str] | None = None,
+    model_checkpoint_callback: Callable[
+        [str, list[dict[str, Any]], list[PredictionRecord]], None
+    ] | None = None,
 ) -> tuple[list[dict[str, Any]], list[PredictionRecord]]:
     # The explicit inputs keep the fold evaluation contract inspectable for M3/M7.
     fold_metrics: list[dict[str, Any]] = []
     prediction_rows: list[PredictionRecord] = []
+    _skip = skip_models or set()
     for model_name, factory in model_factories.items():
+        if model_name in _skip:
+            if console_progress is not None:
+                console_progress.tick(
+                    fold_index=fold.fold_index, model_name=f"{model_name} (cached)",
+                )
+            continue
+        if console_progress is not None:
+            console_progress.model_start(
+                fold_index=fold.fold_index, model_name=model_name,
+            )
         if progress_recorder is not None:
             progress_recorder.record(
                 stage="fold_model",
@@ -694,15 +1027,13 @@ def _evaluate_fold(
             regime_labels_by_row_id=regime_labels_by_row_id,
         )
         metrics = _compute_metrics(model_predictions)
-        fold_metrics.append(
-            {
-                "model_name": model_name,
-                "fold_index": fold.fold_index,
-                "train_rows": len(train_samples),
-                "test_rows": len(test_samples),
-                **metrics["metrics"],
-            }
-        )
+        model_metric_row = {
+            "model_name": model_name,
+            "fold_index": fold.fold_index,
+            "train_rows": len(train_samples),
+            "test_rows": len(test_samples),
+            **metrics["metrics"],
+        }
         if progress_recorder is not None:
             progress_recorder.record(
                 stage="fold_model",
@@ -716,7 +1047,16 @@ def _evaluate_fold(
                     metrics["metrics"]["mean_long_only_net_value_proxy"]
                 ),
             )
+        if console_progress is not None:
+            console_progress.tick(
+                fold_index=fold.fold_index, model_name=model_name,
+            )
+        fold_metrics.append(model_metric_row)
         prediction_rows.extend(model_predictions)
+        if model_checkpoint_callback is not None:
+            model_checkpoint_callback(
+                model_name, [model_metric_row], model_predictions,
+            )
     return fold_metrics, prediction_rows
 
 
@@ -752,17 +1092,75 @@ def _predict_for_model(
         }
         if progress_callback is not None:
             fit_kwargs["progress_callback"] = progress_callback
+        print(
+            f"\n[training]   {model_name}: fitting on "
+            f"{len(train_samples)} samples...",
+            end="", flush=True,
+        )
+        fit_start = time.monotonic()
         estimator.fit_samples(train_samples, **fit_kwargs)
+        fit_elapsed = time.monotonic() - fit_start
+        print(
+            f" done ({_format_eta_seconds(fit_elapsed)})",
+            flush=True,
+        )
         predict_kwargs: dict[str, Any] = {
             "source_rows": evaluation_source_rows,
         }
-        if progress_callback is not None:
-            predict_kwargs["progress_callback"] = progress_callback
+        _scoring_line_prefix = (
+            f"[training]   {model_name}: scoring "
+            f"{len(test_samples)} test samples"
+        )
+
+        def _scoring_progress(payload: dict[str, Any]) -> None:
+            event = payload.get("event", "")
+            if event == "sequence_scoring_start":
+                total_b = payload.get("batch_count", 0)
+                print(
+                    f"\r{_scoring_line_prefix}  "
+                    f"[  0%  batch 0/{total_b}]",
+                    end="", flush=True,
+                )
+            elif event == "sequence_scoring_progress":
+                pct = int(payload.get("progress", 0) * 100)
+                done_b = payload.get("completed_batches", 0)
+                total_b = payload.get("batch_count", 0)
+                eta = _format_eta_seconds(payload.get("eta_seconds", 0))
+                elapsed = _format_eta_seconds(
+                    payload.get("elapsed_seconds", 0),
+                )
+                print(
+                    f"\r{_scoring_line_prefix}  "
+                    f"[{pct:3d}%  batch {done_b}/{total_b}  "
+                    f"elapsed {elapsed}  ETA {eta}]",
+                    end="", flush=True,
+                )
+            if progress_callback is not None:
+                progress_callback(payload)
+
+        predict_kwargs["progress_callback"] = _scoring_progress
+        print(f"\r{_scoring_line_prefix}...", end="", flush=True)
+        score_start = time.monotonic()
         predicted_probabilities = estimator.predict_proba_samples(test_samples, **predict_kwargs)
+        score_elapsed = time.monotonic() - score_start
+        print(
+            f"\r{_scoring_line_prefix}  "
+            f"done ({_format_eta_seconds(score_elapsed)})"
+            + " " * 30,
+            flush=True,
+        )
         probabilities = [float(probability[1]) for probability in predicted_probabilities]
         predicted_labels = [1 if probability >= 0.5 else 0 for probability in probabilities]
         return predicted_labels, probabilities
+    print(
+        f"\n[training]   {model_name}: fitting on "
+        f"{len(train_samples)} samples...",
+        end="", flush=True,
+    )
+    fit_start = time.monotonic()
     estimator.fit([sample.features for sample in train_samples], train_labels)
+    fit_elapsed = time.monotonic() - fit_start
+    print(f" done ({_format_eta_seconds(fit_elapsed)})", flush=True)
     test_features = [sample.features for sample in test_samples]
     predicted_labels = [int(label) for label in estimator.predict(test_features)]
     predicted_probabilities = estimator.predict_proba(test_features)
