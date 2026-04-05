@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import bisect
 import json
 import re
 from collections import defaultdict
@@ -646,19 +647,22 @@ def build_sequence_context_rows(
     for symbol, symbol_rows in by_symbol.items():
         by_symbol[symbol] = sorted(symbol_rows, key=lambda row: row.as_of_time)
 
+    timestamps_by_symbol: dict[str, list] = {
+        symbol: [row.as_of_time for row in rows]
+        for symbol, rows in by_symbol.items()
+    }
+
     context_rows: list[dict[str, Any]] = []
     for sample in target_samples:
-        history_rows = [
-            row
-            for row in by_symbol.get(sample.symbol, [])
-            if row.as_of_time <= sample.as_of_time
-        ]
-        if len(history_rows) < lookback_candles:
+        symbol_rows = by_symbol.get(sample.symbol, [])
+        symbol_timestamps = timestamps_by_symbol.get(sample.symbol, [])
+        idx = bisect.bisect_right(symbol_timestamps, sample.as_of_time)
+        if idx < lookback_candles:
             raise ValueError(
                 "Sequence model does not have enough lookback rows for "
-                f"{sample.row_id}: required {lookback_candles}, found {len(history_rows)}",
+                f"{sample.row_id}: required {lookback_candles}, found {idx}",
             )
-        ordered_context = history_rows[-lookback_candles:]
+        ordered_context = symbol_rows[idx - lookback_candles : idx]
         context_feature_row = {
             "symbol": sample.symbol,
             "as_of_time": sample.as_of_time,

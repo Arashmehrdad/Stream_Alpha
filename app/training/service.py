@@ -1011,6 +1011,11 @@ def _evaluate_fold(
                 progress_callback=(
                     _progress_callback if progress_recorder is not None else None
                 ),
+                scoring_checkpoint_path=(
+                    artifact_dir
+                    / "scoring_cache"
+                    / f"fold{fold.fold_index}_{model_name}.json"
+                ),
             )
         except Exception as error:
             if progress_recorder is not None:
@@ -1077,6 +1082,7 @@ def _predict_for_model(
     evaluation_source_rows: list[SourceFeatureRow],
     sequence_export_root: Path | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    scoring_checkpoint_path: Path | None = None,
 ) -> tuple[list[int], list[float]]:
     if model_name == "persistence_3":
         baseline = factory().fit(train_samples)
@@ -1114,6 +1120,8 @@ def _predict_for_model(
         predict_kwargs: dict[str, Any] = {
             "source_rows": evaluation_source_rows,
         }
+        if scoring_checkpoint_path is not None:
+            predict_kwargs["scoring_checkpoint_path"] = scoring_checkpoint_path
         _scoring_line_prefix = (
             f"[training]   {model_name}: scoring "
             f"{len(test_samples)} test samples"
@@ -1122,23 +1130,24 @@ def _predict_for_model(
         def _scoring_progress(payload: dict[str, Any]) -> None:
             event = payload.get("event", "")
             if event == "sequence_scoring_start":
-                total_b = payload.get("batch_count", 0)
                 print(
                     f"\r{_scoring_line_prefix}  "
-                    f"[  0%  batch 0/{total_b}]",
+                    f"[  0%]",
                     end="", flush=True,
                 )
             elif event == "sequence_scoring_progress":
                 pct = int(payload.get("progress", 0) * 100)
-                done_b = payload.get("completed_batches", 0)
-                total_b = payload.get("batch_count", 0)
+                done_rows = int(payload.get("completed_rows", 0))
+                total_rows = int(payload.get("row_count", 0))
                 eta = _format_eta_seconds(payload.get("eta_seconds", 0))
                 elapsed = _format_eta_seconds(
                     payload.get("elapsed_seconds", 0),
                 )
+                done_k = f"{done_rows // 1000}K" if done_rows >= 1000 else str(done_rows)
+                total_k = f"{total_rows // 1000}K" if total_rows >= 1000 else str(total_rows)
                 print(
                     f"\r{_scoring_line_prefix}  "
-                    f"[{pct:3d}%  batch {done_b}/{total_b}  "
+                    f"[{pct:3d}%  {done_k}/{total_k}  "
                     f"elapsed {elapsed}  ETA {eta}]",
                     end="", flush=True,
                 )

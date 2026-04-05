@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import bisect
 import json
 import copy
 import io
@@ -35,6 +36,7 @@ from app.training.workdirs import create_local_training_work_dir
 
 _DEFAULT_CALIBRATION_WINDOWS = 256
 _PREDICT_CONTEXT_BATCH_SIZE = 256
+_SCORING_CHUNK_SIZE = 50000
 
 
 class _BaseNeuralForecastClassifier:  # pylint: disable=too-many-instance-attributes
@@ -212,6 +214,7 @@ class _BaseNeuralForecastClassifier:  # pylint: disable=too-many-instance-attrib
         *,
         source_rows: list[SourceFeatureRow],
         progress_callback: ProgressCallback | None = None,
+        scoring_checkpoint_path: Path | None = None,
     ) -> list[list[float]]:
         """Return fold-evaluation probabilities via rolling out-of-sample forecasts."""
         if not test_samples:
@@ -221,13 +224,14 @@ class _BaseNeuralForecastClassifier:  # pylint: disable=too-many-instance-attrib
                 f"{self.model_class_name} requires source_rows for sequence evaluation",
             )
         grouped = _group_source_rows_by_symbol(source_rows)
+        sorted_timestamps = {
+            symbol: [r.as_of_time for r in rows]
+            for symbol, rows in grouped.items()
+        }
         scoreable_mask = [
-            len(
-                [
-                    r
-                    for r in grouped.get(sample.symbol, [])
-                    if r.as_of_time <= sample.as_of_time
-                ]
+            bisect.bisect_right(
+                sorted_timestamps.get(sample.symbol, []),
+                sample.as_of_time,
             )
             >= self.input_size_candles
             for sample in test_samples
@@ -243,6 +247,7 @@ class _BaseNeuralForecastClassifier:  # pylint: disable=too-many-instance-attrib
             target_samples=scoreable_samples,
             source_rows=source_rows,
             progress_callback=progress_callback,
+            scoring_checkpoint_path=scoring_checkpoint_path,
         )
         calibrator = self._require_calibrator()
         scored_probabilities = calibrator.predict_proba(raw_scores)
@@ -421,25 +426,100 @@ class _BaseNeuralForecastClassifier:  # pylint: disable=too-many-instance-attrib
         target_samples: list[DatasetSample],
         source_rows: list[SourceFeatureRow],
         progress_callback: ProgressCallback | None = None,
+        scoring_checkpoint_path: Path | None = None,
     ) -> list[float]:
         sample_count = len(target_samples)
-        print(
-            f"\r             building {sample_count} context rows...",
-            end="", flush=True,
-        )
-        scoring_rows = self._build_sequence_context_inputs(
-            target_samples=target_samples,
-            source_rows=source_rows,
-        )
-        print(
-            f"\r             building {sample_count} context rows... done"
-            + " " * 20,
-            flush=True,
-        )
-        return self._predict_raw_scores_from_context_rows(
-            scoring_rows,
-            progress_callback=progress_callback,
-        )
+
+        # --- Load scoring checkpoint ---
+        completed_count = 0
+        all_raw_scores: list[float] = []
+        if scoring_checkpoint_path is not None:
+            ckpt_path = Path(scoring_checkpoint_path)
+            if ckpt_path.exists():
+                try:
+                    data = json.loads(ckpt_path.read_text(encoding="utf-8"))
+                    if int(data.get("total_samples", 0)) == sample_count:
+                        all_raw_scores = [float(s) for s in data.get("raw_scores", [])]
+                        completed_count = len(all_raw_scores)
+                except (json.JSONDecodeError, KeyError, ValueError):
+                    completed_count = 0
+                    all_raw_scores = []
+                if 0 < completed_count < sample_count:
+                    print(
+                        f"\n             resuming scoring: "
+                        f"{completed_count}/{sample_count} already done"
+                    )
+
+        if completed_count >= sample_count:
+            return all_raw_scores[:sample_count]
+
+        remaining = target_samples[completed_count:]
+        chunk_size = _SCORING_CHUNK_SIZE
+        total_chunks = (len(remaining) + chunk_size - 1) // chunk_size
+        started_at = perf_counter()
+
+        if progress_callback is not None:
+            progress_callback({
+                "event": "sequence_scoring_start",
+                "row_count": sample_count,
+                "batch_count": total_chunks,
+                "batch_size": chunk_size,
+            })
+
+        for chunk_start in range(0, len(remaining), chunk_size):
+            chunk = remaining[chunk_start : chunk_start + chunk_size]
+            scoring_rows = self._build_sequence_context_inputs(
+                target_samples=chunk,
+                source_rows=source_rows,
+            )
+            chunk_scores = self._predict_raw_scores_from_context_rows(
+                scoring_rows,
+            )
+            all_raw_scores.extend(chunk_scores)
+
+            done_total = completed_count + chunk_start + len(chunk)
+            elapsed = perf_counter() - started_at
+            done_new = chunk_start + len(chunk)
+            eta = (
+                (len(remaining) - done_new) / (done_new / elapsed)
+                if done_new > 0 and elapsed > 0
+                else 0.0
+            )
+            chunk_num = chunk_start // chunk_size + 1
+
+            if progress_callback is not None:
+                progress_callback({
+                    "event": "sequence_scoring_progress",
+                    "row_count": sample_count,
+                    "completed_rows": done_total,
+                    "batch_count": total_chunks,
+                    "completed_batches": chunk_num,
+                    "progress": done_total / float(sample_count),
+                    "elapsed_seconds": elapsed,
+                    "eta_seconds": eta,
+                })
+
+            # --- Save checkpoint ---
+            if scoring_checkpoint_path is not None:
+                ckpt_path = Path(scoring_checkpoint_path)
+                ckpt_path.parent.mkdir(parents=True, exist_ok=True)
+                ckpt_path.write_text(
+                    json.dumps({
+                        "raw_scores": all_raw_scores,
+                        "total_samples": sample_count,
+                    }),
+                    encoding="utf-8",
+                )
+
+        if progress_callback is not None:
+            progress_callback({
+                "event": "sequence_scoring_complete",
+                "row_count": sample_count,
+                "batch_count": total_chunks,
+                "elapsed_seconds": perf_counter() - started_at,
+            })
+
+        return all_raw_scores
 
     def _cross_validate_rows(
         self,
