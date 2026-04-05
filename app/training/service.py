@@ -395,6 +395,8 @@ def run_training(
     *,
     resume_artifact_dir: Path | None = None,
     parquet_dir: Path | None = None,
+    fit_only: bool = False,
+    score_only_dir: Path | None = None,
 ) -> Path:
     """Run the full offline M3 training flow and save artifacts to disk.
 
@@ -403,6 +405,13 @@ def run_training(
 
     If *parquet_dir* is given, load training data from exported parquet files
     instead of PostgreSQL.
+
+    If *fit_only* is True, fit models on each fold and on the full dataset,
+    save the fitted estimators to ``fitted_models/`` inside the artifact dir,
+    then return without scoring.
+
+    If *score_only_dir* is given, load pre-fitted estimators from that
+    directory and run scoring only (skip fitting).
     """
     config = load_training_config(config_path)
     _validate_authoritative_model_stack(config)
@@ -647,6 +656,8 @@ def run_training(
                 console_progress=console_progress,
                 skip_models=skip_models,
                 model_checkpoint_callback=_model_checkpoint_callback,
+                fit_only=fit_only,
+                fitted_models_dir=score_only_dir,
             )
             fold_metric_rows.extend(fold_metrics)
             all_prediction_rows.extend(fold_predictions)
@@ -669,6 +680,43 @@ def run_training(
                 completed_fold_indices=completed_fold_indices,
             )
 
+        # ---- fit-only: do full-fit, save, and return early ----
+        if fit_only:
+            print("[training] fit-only: fitting full-dataset models for later scoring")
+            _fit_only_full_dataset(
+                model_factories=model_factories,
+                samples=dataset.samples,
+                source_rows=dataset.source_rows,
+                artifact_dir=artifact_dir,
+                progress_recorder=progress_recorder,
+            )
+            _write_json(
+                artifact_dir / "fitted_models" / "manifest.json",
+                {
+                    "mode": "fit_only",
+                    "config_path": str(config_path),
+                    "folds": len(folds),
+                    "models": [
+                        m for m in model_factories
+                        if m not in _REQUIRED_PROMOTION_BASELINES
+                    ],
+                },
+            )
+            progress_recorder.record(
+                stage="complete",
+                message="fit-only completed — fitted models saved",
+                state="completed",
+                fitted_models_dir=str(artifact_dir / "fitted_models"),
+            )
+            print(
+                f"\n[training] fit-only complete. Fitted models at:\n"
+                f"  {artifact_dir / 'fitted_models'}\n"
+                f"Score locally with:\n"
+                f"  python -m app.training --config <local_config> "
+                f"--score-only {artifact_dir / 'fitted_models'}"
+            )
+            return artifact_dir
+
         _write_csv(artifact_dir / "fold_metrics.csv", fold_metric_rows)
         _write_csv(
             artifact_dir / "oof_predictions.csv",
@@ -686,26 +734,35 @@ def run_training(
             message="winner selected by offline rule",
             winner_name=winner_name,
         )
-        print("[training] fitting full-dataset challenger artifacts")
-        progress_recorder.record(
-            stage="full_fit",
-            message="starting full-dataset challenger fits",
-            learned_models=len(
-                [
-                    model_name
-                    for model_name in model_factories
-                    if model_name not in _REQUIRED_PROMOTION_BASELINES
-                ]
-            ),
-        )
-        learned_candidate_artifacts = _fit_learned_models_on_full_dataset(
-            model_factories=model_factories,
-            samples=dataset.samples,
-            source_rows=dataset.source_rows,
-            artifact_dir=artifact_dir,
-            configured_feature_columns=dataset.feature_columns,
-            progress_recorder=progress_recorder,
-        )
+        if score_only_dir is not None:
+            print("[training] score-only: loading pre-fitted full-dataset models")
+            learned_candidate_artifacts = _load_full_fit_models(
+                model_factories=model_factories,
+                fitted_models_dir=score_only_dir,
+                artifact_dir=artifact_dir,
+                configured_feature_columns=dataset.feature_columns,
+            )
+        else:
+            print("[training] fitting full-dataset challenger artifacts")
+            progress_recorder.record(
+                stage="full_fit",
+                message="starting full-dataset challenger fits",
+                learned_models=len(
+                    [
+                        model_name
+                        for model_name in model_factories
+                        if model_name not in _REQUIRED_PROMOTION_BASELINES
+                    ]
+                ),
+            )
+            learned_candidate_artifacts = _fit_learned_models_on_full_dataset(
+                model_factories=model_factories,
+                samples=dataset.samples,
+                source_rows=dataset.source_rows,
+                artifact_dir=artifact_dir,
+                configured_feature_columns=dataset.feature_columns,
+                progress_recorder=progress_recorder,
+            )
         winner_candidate_artifact = learned_candidate_artifacts[winner_name]
         _save_model_artifact(
             model_path=artifact_dir / "model.joblib",
@@ -957,6 +1014,8 @@ def _evaluate_fold(
     model_checkpoint_callback: Callable[
         [str, list[dict[str, Any]], list[PredictionRecord]], None
     ] | None = None,
+    fit_only: bool = False,
+    fitted_models_dir: Path | None = None,
 ) -> tuple[list[dict[str, Any]], list[PredictionRecord]]:
     # The explicit inputs keep the fold evaluation contract inspectable for M3/M7.
     fold_metrics: list[dict[str, Any]] = []
@@ -995,6 +1054,16 @@ def _evaluate_fold(
             )
 
         try:
+            # resolve fit-only / score-only paths for this model
+            _fit_save = (
+                artifact_dir / "fitted_models" / f"fold{fold.fold_index}"
+                / f"{model_name}.joblib"
+            ) if fit_only and model_name not in _REQUIRED_PROMOTION_BASELINES else None
+            _score_load = (
+                fitted_models_dir / f"fold{fold.fold_index}"
+                / f"{model_name}.joblib"
+            ) if fitted_models_dir is not None and model_name not in _REQUIRED_PROMOTION_BASELINES else None
+
             predicted_labels, probabilities = _predict_for_model(
                 model_name=model_name,
                 factory=factory,
@@ -1016,6 +1085,8 @@ def _evaluate_fold(
                     / "scoring_cache"
                     / f"fold{fold.fold_index}_{model_name}.json"
                 ),
+                fit_only_save_path=_fit_save,
+                score_only_load_path=_score_load,
             )
         except Exception as error:
             if progress_recorder is not None:
@@ -1083,9 +1154,13 @@ def _predict_for_model(
     sequence_export_root: Path | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
     scoring_checkpoint_path: Path | None = None,
+    fit_only_save_path: Path | None = None,
+    score_only_load_path: Path | None = None,
 ) -> tuple[list[int], list[float]]:
     if model_name == "persistence_3":
         baseline = factory().fit(train_samples)
+        if fit_only_save_path is not None:
+            return [0] * len(test_samples), [0.5] * len(test_samples)
         labels = baseline.predict(test_samples)
         probabilities = [row[1] for row in baseline.predict_proba(test_samples)]
         return labels, probabilities
@@ -1097,26 +1172,51 @@ def _predict_for_model(
         constant_label = int(train_labels[0])
         return [constant_label] * len(test_samples), [float(constant_label)] * len(test_samples)
 
-    estimator = factory()
-    if is_pretrained_forecaster_model(estimator):
-        fit_kwargs: dict[str, Any] = {
-            "source_rows": train_source_rows,
-            "dataset_export_root": sequence_export_root,
-        }
-        if progress_callback is not None:
-            fit_kwargs["progress_callback"] = progress_callback
+    # --- score-only: load pre-fitted model from disk ---
+    if score_only_load_path is not None:
+        estimator = joblib.load(score_only_load_path)
         print(
-            f"\n[training]   {model_name}: fitting on "
-            f"{len(train_samples)} samples...",
-            end="", flush=True,
-        )
-        fit_start = time.monotonic()
-        estimator.fit_samples(train_samples, **fit_kwargs)
-        fit_elapsed = time.monotonic() - fit_start
-        print(
-            f" done ({_format_eta_seconds(fit_elapsed)})",
+            f"\n[training]   {model_name}: loaded pre-fitted model from "
+            f"{score_only_load_path.name}",
             flush=True,
         )
+    else:
+        estimator = factory()
+
+    if is_pretrained_forecaster_model(estimator):
+        # --- fit phase (skip when score-only) ---
+        if score_only_load_path is None:
+            fit_kwargs: dict[str, Any] = {
+                "source_rows": train_source_rows,
+                "dataset_export_root": sequence_export_root,
+            }
+            if progress_callback is not None:
+                fit_kwargs["progress_callback"] = progress_callback
+            print(
+                f"\n[training]   {model_name}: fitting on "
+                f"{len(train_samples)} samples...",
+                end="", flush=True,
+            )
+            fit_start = time.monotonic()
+            estimator.fit_samples(train_samples, **fit_kwargs)
+            fit_elapsed = time.monotonic() - fit_start
+            print(
+                f" done ({_format_eta_seconds(fit_elapsed)})",
+                flush=True,
+            )
+
+        # --- fit-only: save and return dummy results ---
+        if fit_only_save_path is not None:
+            fit_only_save_path.parent.mkdir(parents=True, exist_ok=True)
+            joblib.dump(estimator, fit_only_save_path)
+            print(
+                f"[training]   {model_name}: saved fitted model → "
+                f"{fit_only_save_path.name}",
+                flush=True,
+            )
+            return [0] * len(test_samples), [0.5] * len(test_samples)
+
+        # --- score phase ---
         predict_kwargs: dict[str, Any] = {
             "source_rows": evaluation_source_rows,
         }
@@ -1168,15 +1268,29 @@ def _predict_for_model(
         probabilities = [float(probability[1]) for probability in predicted_probabilities]
         predicted_labels = [1 if probability >= 0.5 else 0 for probability in probabilities]
         return predicted_labels, probabilities
-    print(
-        f"\n[training]   {model_name}: fitting on "
-        f"{len(train_samples)} samples...",
-        end="", flush=True,
-    )
-    fit_start = time.monotonic()
-    estimator.fit([sample.features for sample in train_samples], train_labels)
-    fit_elapsed = time.monotonic() - fit_start
-    print(f" done ({_format_eta_seconds(fit_elapsed)})", flush=True)
+
+    # --- tabular model path ---
+    if score_only_load_path is None:
+        print(
+            f"\n[training]   {model_name}: fitting on "
+            f"{len(train_samples)} samples...",
+            end="", flush=True,
+        )
+        fit_start = time.monotonic()
+        estimator.fit([sample.features for sample in train_samples], train_labels)
+        fit_elapsed = time.monotonic() - fit_start
+        print(f" done ({_format_eta_seconds(fit_elapsed)})", flush=True)
+
+    if fit_only_save_path is not None:
+        fit_only_save_path.parent.mkdir(parents=True, exist_ok=True)
+        joblib.dump(estimator, fit_only_save_path)
+        print(
+            f"[training]   {model_name}: saved fitted model → "
+            f"{fit_only_save_path.name}",
+            flush=True,
+        )
+        return [0] * len(test_samples), [0.5] * len(test_samples)
+
     test_features = [sample.features for sample in test_samples]
     predicted_labels = [int(label) for label in estimator.predict(test_features)]
     predicted_probabilities = estimator.predict_proba(test_features)
@@ -1334,6 +1448,127 @@ def _select_winner(aggregate_summary: dict[str, dict[str, Any]]) -> str:
             item[1]["brier_score"],
         ),
     )[0][0]
+
+
+def _fit_only_full_dataset(
+    *,
+    model_factories: dict[str, Callable[[], Any]],
+    samples: tuple[DatasetSample, ...],
+    source_rows: tuple[SourceFeatureRow, ...],
+    artifact_dir: Path,
+    progress_recorder: _TrainingProgressRecorder | None = None,
+) -> None:
+    """Fit every learned model on the full dataset and save to fitted_models/full_fit/."""
+    train_labels = [sample.label for sample in samples]
+    if len(set(train_labels)) < 2:
+        raise ValueError("Full-fit requires at least two distinct labels")
+
+    full_fit_dir = artifact_dir / "fitted_models" / "full_fit"
+    full_fit_dir.mkdir(parents=True, exist_ok=True)
+
+    for model_name, factory in model_factories.items():
+        if model_name in _REQUIRED_PROMOTION_BASELINES:
+            continue
+        print(f"[training]   full-fit {model_name}...", end="", flush=True)
+        fit_start = time.monotonic()
+        fitted_model = factory()
+        if is_pretrained_forecaster_model(fitted_model):
+            fit_kwargs: dict[str, Any] = {"source_rows": list(source_rows)}
+            if progress_recorder is not None:
+                def _cb(
+                    payload: dict[str, Any],
+                    *,
+                    _mn: str = model_name,
+                ) -> None:
+                    progress_recorder.record_sequence_event(
+                        model_name=_mn, payload=payload,
+                    )
+                fit_kwargs["progress_callback"] = _cb
+            fitted_model.fit_samples(list(samples), **fit_kwargs)
+        else:
+            fitted_model.fit(
+                [sample.features for sample in samples], train_labels,
+            )
+        save_path = full_fit_dir / f"{model_name}.joblib"
+        joblib.dump(fitted_model, save_path)
+        elapsed = time.monotonic() - fit_start
+        print(f" done ({_format_eta_seconds(elapsed)}) → {save_path.name}", flush=True)
+
+
+def _load_full_fit_models(
+    *,
+    model_factories: dict[str, Callable[[], Any]],
+    fitted_models_dir: Path,
+    artifact_dir: Path,
+    configured_feature_columns: tuple[str, ...],
+) -> dict[str, SavedCandidateArtifact]:
+    """Load pre-fitted full-dataset models from a fitted_models directory."""
+    saved_candidates: dict[str, SavedCandidateArtifact] = {}
+    candidate_root = artifact_dir / "candidate_artifacts"
+    candidate_root.mkdir(parents=True, exist_ok=True)
+
+    for model_name in model_factories:
+        if model_name in _REQUIRED_PROMOTION_BASELINES:
+            continue
+        load_path = fitted_models_dir / "full_fit" / f"{model_name}.joblib"
+        if not load_path.exists():
+            raise ValueError(
+                f"Pre-fitted model not found: {load_path}. "
+                f"Run --fit-only first to generate fitted models."
+            )
+        fitted_model = joblib.load(load_path)
+        print(f"[training]   loaded full-fit {model_name} from {load_path.name}")
+
+        validated_pretrained_contract = None
+        if is_pretrained_forecaster_model(fitted_model):
+            validated_pretrained_contract = validate_pretrained_forecaster_contract(
+                fitted_model,
+            )
+
+        if validated_pretrained_contract is None:
+            feature_columns = _resolve_model_feature_columns(
+                fitted_model=fitted_model,
+                configured_feature_columns=configured_feature_columns,
+            )
+            expanded_feature_names = _resolve_expanded_feature_names(
+                fitted_model=fitted_model,
+            )
+            training_model_config = _extract_training_model_config(
+                fitted_model=fitted_model,
+            )
+            registry_metadata = _extract_registry_metadata(
+                fitted_model=fitted_model,
+            )
+        else:
+            feature_columns = validated_pretrained_contract.feature_columns
+            expanded_feature_names = list(
+                validated_pretrained_contract.expanded_feature_names,
+            )
+            training_model_config = validated_pretrained_contract.training_config
+            registry_metadata = validated_pretrained_contract.registry_metadata
+
+        model_dir = candidate_root / model_name
+        model_dir.mkdir(parents=True, exist_ok=False)
+        model_path = model_dir / "model.joblib"
+        _save_model_artifact(
+            model_path=model_path,
+            model_name=model_name,
+            fitted_model=fitted_model,
+            feature_columns=feature_columns,
+            expanded_feature_names=expanded_feature_names,
+            training_model_config=training_model_config,
+            registry_metadata=registry_metadata,
+        )
+        saved_candidates[model_name] = SavedCandidateArtifact(
+            model_name=model_name,
+            model_path=model_path,
+            fitted_model=fitted_model,
+            feature_columns=feature_columns,
+            expanded_feature_names=expanded_feature_names,
+            training_model_config=training_model_config,
+            registry_metadata=registry_metadata,
+        )
+    return saved_candidates
 
 
 def _fit_learned_models_on_full_dataset(

@@ -2,6 +2,36 @@
 
 Run the M20 training pipeline on Google Colab with GPU, bypassing local RAM limitations.
 
+## Two-phase workflow (recommended)
+
+Split GPU-intensive fitting from CPU-intensive scoring:
+
+### Phase 1: Fit on Colab (GPU)
+```bash
+python -m app.training --config configs/training.m20.colab.json \
+    --parquet-dir /content/drive/MyDrive/Stream_Alpha/exports/feature_ohlc_for_colab \
+    --fit-only
+```
+This fits models on each fold and the full dataset, saving fitted estimators to
+`artifacts/training/<run_id>/fitted_models/`. Copy the `fitted_models/` folder to Drive.
+
+### Phase 2: Score locally (CPU)
+Download `fitted_models/` from Drive, then:
+```bash
+python -m app.training --config configs/training.m20.json \
+    --score-only path/to/fitted_models
+```
+This loads the pre-fitted models, runs scoring against your local PostgreSQL data,
+and produces the full output (OOF predictions, fold metrics, winner selection, summary).
+
+## Full pipeline (single machine)
+
+If your machine has enough RAM for both fitting and scoring:
+```bash
+python -m app.training --config configs/training.m20.colab.json \
+    --parquet-dir /content/drive/MyDrive/Stream_Alpha/exports/feature_ohlc_for_colab
+```
+
 ## Prerequisites
 
 1. **Export the dataset** from your local PostgreSQL:
@@ -25,7 +55,7 @@ Run the M20 training pipeline on Google Colab with GPU, bypassing local RAM limi
 1. Clones the Stream_Alpha repo
 2. Installs Python dependencies
 3. Mounts Google Drive to access the exported parquet dataset
-4. Runs `python -m app.training --config configs/training.m20.json --parquet-dir <drive_path>`
+4. Runs the training pipeline (fit-only or full, depending on configuration)
 5. Saves artifacts back to Google Drive
 
 ## Runtime recommendations

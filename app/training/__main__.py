@@ -28,14 +28,30 @@ def main() -> None:
         default=None,
         help="Path to exported parquet dataset (skip PostgreSQL loading)",
     )
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        "--fit-only",
+        action="store_true",
+        default=False,
+        help="Fit models only (GPU phase) — save fitted estimators, skip scoring",
+    )
+    mode_group.add_argument(
+        "--score-only",
+        default=None,
+        metavar="FITTED_MODELS_DIR",
+        help="Score only (CPU phase) — load pre-fitted models from this directory",
+    )
     arguments = parser.parse_args()
     try:
         resume_dir = Path(arguments.resume) if arguments.resume else None
         parquet_dir = Path(arguments.parquet_dir) if arguments.parquet_dir else None
+        score_only_dir = Path(arguments.score_only) if arguments.score_only else None
         run_training(
             Path(arguments.config),
             resume_artifact_dir=resume_dir,
             parquet_dir=parquet_dir,
+            fit_only=arguments.fit_only,
+            score_only_dir=score_only_dir,
         )
     except ValueError as error:
         raise SystemExit(str(error)) from error

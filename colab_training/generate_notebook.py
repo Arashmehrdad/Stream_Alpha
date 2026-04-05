@@ -106,15 +106,17 @@ notebook["cells"] = [
         "      f'windows_batch_size={config[\"models\"][\"neuralforecast_patchtst\"][\"model_kwargs\"][\"windows_batch_size\"]}')\n"
     ),
     md(
-        "## 6. Run M20 Training\n"
+        "## 6. Run M20 Training (Fit-Only)\n"
         "\n"
-        "Loads data from parquet files (no PostgreSQL needed) and runs the full\n"
-        "walk-forward evaluation with NHITS + PatchTST."
+        "Fits models on each fold and full dataset using GPU.\n"
+        "Scoring will be done locally on your machine.\n"
+        "Fitted models are saved to `fitted_models/` on Google Drive."
     ),
     code(
         "!cd /content/Stream_Alpha && python -m app.training \\\n"
         "    --config configs/training.m20.colab.json \\\n"
-        '    --parquet-dir "$DATASET_DIR"\n'
+        '    --parquet-dir "$DATASET_DIR" \\\n'
+        "    --fit-only\n"
     ),
     md("## 7. Check artifacts"),
     code(
@@ -138,7 +140,21 @@ notebook["cells"] = [
         "# !cd /content/Stream_Alpha && python -m app.training \\\n"
         "#     --config configs/training.m20.colab.json \\\n"
         '#     --parquet-dir "$DATASET_DIR" \\\n'
+        '#     --fit-only \\\n'
         '#     --resume "$DRIVE_ARTIFACTS"\n'
+    ),
+    md(
+        "## 9. Score locally (on your machine)\n"
+        "\n"
+        "Download the `fitted_models/` folder from Google Drive, then run:\n"
+        "\n"
+        "```bash\n"
+        "python -m app.training \\\\\n"
+        "    --config configs/training.m20.json \\\\\n"
+        "    --score-only path/to/fitted_models\n"
+        "```\n"
+        "\n"
+        "This loads pre-fitted models and scores against your local PostgreSQL data."
     ),
 ]
 
