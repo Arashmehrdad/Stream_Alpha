@@ -113,16 +113,16 @@ notebook["cells"] = [
         "Fitted models are saved to `fitted_models/` on Google Drive."
     ),
     code(
-        "import subprocess, sys\n"
-        "result = subprocess.run(\n"
-        "    ['python', '-m', 'app.training',\n"
-        "     '--config', 'configs/training.m20.colab.json',\n"
-        "     '--parquet-dir', DATASET_DIR,\n"
-        "     '--fit-only'],\n"
-        "    cwd='/content/Stream_Alpha',\n"
-        "    stdout=sys.stdout, stderr=sys.stderr,\n"
+        "import os\n"
+        "cmd = (\n"
+        "    f'cd /content/Stream_Alpha && python -m app.training'\n"
+        "    f' --config configs/training.m20.colab.json'\n"
+        "    f' --parquet-dir {DATASET_DIR}'\n"
+        "    f' --fit-only'\n"
         ")\n"
-        "result.check_returncode()\n"
+        "rc = os.system(cmd)\n"
+        "if rc != 0:\n"
+        "    raise RuntimeError(f'Training failed with exit code {rc}')\n"
     ),
     md("## 7. Check artifacts"),
     code(
@@ -143,17 +143,17 @@ notebook["cells"] = [
     ),
     code(
         "# Uncomment to resume from a partial run:\n"
-        "# import subprocess, sys\n"
-        "# result = subprocess.run(\n"
-        "#     ['python', '-m', 'app.training',\n"
-        "#      '--config', 'configs/training.m20.colab.json',\n"
-        "#      '--parquet-dir', DATASET_DIR,\n"
-        "#      '--fit-only',\n"
-        "#      '--resume', DRIVE_ARTIFACTS],\n"
-        "#     cwd='/content/Stream_Alpha',\n"
-        "#     stdout=sys.stdout, stderr=sys.stderr,\n"
+        "# import os\n"
+        "# cmd = (\n"
+        "#     f'cd /content/Stream_Alpha && python -m app.training'\n"
+        "#     f' --config configs/training.m20.colab.json'\n"
+        "#     f' --parquet-dir {DATASET_DIR}'\n"
+        "#     f' --fit-only'\n"
+        "#     f' --resume {DRIVE_ARTIFACTS}'\n"
         "# )\n"
-        "# result.check_returncode()\n"
+        "# rc = os.system(cmd)\n"
+        "# if rc != 0:\n"
+        "#     raise RuntimeError(f'Training failed with exit code {rc}')\n"
     ),
     md(
         "## 9. Score locally (on your machine)\n"
