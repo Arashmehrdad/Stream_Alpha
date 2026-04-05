@@ -1,0 +1,123 @@
+{
+  "artifact_root": "artifacts/training/m20",
+  "categorical_feature_columns": [
+    "symbol"
+  ],
+  "close_column": "close_price",
+  "comparison_policy": {
+    "max_brier_score_worsening": 0.01,
+    "max_directional_accuracy_regression": 0.01,
+    "primary_metric": "mean_long_only_net_value_proxy"
+  },
+  "first_train_fraction": 0.5,
+  "interval_column": "interval_begin",
+  "label_horizon_candles": 3,
+  "models": {
+    "neuralforecast_nhits": {
+      "batch_size": 32,
+      "calibration_windows": 256,
+      "candidate_role": "TREND_SPECIALIST",
+      "dataset_mode": "local_files_partitioned",
+      "early_stop_patience_steps": 20,
+      "enable_progress_bar": false,
+      "input_size_candles": 96,
+      "learning_rate": 0.001,
+      "logger": false,
+      "max_steps": 200,
+      "model_kwargs": {
+        "accelerator": "auto",
+        "devices": 1,
+        "inference_windows_batch_size": 64,
+        "n_pool_kernel_size": [
+          8,
+          4,
+          1
+        ],
+        "n_freq_downsample": [
+          24,
+          12,
+          1
+        ],
+        "precision": "16-mixed",
+        "step_size": 128,
+        "valid_batch_size": 32,
+        "windows_batch_size": 128
+      },
+      "random_seed": 1,
+      "refit_each_window": false,
+      "scaler_type": "robust",
+      "scope_regimes": [
+        "TREND_UP",
+        "TREND_DOWN"
+      ],
+      "val_check_steps": 50
+    },
+    "neuralforecast_patchtst": {
+      "batch_size": 32,
+      "calibration_windows": 256,
+      "candidate_role": "RANGE_SPECIALIST",
+      "dataset_mode": "local_files_partitioned",
+      "early_stop_patience_steps": 20,
+      "enable_progress_bar": false,
+      "input_size_candles": 96,
+      "learning_rate": 0.001,
+      "logger": false,
+      "max_steps": 200,
+      "model_kwargs": {
+        "accelerator": "auto",
+        "devices": 1,
+        "hidden_size": 32,
+        "inference_windows_batch_size": 32,
+        "n_heads": 4,
+        "patch_len": 16,
+        "precision": "16-mixed",
+        "step_size": 128,
+        "stride": 8,
+        "valid_batch_size": 32,
+        "windows_batch_size": 64
+      },
+      "random_seed": 1,
+      "refit_each_window": false,
+      "scaler_type": "robust",
+      "scope_regimes": [
+        "RANGE"
+      ],
+      "val_check_steps": 50
+    }
+  },
+  "numeric_feature_columns": [
+    "open_price",
+    "high_price",
+    "low_price",
+    "close_price",
+    "vwap",
+    "trade_count",
+    "volume",
+    "log_return_1",
+    "log_return_3",
+    "momentum_3",
+    "return_mean_12",
+    "return_std_12",
+    "realized_vol_12",
+    "rsi_14",
+    "macd_line_12_26",
+    "volume_mean_12",
+    "volume_std_12",
+    "volume_zscore_12",
+    "close_zscore_12",
+    "lag_log_return_1",
+    "lag_log_return_2",
+    "lag_log_return_3"
+  ],
+  "purge_gap_candles": 3,
+  "round_trip_fee_bps": 20,
+  "source_table": "feature_ohlc",
+  "symbols": [
+    "BTC/USD",
+    "ETH/USD",
+    "SOL/USD"
+  ],
+  "test_folds": 5,
+  "test_fraction": 0.1,
+  "time_column": "as_of_time"
+}
