@@ -113,16 +113,10 @@ notebook["cells"] = [
         "Fitted models are saved to `fitted_models/` on Google Drive."
     ),
     code(
-        "import os\n"
-        "cmd = (\n"
-        "    f'cd /content/Stream_Alpha && python -m app.training'\n"
-        "    f' --config configs/training.m20.colab.json'\n"
-        "    f' --parquet-dir {DATASET_DIR}'\n"
-        "    f' --fit-only'\n"
-        ")\n"
-        "rc = os.system(cmd)\n"
-        "if rc != 0:\n"
-        "    raise RuntimeError(f'Training failed with exit code {rc}')\n"
+        '!cd /content/Stream_Alpha && python -m app.training \\\n'
+        '    --config configs/training.m20.colab.json \\\n'
+        '    --parquet-dir "$DATASET_DIR" \\\n'
+        '    --fit-only\n'
     ),
     md("## 7. Check artifacts"),
     code(
@@ -143,17 +137,11 @@ notebook["cells"] = [
     ),
     code(
         "# Uncomment to resume from a partial run:\n"
-        "# import os\n"
-        "# cmd = (\n"
-        "#     f'cd /content/Stream_Alpha && python -m app.training'\n"
-        "#     f' --config configs/training.m20.colab.json'\n"
-        "#     f' --parquet-dir {DATASET_DIR}'\n"
-        "#     f' --fit-only'\n"
-        "#     f' --resume {DRIVE_ARTIFACTS}'\n"
-        "# )\n"
-        "# rc = os.system(cmd)\n"
-        "# if rc != 0:\n"
-        "#     raise RuntimeError(f'Training failed with exit code {rc}')\n"
+        '# !cd /content/Stream_Alpha && python -m app.training \\\n'
+        '#     --config configs/training.m20.colab.json \\\n'
+        '#     --parquet-dir "$DATASET_DIR" \\\n'
+        '#     --fit-only \\\n'
+        '#     --resume "$DRIVE_ARTIFACTS"\n'
     ),
     md(
         "## 9. Score locally (on your machine)\n"
