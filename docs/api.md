@@ -88,7 +88,31 @@ Confirmed endpoints:
 
 The request schemas are named `ContinualLearningPromoteProfileRequest` and `ContinualLearningRollbackRequest`, and the code describes them as guarded operator requests. These calls can affect persisted continual-learning/runtime state by saving promotion or rollback decisions, events, and profile artifacts when guards pass.
 
-Use only with explicit operator intent. TODO: verify operator access policy before exposing these routes beyond trusted local/operator workflows.
+HTTP-level protection:
+
+- Set `STREAMALPHA_OPERATOR_API_KEY` in the inference service environment.
+- Send the same value in the `X-StreamAlpha-Operator-Key` request header.
+- If `STREAMALPHA_OPERATOR_API_KEY` is unset or blank, the protected POST endpoints deny by default with `403`.
+- Missing or incorrect `X-StreamAlpha-Operator-Key` also returns `403`.
+
+The API-key check is additive. Existing workflow guards still run after a valid key is supplied, including `operator_confirmed`, profile validation, drift-cap checks, health/freshness checks, and promotion/rollback safety gates.
+
+Example:
+
+```powershell
+$headers = @{
+  "X-StreamAlpha-Operator-Key" = $env:STREAMALPHA_OPERATOR_API_KEY
+}
+
+Invoke-RestMethod `
+  -Method Post `
+  -Uri "http://127.0.0.1:8000/continual-learning/promotions/promote-profile" `
+  -Headers $headers `
+  -ContentType "application/json" `
+  -Body '{"decision_id":"TODO","profile_id":"TODO","requested_promotion_stage":"PAPER_APPROVED","summary_text":"TODO","reason_codes":["OPERATOR_REVIEWED_EVIDENCE"],"operator_confirmed":true}'
+```
+
+Use only with explicit operator intent on trusted local/operator surfaces.
 
 ## Error Cases
 

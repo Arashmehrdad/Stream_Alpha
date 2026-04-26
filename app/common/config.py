@@ -119,6 +119,7 @@ class InferenceSettings:
     signal_sell_prob_up: float
     regime_thresholds_path: str = ""
     regime_signal_policy_path: str = "configs/regime_signal_policy.json"
+    operator_api_key: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,6 +226,10 @@ class Settings:  # pylint: disable=too-many-instance-attributes
                 regime_signal_policy_path=_get_required(
                     "INFERENCE_REGIME_SIGNAL_POLICY_PATH",
                     "configs/regime_signal_policy.json",
+                ).strip(),
+                operator_api_key=os.getenv(
+                    "STREAMALPHA_OPERATOR_API_KEY",
+                    "",
                 ).strip(),
             ),
             dashboard=DashboardSettings(

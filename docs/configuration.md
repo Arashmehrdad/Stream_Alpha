@@ -40,6 +40,7 @@ Do not commit real secrets. `.env.secrets.example` is present as a placeholder f
 | `INFERENCE_SERVICE_NAME` | Inference service name | `inference` | Optional | inference |
 | `INFERENCE_SIGNAL_BUY_PROB_UP` | Buy signal threshold | `0.55` | Optional | inference |
 | `INFERENCE_SIGNAL_SELL_PROB_UP` | Sell signal threshold | `0.45` | Optional | inference |
+| `STREAMALPHA_OPERATOR_API_KEY` | API key required for continual-learning operator POST endpoints | blank | Required for operator writes | inference |
 | `INFERENCE_API_BASE_URL` | Dashboard/trader inference base URL | `http://127.0.0.1:8000` | Optional | dashboard/trader |
 | `DASHBOARD_REFRESH_SECONDS` | Dashboard refresh interval | `15` | Optional | dashboard |
 | `DASHBOARD_RECENT_TRADES_LIMIT` | Dashboard recent trade limit | `20` | Optional | dashboard |
@@ -82,4 +83,3 @@ Profile-specific trading configs are visible in `configs/`:
 - `configs/paper_trading.yaml`
 
 The runtime helper maps `paper`, `shadow`, and `live` to the profile-specific files when profile defaults are enabled.
-

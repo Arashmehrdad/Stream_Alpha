@@ -5,11 +5,12 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from datetime import date
+import hmac
 import logging
 from time import perf_counter
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query, Request, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 
 from app.adaptation.schemas import (
@@ -75,6 +76,24 @@ def create_app(
 
     app = FastAPI(title="Stream Alpha Inference API", version="m14", lifespan=_lifespan)
     app.state.service = service
+
+    async def _require_operator_key(
+        operator_key: str | None = Header(
+            default=None,
+            alias="X-StreamAlpha-Operator-Key",
+        ),
+    ) -> None:
+        configured_key = service.settings.inference.operator_api_key.strip()
+        if not configured_key:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Operator API key is not configured",
+            )
+        if operator_key is None or not hmac.compare_digest(operator_key, configured_key):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Invalid operator API key",
+            )
 
     @app.middleware("http")
     async def _logging_middleware(request: Request, call_next):
@@ -347,6 +366,7 @@ def create_app(
     @app.post(
         "/continual-learning/promotions/promote-profile",
         response_model=ContinualLearningWorkflowResponse,
+        dependencies=[Depends(_require_operator_key)],
     )
     async def continual_learning_promote_profile(
         request: ContinualLearningPromoteProfileRequest,
@@ -361,6 +381,7 @@ def create_app(
     @app.post(
         "/continual-learning/promotions/rollback-active-profile",
         response_model=ContinualLearningWorkflowResponse,
+        dependencies=[Depends(_require_operator_key)],
     )
     async def continual_learning_rollback_active_profile(
         request: ContinualLearningRollbackRequest,

@@ -24,6 +24,15 @@ python -m pytest `
   -q
 ```
 
+Continual-learning operator endpoint protection:
+
+```powershell
+python -m pytest `
+  tests/test_inference_api.py `
+  -k continual_learning `
+  -q
+```
+
 ## Focused Training Tests
 
 ```powershell
@@ -54,6 +63,54 @@ docker compose `
   --env-file .env `
   up -d config-check inference dashboard trader
 ```
+
+For non-destructive data-pipeline fallback proof against the running paper stack:
+
+```powershell
+docker compose `
+  --profile paper `
+  --env-file .env `
+  ps
+
+docker compose `
+  --profile paper `
+  --env-file .env `
+  logs --tail=100 producer
+
+docker compose `
+  --profile paper `
+  --env-file .env `
+  logs --tail=100 features
+
+docker compose `
+  --profile paper `
+  --env-file .env `
+  logs --tail=100 inference
+```
+
+If Docker-level validation of new inference API code is required, rebuild and recreate only `inference`:
+
+```powershell
+docker compose `
+  --profile paper `
+  --env-file .env `
+  build inference
+
+docker compose `
+  --profile paper `
+  --env-file .env `
+  up -d --force-recreate inference
+```
+
+Otherwise, validate endpoint auth with focused local pytest and use Docker only for pipeline fallback proof.
+
+Latest documented local result for this non-destructive Docker pass:
+
+- `docker compose --profile paper --env-file .env ps` showed `inference`, `postgres`, and `redpanda` healthy.
+- Producer logs showed Kraken subscription acknowledgements and startup retry evidence when Redpanda was briefly unavailable.
+- Feature logs showed bootstrap from `raw_ohlc` and the `raw.ohlc` consumer group joining successfully.
+- Inference logs showed repeated `/health` requests returning `200`.
+- `Invoke-RestMethod http://127.0.0.1:8000/health` returned `status=ok`, `startup_validation_passed=true`, `model_loaded=true`, `database=healthy`, and `health_overall_status=HEALTHY`.
 
 ## Health Validation
 

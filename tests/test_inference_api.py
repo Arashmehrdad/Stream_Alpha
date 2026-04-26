@@ -762,7 +762,7 @@ class WorkflowContinualLearningService(NullContinualLearningService):
         )
 
 
-def _build_settings(model_path: str) -> Settings:
+def _build_settings(model_path: str, *, operator_api_key: str = "") -> Settings:
     return Settings(
         app_name="streamalpha",
         log_level="INFO",
@@ -813,6 +813,7 @@ def _build_settings(model_path: str) -> Settings:
             service_name="inference",
             signal_buy_prob_up=0.55,
             signal_sell_prob_up=0.45,
+            operator_api_key=operator_api_key,
         ),
     )
 
@@ -1224,6 +1225,7 @@ def _build_client(  # pylint: disable=too-many-arguments
     adaptation_service: FakeAdaptationService | NullAdaptationService | None = None,
     ensemble_service: EnsembleService | NullEnsembleService | None = None,
     continual_learning_service: NullContinualLearningService | None = None,
+    operator_api_key: str = "",
 ) -> TestClient:
     resolved_artifact_path = (
         _write_artifact(tmp_path, prob_up=prob_up)
@@ -1232,7 +1234,10 @@ def _build_client(  # pylint: disable=too-many-arguments
     )
     artifact = load_model_artifact(str(resolved_artifact_path))
     service = InferenceService(
-        _build_settings(str(resolved_artifact_path)),
+        _build_settings(
+            str(resolved_artifact_path),
+            operator_api_key=operator_api_key,
+        ),
         database=database,
         model_artifact=artifact,
         regime_runtime=_build_regime_runtime(tmp_path),
@@ -2106,16 +2111,19 @@ def test_continual_learning_read_only_endpoints_return_payloads(tmp_path: Path) 
 def test_continual_learning_workflow_post_endpoints_return_guarded_results(
     tmp_path: Path,
 ) -> None:
+    operator_key = "test-operator-key"
     workflow_service = WorkflowContinualLearningService()
     client = _build_client(
         tmp_path,
         prob_up=0.7,
         database=FakeDatabase(row=_feature_row()),
         continual_learning_service=workflow_service,
+        operator_api_key=operator_key,
     )
 
     promote_response = client.post(
         "/continual-learning/promotions/promote-profile",
+        headers={"X-StreamAlpha-Operator-Key": operator_key},
         json={
             "decision_id": "decision-promote-1",
             "profile_id": "cl-profile-1",
@@ -2127,6 +2135,7 @@ def test_continual_learning_workflow_post_endpoints_return_guarded_results(
     )
     rollback_response = client.post(
         "/continual-learning/promotions/rollback-active-profile",
+        headers={"X-StreamAlpha-Operator-Key": operator_key},
         json={
             "decision_id": "decision-rollback-1",
             "execution_mode": "paper",
@@ -2147,3 +2156,96 @@ def test_continual_learning_workflow_post_endpoints_return_guarded_results(
     assert workflow_service.promote_requests[0]["freshness_status"] == "FRESH"
     assert workflow_service.rollback_requests[0]["health_overall_status"] == "HEALTHY"
     assert workflow_service.rollback_requests[0]["freshness_status"] == "FRESH"
+
+
+def test_continual_learning_workflow_post_endpoint_denies_missing_operator_key(
+    tmp_path: Path,
+) -> None:
+    client = _build_client(
+        tmp_path,
+        prob_up=0.7,
+        database=FakeDatabase(row=_feature_row()),
+        continual_learning_service=WorkflowContinualLearningService(),
+        operator_api_key="test-operator-key",
+    )
+
+    response = client.post(
+        "/continual-learning/promotions/promote-profile",
+        json={
+            "decision_id": "decision-promote-1",
+            "profile_id": "cl-profile-1",
+            "requested_promotion_stage": "PAPER_APPROVED",
+            "summary_text": "promote after review",
+            "reason_codes": ["OPERATOR_REVIEWED_EVIDENCE"],
+            "operator_confirmed": True,
+        },
+    )
+
+    assert response.status_code == 403
+
+
+def test_continual_learning_workflow_post_endpoint_denies_wrong_operator_key(
+    tmp_path: Path,
+) -> None:
+    client = _build_client(
+        tmp_path,
+        prob_up=0.7,
+        database=FakeDatabase(row=_feature_row()),
+        continual_learning_service=WorkflowContinualLearningService(),
+        operator_api_key="test-operator-key",
+    )
+
+    response = client.post(
+        "/continual-learning/promotions/promote-profile",
+        headers={"X-StreamAlpha-Operator-Key": "wrong-key"},
+        json={
+            "decision_id": "decision-promote-1",
+            "profile_id": "cl-profile-1",
+            "requested_promotion_stage": "PAPER_APPROVED",
+            "summary_text": "promote after review",
+            "reason_codes": ["OPERATOR_REVIEWED_EVIDENCE"],
+            "operator_confirmed": True,
+        },
+    )
+
+    assert response.status_code == 403
+
+
+def test_continual_learning_workflow_post_endpoint_denies_when_key_unset(
+    tmp_path: Path,
+) -> None:
+    client = _build_client(
+        tmp_path,
+        prob_up=0.7,
+        database=FakeDatabase(row=_feature_row()),
+        continual_learning_service=WorkflowContinualLearningService(),
+        operator_api_key="",
+    )
+
+    response = client.post(
+        "/continual-learning/promotions/promote-profile",
+        headers={"X-StreamAlpha-Operator-Key": "test-operator-key"},
+        json={
+            "decision_id": "decision-promote-1",
+            "profile_id": "cl-profile-1",
+            "requested_promotion_stage": "PAPER_APPROVED",
+            "summary_text": "promote after review",
+            "reason_codes": ["OPERATOR_REVIEWED_EVIDENCE"],
+            "operator_confirmed": True,
+        },
+    )
+
+    assert response.status_code == 403
+
+
+def test_health_remains_available_without_operator_key(tmp_path: Path) -> None:
+    client = _build_client(
+        tmp_path,
+        prob_up=0.7,
+        database=FakeDatabase(row=_feature_row()),
+        operator_api_key="",
+    )
+
+    response = client.get("/health")
+
+    assert response.status_code == 200

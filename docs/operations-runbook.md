@@ -54,6 +54,18 @@ docker compose `
   http://127.0.0.1:8000/health).Content
 ```
 
+## Configure Operator API Key
+
+The continual-learning promotion and rollback POST endpoints require `STREAMALPHA_OPERATOR_API_KEY`.
+
+Add a local value to `.env` before exposing or using those operator endpoints:
+
+```powershell
+notepad .env
+```
+
+Requests must include the same value in `X-StreamAlpha-Operator-Key`. If the environment variable is blank or missing, the protected POST endpoints deny by default.
+
 ## Check Logs
 
 ```powershell
@@ -74,6 +86,37 @@ docker compose `
 ```powershell
 .\scripts\check-db.ps1
 ```
+
+## Validate Pipeline Fallback Evidence
+
+Use the running paper stack for non-destructive fallback proof:
+
+```powershell
+docker compose `
+  --profile paper `
+  --env-file .env `
+  ps
+
+docker compose `
+  --profile paper `
+  --env-file .env `
+  logs --tail=100 producer
+
+docker compose `
+  --profile paper `
+  --env-file .env `
+  logs --tail=100 features
+
+docker compose `
+  --profile paper `
+  --env-file .env `
+  logs --tail=100 inference
+
+Invoke-RestMethod `
+  http://127.0.0.1:8000/health
+```
+
+Do not drop tables, kill Redpanda/Postgres, prune Docker, or delete volumes just to prove failure paths.
 
 ## Recover From Failed Build
 
@@ -120,4 +163,3 @@ docker compose `
 ```
 
 Volumes are preserved by this sequence.
-

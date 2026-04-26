@@ -2572,6 +2572,45 @@ by per-symbol lookback availability. Samples with insufficient history get neutr
 back in original ordering.
 
 **Changed files**:
+
+### Batch 7: Incumbent comparison in specialist verdicts (Packet 2 finish)
+
+**Goal**: Specialist verdict promotion decisions now compare challenger recent-window
+regime-sliced results against the accepted registry champion (AutoGluon), not only
+against naive baselines.
+
+**Changed files**:
+- `configs/training.m20.json` — added `max_drawdown_tolerance: 0.005`
+- `app/training/dataset.py` — added `max_drawdown_tolerance: float | None` to TrainingConfig, to_dict, load_training_config
+- `app/training/service.py`:
+  - Rewrote `_build_specialist_verdicts()`:
+    - New params: `incumbent_predictions`, `incumbent_model_version`, `max_drawdown_tolerance`
+    - `verdict_basis` field: `"incumbent_comparison"` or `"baseline_only"` (fallback)
+    - Verdict = beats_incumbent AND after_cost_positive AND drawdown_acceptable
+    - Baseline comparisons become secondary diagnostics
+  - Added `_load_incumbent_model()`: loads registry champion from `current.json` → `model.joblib`
+  - Added `_score_incumbent_on_recent_samples()`: scores incumbent on M20 recent-window DatasetSamples using flat tabular path
+  - Updated `_build_acceptance_block()`: new `incumbent_model_version` param, `verdict_basis` in output
+  - Updated `_build_summary_payload()`: passes `incumbent_model_version` through
+  - Updated `run_training()`: loads incumbent, scores it on recent window, passes results to verdict builder
+- `tests/test_training_service.py` — 5 new tests:
+  - `test_specialist_verdicts_accepted_when_beats_incumbent_and_positive`
+  - `test_specialist_verdicts_rejected_when_does_not_beat_incumbent`
+  - `test_specialist_verdicts_baseline_only_when_no_incumbent`
+  - `test_specialist_verdicts_rejected_when_drawdown_exceeds_tolerance`
+  - `test_acceptance_block_shows_incumbent_info`
+
+**Backward compatibility**:
+- All new params default to None — existing callers and configs unaffected
+- No artifact format or registry history changes
+- Graceful fallback to `baseline_only` when no incumbent in registry
+
+**Targeted validation**: 36 tests passed (31 original + 5 new):
+  `python -m pytest tests/test_training_service.py tests/test_training_compare.py tests/test_training_registry.py -q`
+
+**Honest remaining caveat**:
+- The incumbent scoring path has not been exercised end-to-end in a real `--score-only` run yet
+- NHITS/PatchTST usefulness remains undecided until the next re-scoring run produces summary.json with incumbent comparison verdicts
 - `app/training/neuralforecast.py` — lookback guard in `predict_proba_samples`
 - `tests/test_training_neuralforecast.py` — regression test `test_predict_proba_samples_skips_insufficient_lookback`
 - `PLANS.md`
@@ -2664,3 +2703,293 @@ back in original ordering.
   - focused editor diagnostics for the touched files reported no errors
 - Blockers:
   - none for this scoped repair
+
+## Stream Alpha improvement batches
+
+### Batch 1 - Stabilize current M20 patch
+
+- Scope stayed inside the active M20 incumbent-comparison patch surfaces.
+- Changed files:
+  - `app/training/service.py`
+  - `tests/test_training_service.py`
+  - `PLANS.md`
+- Completed work:
+  - Initialized crash-recovery accumulator state before the training `try` block so setup/preload failures cannot mask the original error with `_current_fold_index` unbound.
+  - Removed the unused recent-summary argument from `_build_specialist_verdicts()`.
+  - Moved the new specialist-verdict test imports to the existing top import block.
+  - Cleaned patch-local long lines in the service/test changes without changing the public summary fields.
+- Targeted checks passed:
+  - `python -m pytest tests/test_training_service.py tests/test_training_compare.py tests/test_training_registry.py tests/test_training_neuralforecast.py -q` -> `52 passed, 2 warnings`
+  - `python -m compileall -q app/training tests/test_training_service.py` -> passed
+- Targeted lint check:
+  - `python -m pylint app/training/service.py app/training/neuralforecast.py tests/test_training_service.py` remains non-zero because of older module-size/structure findings.
+  - The patch-critical crash-recovery finding `E0601: Using variable '_current_fold_index' before assignment` is gone.
+- Blockers:
+  - none for the Batch 1 reliability fix itself
+
+### Batch 2 - Prove M20 score-only end to end
+
+- Scope stayed inside the operator score-only path and the existing M20 fitted artifact.
+- Changed files:
+  - `scripts/rescore_m20_training.ps1`
+  - `tests/test_training_scripts.py`
+  - `PLANS.md`
+- Completed work:
+  - Added a repeatable M20 score-only operator wrapper around the existing `python -m app.training --score-only` CLI.
+  - The wrapper defaults to `artifacts/training/m20/20260405T023104Z/fitted_models`.
+  - The wrapper uses `exports/feature_ohlc_for_colab` when present, avoiding unnecessary DB probing for this local proof path.
+  - Dry-run output prints config path, fitted model directory, symbols, model list, parquet source, and exact training command.
+- Targeted checks passed:
+  - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\rescore_m20_training.ps1 -DryRun` -> passed
+  - `python -m pytest tests/test_training_scripts.py -k "rescore_m20" -q` -> `1 passed, 16 deselected`
+- Real score-only proof attempt:
+  - Command: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\rescore_m20_training.ps1`
+  - New artifact directory: `artifacts/training/m20/20260426T180641Z`
+  - The run did not complete within the 15-minute guardrail.
+  - Latest progress showed fold 1 scoring `neuralforecast_nhits` with `row_count = 264659`, `batch_count = 2`, and `batch_size = 200000`.
+  - The orphaned Python process from the timed-out run was stopped.
+- Blockers:
+  - The real score-only proof remains blocked by the current oversized NeuralForecast scoring batch (`200000`) on the full local parquet dataset.
+  - No `summary.json` with incumbent-comparison verdicts was produced in this batch.
+  - M20 remains `ACTIVE_WEAK`; no promotion or runtime roster change occurred.
+
+### Batch 3 - Make NeuralForecast scoring memory-safe
+
+- Scope stayed inside NeuralForecast scoring controls and M20 operator visibility.
+- Changed files:
+  - `app/training/neuralforecast.py`
+  - `configs/training.m20.json`
+  - `scripts/start_m20_training.ps1`
+  - `tests/test_training_neuralforecast.py`
+  - `tests/test_training_scripts.py`
+  - `PLANS.md`
+- Completed work:
+  - Replaced hard-coded aggressive scoring constants with per-wrapper controls.
+  - Added conservative defaults: `scoring_chunk_size = 25000` and `predict_context_batch_size = 512`.
+  - Persisted both controls in NeuralForecast training config and artifact state, with backward-compatible defaults for older artifacts.
+  - Added explicit M20 config values for NHITS and PatchTST.
+  - Updated the M20 start dry-run output so operators can see `score_chunk` and `context_batch` before launching long scoring runs.
+- Targeted checks passed:
+  - `python -m pytest tests/test_training_neuralforecast.py -q` -> `17 passed, 2 warnings`
+  - `python -m pytest tests/test_training_scripts.py -k "m20_training_script_dry_run or rescore_m20" -q` -> `2 passed, 15 deselected`
+  - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start_m20_training.ps1 -DryRun` -> passed and prints `score_chunk=25000`, `context_batch=512`
+- Blockers:
+  - The full score-only proof was not rerun in this batch; Batch 2 remains the honest proof blocker until a later completed run produces `summary.json`.
+
+### Batch 4 - Extract M20 verdict logic from training service
+
+- Scope stayed inside M20 verdict and incumbent comparison logic.
+- Changed files:
+  - `app/training/specialist_verdicts.py`
+  - `app/training/incumbent_scoring.py`
+  - `app/training/service.py`
+  - `tests/test_training_specialist_verdicts.py`
+  - `tests/test_training_service.py`
+  - `PLANS.md`
+- Completed work:
+  - Moved recent-window filtering, max-drawdown calculation, and specialist verdict construction into `app/training/specialist_verdicts.py`.
+  - Moved registry incumbent loading and recent-window incumbent scoring into `app/training/incumbent_scoring.py`.
+  - Left compatibility wrappers/imports in `app/training/service.py` for existing hidden callers.
+  - Kept the summary JSON shape and verdict behavior unchanged.
+  - Reduced `app/training/service.py` from about 2579 lines to `2158` lines.
+- Targeted checks passed:
+  - `python -m pytest tests/test_training_service.py tests/test_training_specialist_verdicts.py tests/test_training_compare.py tests/test_training_registry.py -q` -> `36 passed`
+  - `python -m compileall -q app/training tests/test_training_service.py tests/test_training_specialist_verdicts.py` -> passed
+- Blockers:
+  - none for this extraction batch
+
+### Batch 5 - Clean artifact hygiene
+
+- Scope stayed inside generated artifact hygiene and documentation.
+- Changed files:
+  - `.gitignore`
+  - `README.md`
+  - `PLANS.md`
+  - git index entries for tracked `checkpoints/*.ckpt`
+- Completed work:
+  - Added ignore rules for `checkpoints/`, `exports/`, and `*.ckpt`.
+  - Confirmed code/config references do not depend on checked-in checkpoint filenames.
+  - Untracked existing checkpoint blobs with `git rm --cached checkpoints/*.ckpt` without deleting local files.
+  - Added a README note that checkpoints, Colab exports, datasets, and runtime artifacts are generated local artifacts unless explicitly promoted through the registry path.
+- Targeted checks passed:
+  - `git ls-files checkpoints exports` -> no tracked generated artifacts remain
+  - `Get-ChildItem checkpoints -File` -> local checkpoint files still exist
+  - `python -m pytest tests/test_training_neuralforecast.py tests/test_training_service.py -q` -> `36 passed, 2 warnings`
+- Blockers:
+  - none for artifact hygiene; `git status` correctly shows staged index deletions for previously tracked checkpoints
+
+### Batch 6 - Split runtime vs training dependencies
+
+- Scope stayed inside dependency entrypoints and Docker runtime install behavior.
+- Changed files:
+  - `requirements-runtime.txt`
+  - `requirements-training.txt`
+  - `requirements.txt`
+  - `docker/app.Dockerfile`
+  - `README.md`
+  - `PLANS.md`
+- Completed work:
+  - Added `requirements-runtime.txt` for Docker service/runtime dependencies.
+  - Kept `autogluon.tabular[all]==1.5.0` in runtime dependencies so the current AutoGluon registry champion can still load.
+  - Added `requirements-training.txt` on top of runtime dependencies for NeuralForecast, Chronos, TimesFM, Moirai/sktime, Lightning, test, lint, formatting, and deployment helper tooling.
+  - Kept `requirements.txt` as the local development compatibility superset via `-r requirements-training.txt`.
+  - Updated `docker/app.Dockerfile` to install `requirements-runtime.txt`.
+  - Documented the three dependency entrypoints in README.
+- Targeted checks passed:
+  - `python -m pip install --dry-run --no-deps -r requirements-runtime.txt` -> passed
+  - `python -m pip install --dry-run --no-deps -r requirements-training.txt` -> passed
+  - `python -m pytest tests/test_inference_model_loader.py -q` -> `12 passed`
+- Blockers:
+  - Docker build validation could not run because Docker Desktop/Linux engine is not available: `failed to connect to the docker API at npipe:////./pipe/dockerDesktopLinuxEngine`.
+
+### Batch 7 - Add CI coverage for active training risk
+
+- Scope stayed inside GitHub Actions validation coverage.
+- Changed files:
+  - `.github/workflows/validation.yml`
+  - `PLANS.md`
+- Completed work:
+  - Added a separate `training-validation` job.
+  - The job installs the compatibility dependency superset and runs the focused training/artifact-loader pytest slice.
+  - DB-backed and live runtime proof remain local rather than invented into CI.
+- Targeted checks passed:
+  - workflow YAML parse check -> passed
+  - `python -m pytest -q tests/test_training_service.py tests/test_training_specialist_verdicts.py tests/test_training_neuralforecast.py tests/test_training_autogluon.py tests/test_training_registry.py tests/test_training_compare.py tests/test_inference_model_loader.py` -> `75 passed, 2 warnings`
+- Blockers:
+  - none for CI wiring; Docker/runtime proof is still explicitly out of CI scope
+
+### Batch 8 - Operator smoothness pass
+
+- Scope stayed inside read-only M20 operator status visibility.
+- Changed files:
+  - `scripts/status_m20_training.ps1`
+  - `app/training/service.py`
+  - `tests/test_training_scripts.py`
+  - `README.md`
+  - `PLANS.md`
+- Completed work:
+  - Added a read-only M20 status command that resolves the latest artifact directory by default.
+  - The command reports run status, execution mode, progress state/stage/event/model, incumbent model version, verdict basis, specialist verdicts, and concrete blockers.
+  - Added `execution_mode` and score-only source metadata to new training `run_config.json` files so future artifacts can identify score-only, fit-only, and full-training runs.
+  - Documented the status command in README for local operators.
+- Targeted checks passed:
+  - `python -m pytest tests/test_training_scripts.py -k "status_m20 or rescore_m20 or m20_training_script_dry_run" -q` -> `3 passed, 15 deselected`
+  - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/status_m20_training.ps1` -> passed against the latest partial M20 artifact
+  - `python -m compileall -q app/training tests/test_training_scripts.py` -> passed
+- Latest local status output:
+  - artifact directory: `artifacts/training/m20/20260426T180641Z`
+  - execution mode: `unknown` because the artifact predates the new `run_config.json` metadata
+  - progress state/stage: `running` / `sequence_scoring`
+  - blocker: `summary.json missing`
+- Blockers:
+  - The latest real M20 artifact is still incomplete from the Batch 2 timed-out score-only attempt, so no incumbent-comparison `summary.json` exists yet.
+  - Older artifacts without the new `run_config.json` metadata report execution mode as `unknown`.
+
+### Improvement-plan closeout validation
+
+- Final targeted checks passed:
+  - `python -m pytest -q tests/test_training_service.py tests/test_training_specialist_verdicts.py tests/test_training_neuralforecast.py tests/test_training_autogluon.py tests/test_training_registry.py tests/test_training_compare.py tests/test_inference_model_loader.py` -> `75 passed, 2 warnings`
+  - `python -m pytest tests/test_training_scripts.py -k "m20 or rescore_m20 or status_m20" -q` -> `6 passed, 12 deselected`
+  - `python -m compileall -q app/training tests/test_training_service.py tests/test_training_specialist_verdicts.py tests/test_training_neuralforecast.py tests/test_training_scripts.py` -> passed
+  - workflow YAML parse check -> passed
+  - `git ls-files checkpoints exports` -> no tracked generated artifacts remain
+- Final lint note:
+  - Targeted pylint still reports older module-size/test-style debt in `app/training/service.py`, `app/training/neuralforecast.py`, and test modules.
+  - Patch-critical `E0601` remains absent, and the new extracted verdict/incumbent modules have no syntax/runtime validation blockers.
+- Remaining blockers:
+  - Full real M20 score-only proof still needs a completed run that produces `summary.json` with `acceptance.verdict_basis = "incumbent_comparison"`.
+  - Docker image build remains unverified locally until Docker Desktop/Linux engine is available.
+
+### Docker runtime slimming and cleanup
+
+- Starting Docker size snapshot before cleanup:
+  - images: `50.87GB`, with `41.1GB` reclaimable
+  - build cache: `16.35GB`, with `15.26GB` reclaimable
+  - local volumes: `4.398GB`; volumes are intentionally preserved
+- Scope:
+  - slim the shared runtime image while preserving current `autogluon_tabular` champion loading
+  - improve rebuild caching so dependency downloads are reused when requirements do not change
+  - keep Postgres/Redpanda volumes intact during Docker cleanup
+- Changed files:
+  - `requirements-runtime.txt`
+  - `requirements-training.txt`
+  - `docker/app.Dockerfile`
+  - `docker-compose.yml`
+  - `README.md`
+  - `PLANS.md`
+  - local `.env` runtime-profile defaults for this machine only
+- Completed work:
+  - Replaced `autogluon.tabular[all]==1.5.0` in runtime dependencies with `autogluon.tabular==1.5.0` plus the current champion's proven CatBoost, LightGBM, and XGBoost runtime backends.
+  - Kept `autogluon.tabular[all]==1.5.0` in `requirements-training.txt` so research/training installs still get the heavy optional stack.
+  - Switched the app Dockerfile to BuildKit syntax and pip cache mounts for runtime dependency installs.
+  - Moved `config-check`, `producer`, `features`, `inference`, `trader`, and `dashboard` onto the shared `streamalpha-app:latest` image tag.
+  - Kept Compose interpolation defaults blank to avoid noisy warnings without changing tracked fallback behavior, and set local `.env` to `STREAMALPHA_RUNTIME_PROFILE=paper` for this running paper stack.
+  - Stopped and recreated the paper stack without deleting Postgres or Redpanda volumes.
+  - Removed old Stream Alpha service image tags, pruned old build cache, rebuilt the slimmer app image, restarted the stack, and ran the final image prune.
+  - Added README notes for runtime-vs-training dependencies and safe Docker cleanup commands.
+- Targeted checks passed:
+  - `python -m pip install --dry-run --no-deps -r requirements-runtime.txt` -> passed
+  - `python -m pip install --dry-run --no-deps -r requirements-training.txt` -> passed
+  - `python -m pytest tests/test_inference_model_loader.py tests/test_training_autogluon.py -q` -> `22 passed`
+  - `python -m pytest -q tests/test_training_service.py tests/test_training_specialist_verdicts.py tests/test_training_neuralforecast.py tests/test_training_registry.py tests/test_training_compare.py` -> `53 passed, 2 warnings`
+  - `docker compose --profile paper --env-file .env config --services` -> passed with no runtime-profile/trading-config interpolation warnings
+  - `docker compose --profile paper --env-file .env build config-check inference dashboard trader producer features` -> passed
+  - immediate repeat build after the final rebuild -> passed in `4.1s`, confirming warm dependency/build cache reuse
+  - `docker compose --profile paper --env-file .env up -d --force-recreate` -> passed
+  - `docker compose --profile paper --env-file .env ps` -> app services use `streamalpha-app:latest`; inference, Postgres, and Redpanda are healthy
+  - `http://127.0.0.1:8000/health` -> `status=ok`, `startup_validation_passed=true`, `model_loaded=true`, `health_overall_status=HEALTHY`
+- Docker size result:
+  - old app images: `streamalpha-inference`, `streamalpha-config-check`, `streamalpha-dashboard`, and `streamalpha-trader` were each about `14.3GB`; `streamalpha-producer` and `streamalpha-features` were about `1.08GB`
+  - new shared app image: `streamalpha-app:latest` is `2.81GB`
+  - final `docker system df`: images `8.335GB`, build cache `5.489GB`, local volumes `4.35GB`
+  - volumes were preserved; no `docker system prune --volumes` was run
+- Cleanup notes:
+  - `docker builder prune -af --filter "until=24h"` only reclaimed `2.106MB` because the stale heavy cache was recently accessed.
+  - A targeted `docker buildx prune -af --max-used-space 6gb` reclaimed about `17.8GB`, including the stale heavy app build cache.
+  - That targeted cache prune forced one dependency redownload on the next build; the immediate repeat build then completed in `4.1s`, so the cache is warm again.
+  - `docker image prune -af` reclaimed `0B` after the final restart because no unused tagged app images remained.
+- Blockers:
+  - none for the Docker slimming batch
+- Residual follow-up:
+  - XGBoost `3.1.3` currently pulls `nvidia-nccl-cu12`; a future targeted pass can test an older CPU-only XGBoost constraint if more image reduction is needed.
+
+### Documentation/operations hardening - operator auth and pipeline fallback proof
+
+- Scope:
+  - Protect only the two state-changing continual-learning POST endpoints.
+  - Verify and document data-pipeline fallback proof levels without Docker pruning, volume deletion, or heavy training.
+- Changed files:
+  - `app/common/config.py`
+  - `app/inference/main.py`
+  - `.env.example`
+  - `tests/test_inference_api.py`
+  - `docs/api.md`
+  - `docs/configuration.md`
+  - `docs/data-pipeline.md`
+  - `docs/operations-runbook.md`
+  - `docs/testing-and-validation.md`
+  - `PLANS.md`
+- Completed work:
+  - Added `STREAMALPHA_OPERATOR_API_KEY` to inference settings.
+  - Added `X-StreamAlpha-Operator-Key` protection to:
+    - `POST /continual-learning/promotions/promote-profile`
+    - `POST /continual-learning/promotions/rollback-active-profile`
+  - Protected POST endpoints deny by default when the configured operator key is blank or missing.
+  - Kept `/health` and read-only endpoints public.
+  - Kept existing continual-learning workflow guards unchanged.
+  - Updated docs with API-key behavior and data-pipeline fallback proof levels.
+- Targeted checks passed:
+  - `python -m pytest tests/test_inference_api.py -k continual_learning -q` -> `8 passed, 25 deselected`
+  - `python -m pytest tests/test_inference_service.py -k "continual_learning_promote_profile or continual_learning_rollback_profile" -q` -> `2 passed, 4 deselected`
+  - `python -m pytest tests/test_backfill_ohlc.py tests/test_import_kraken_ohlcvt.py tests/test_feature_state.py tests/test_feature_service.py tests/test_publish_smoke.py tests/test_normalizers.py -q` -> `22 passed`
+  - `python -m mkdocs build --strict` -> passed; generated `site/` output was removed
+  - `docker compose --profile paper --env-file .env ps` -> paper stack running; inference, Postgres, and Redpanda healthy
+  - `docker compose --profile paper --env-file .env logs --tail=100 producer` -> confirmed Kraken subscriptions plus startup retry evidence when Redpanda was briefly unavailable
+  - `docker compose --profile paper --env-file .env logs --tail=100 features` -> confirmed real feature bootstrap from `raw_ohlc` and consumer group startup
+  - `docker compose --profile paper --env-file .env logs --tail=100 inference` -> confirmed repeated `/health` 200 responses
+  - `Invoke-RestMethod http://127.0.0.1:8000/health` -> `status=ok`, `startup_validation_passed=true`, `model_loaded=true`, `database=healthy`, `health_overall_status=HEALTHY`
+- Docker auth validation:
+  - Not run in this batch because auth was validated with focused local pytest and the running stack was used only for pipeline fallback proof.
+  - If Docker-level auth proof is required later, rebuild and recreate only `inference`.
+- Remaining TODOs:
+  - Live malformed Kafka payload injection, table-drop missing-table proof, and forced broker/database outage tests remain intentionally unrun because they are disruptive.
