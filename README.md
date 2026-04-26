@@ -225,6 +225,55 @@ apps and entry surfaces:
 - scripts/run_paper_trader.py
 ```
 
+Generated local artifacts such as training checkpoints and Colab parquet exports
+are intentionally not source-controlled. Keep `checkpoints/`, `exports/`,
+`Datasets/`, and runtime `artifacts/` local unless a later batch promotes a
+specific artifact through the registry path with explicit proof.
+
+## Documentation
+
+The project documentation lives in [docs/index.md](docs/index.md).
+
+Useful entry points:
+
+* [Getting started](docs/getting-started.md)
+* [Architecture](docs/architecture.md)
+* [Docker](docs/docker.md)
+* [Runtime vs training](docs/runtime-vs-training.md)
+* [Operations runbook](docs/operations-runbook.md)
+* [Troubleshooting](docs/troubleshooting.md)
+
+Optional local docs build:
+
+```powershell
+python -m pip install -r requirements-docs.txt
+python -m mkdocs build
+python -m mkdocs serve
+```
+
+Dependency entrypoints are split by purpose:
+
+* `requirements-runtime.txt` is the Docker service/runtime dependency set and
+  keeps the smallest proven AutoGluon runtime set for the current registry
+  champion.
+* `requirements-training.txt` layers research/training dependencies on top of
+  runtime dependencies.
+* `requirements.txt` remains the compatibility superset for local development.
+
+The shared Docker app image uses the runtime dependency file and a BuildKit pip
+cache mount. If image/cache growth gets noisy locally, stop the stack before
+cleanup and keep named volumes intact:
+
+```powershell
+docker compose --profile paper --env-file .env down --remove-orphans
+docker builder prune -af --filter "until=24h"
+docker image prune -af
+docker compose --profile paper --env-file .env up -d
+```
+
+Do not run `docker system prune --volumes` unless you intentionally want to
+delete local Postgres and Redpanda data.
+
 ## Core Services
 
 * `redpanda`: local event broker
@@ -261,6 +310,17 @@ Key scripts:
 * `./scripts/start-stack.ps1 -Profile live`
 
 ## Local M7 Training
+
+## Local M20 Specialist Status
+
+Use the read-only status helper to inspect the newest M20 training or score-only
+artifact without changing model behavior, promotion state, or runtime rosters:
+
+* `./scripts/status_m20_training.ps1`
+
+The status helper prints the latest artifact directory, execution mode, progress
+state, incumbent version, specialist verdicts, and any obvious blocker such as a
+missing `summary.json`.
 
 ## Historical backfill and feature replay
 

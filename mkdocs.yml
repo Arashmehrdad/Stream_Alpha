@@ -1,0 +1,17 @@
+site_name: Stream Alpha Documentation
+nav:
+  - Home: index.md
+  - Getting Started: getting-started.md
+  - Architecture: architecture.md
+  - Runtime vs Training: runtime-vs-training.md
+  - Docker: docker.md
+  - Configuration: configuration.md
+  - Services: services.md
+  - Data Pipeline: data-pipeline.md
+  - Model Runtime: model-runtime.md
+  - Training: training.md
+  - API: api.md
+  - Operations Runbook: operations-runbook.md
+  - Testing and Validation: testing-and-validation.md
+  - Troubleshooting: troubleshooting.md
+  - Release and Maintenance: release-and-maintenance.md
