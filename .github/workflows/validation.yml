@@ -20,7 +20,8 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
+          python -m pip install -r requirements-runtime.txt
+          python -m pip install "pytest>=8,<9" "pylint>=4,<5"
 
       # Repository-backed PostgreSQL checks remain part of local validation.
       - name: Run baseline pylint slice
@@ -68,7 +69,8 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
+          python -m pip install -r requirements-runtime.txt
+          python -m pip install "pytest>=8,<9" "pylint>=4,<5"
 
       - name: Run targeted training pytest slice
         run: |

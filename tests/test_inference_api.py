@@ -111,7 +111,7 @@ class SerializableFeatureAwareModel:
 class FakeDatabase:
     """Minimal async database stub for service and API tests."""
 
-    def __init__(
+    def __init__(  # pylint: disable=too-many-arguments
         self,
         *,
         row: dict | None = None,
