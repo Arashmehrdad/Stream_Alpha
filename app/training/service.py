@@ -42,6 +42,10 @@ from app.training.dataset import (
     load_training_config,
     load_training_dataset,
 )
+from app.training.incumbent_scoring import (
+    load_incumbent_model as _load_incumbent_model,
+    score_incumbent_on_recent_samples as _score_incumbent_on_recent_samples_impl,
+)
 from app.training.neuralforecast import (
     build_neuralforecast_nhits_classifier,
     build_neuralforecast_patchtst_classifier,
@@ -52,6 +56,11 @@ from app.training.pretrained_forecasters import (
     build_timesfm_2_0_500m_pytorch_classifier,
     is_pretrained_forecaster_model,
     validate_pretrained_forecaster_contract,
+)
+from app.training.specialist_verdicts import (
+    build_specialist_verdicts as _build_specialist_verdicts_impl,
+    compute_max_drawdown as _compute_max_drawdown,
+    filter_recent_predictions as _filter_recent_predictions,
 )
 from app.training.splits import WalkForwardFold, build_walk_forward_splits
 from app.training.splits import minimum_required_unique_timestamps
@@ -797,6 +806,76 @@ def run_training(
                 )
             },
         )
+
+        # --- recent-window scoring for specialist promotion verdicts ---
+        recent_aggregate_summary = None
+        specialist_verdicts = None
+        recent_window_meta = None
+        incumbent_model_version: str | None = None
+        if config.recent_scoring_window_days is not None:
+            recent_preds, recent_window_meta = _filter_recent_predictions(
+                all_prediction_rows, config.recent_scoring_window_days,
+            )
+            if recent_preds:
+                recent_aggregate_summary = _build_aggregate_summary(
+                    all_prediction_rows=recent_preds,
+                    fee_rate=config.round_trip_fee_rate,
+                )
+
+                # --- load and score incumbent for comparison ---
+                incumbent_predictions: list[PredictionRecord] | None = None
+                incumbent_result = _load_incumbent_model()
+                if incumbent_result is not None:
+                    inc_model, inc_version, inc_name = incumbent_result
+                    incumbent_model_version = inc_version
+                    print(
+                        f"[training] scoring incumbent {inc_name} "
+                        f"({inc_version}) on recent window...",
+                        end="", flush=True,
+                    )
+                    inc_start = time.monotonic()
+                    incumbent_predictions = (
+                        _score_incumbent_on_recent_samples(
+                            incumbent_model=inc_model,
+                            incumbent_model_name=inc_name,
+                            samples=dataset.samples,
+                            recent_cutoff_rfc3339=recent_window_meta["cutoff"],
+                            fee_rate=config.round_trip_fee_rate,
+                            regime_labels_by_row_id=(
+                                regime_context.labels_by_row_id
+                            ),
+                        )
+                    )
+                    inc_elapsed = time.monotonic() - inc_start
+                    print(
+                        f" done ({len(incumbent_predictions)} rows, "
+                        f"{_format_eta_seconds(inc_elapsed)})",
+                    )
+                else:
+                    print(
+                        "[training] no registry incumbent found — "
+                        "specialist verdicts will use baseline-only comparison"
+                    )
+
+                specialist_verdicts = _build_specialist_verdicts(
+                    recent_predictions=recent_preds,
+                    model_configs=config.models,
+                    incumbent_predictions=incumbent_predictions,
+                    incumbent_model_version=incumbent_model_version,
+                    max_drawdown_tolerance=config.max_drawdown_tolerance,
+                )
+                print(
+                    f"[training] recent-window scoring: "
+                    f"{recent_window_meta['eligible_rows']}/{recent_window_meta['total_oof_rows']} "
+                    f"rows in last {config.recent_scoring_window_days} days"
+                )
+                for sn, sv in specialist_verdicts.items():
+                    basis = sv.get("verdict_basis", "?")
+                    print(
+                        f"[training]   {sn} ({sv['candidate_role']}): "
+                        f"verdict={sv['verdict']} basis={basis}"
+                    )
+
         summary = _build_summary_payload(
             config=config,
             dataset_manifest=dataset.manifest,
@@ -807,6 +886,10 @@ def run_training(
             winner_training_config=winner_candidate_artifact.training_model_config,
             winner_registry_metadata=winner_candidate_artifact.registry_metadata,
             candidate_artifacts=learned_candidate_artifacts,
+            recent_aggregate_summary=recent_aggregate_summary,
+            recent_window_meta=recent_window_meta,
+            specialist_verdicts=specialist_verdicts,
+            incumbent_model_version=incumbent_model_version,
         )
         _write_json(artifact_dir / "summary.json", summary)
         _remove_checkpoint(artifact_dir)
@@ -1727,6 +1810,74 @@ def _save_model_artifact(
         raise ValueError("Saved model artifact failed reload validation")
 
 
+def _build_acceptance_block(
+    *,
+    winner_metrics: dict[str, Any],
+    learned_models_positive_after_costs: list[str],
+    learned_models_beating_persistence: list[str],
+    learned_models_beating_dummy: list[str],
+    learned_models_beating_all_baselines: list[str],
+    full_history_meets_acceptance: bool,
+    specialist_verdicts: dict[str, dict[str, Any]] | None,
+    recent_window_meta: dict[str, Any] | None,
+    incumbent_model_version: str | None = None,
+) -> dict[str, Any]:
+    """Build the acceptance block — recent-window specialist verdicts when available."""
+    full_history = {
+        "scope": "full_history",
+        "note": "Diagnostic only — not used for promotion decisions"
+        if specialist_verdicts
+        else "Gating (no recent scoring window configured)",
+        "winner_after_cost_positive": winner_metrics["mean_long_only_net_value_proxy"]
+        > 0.0,
+        "learned_models_positive_after_costs": learned_models_positive_after_costs,
+        "learned_models_beating_persistence_after_costs": (
+            learned_models_beating_persistence
+        ),
+        "learned_models_beating_dummy_after_costs": learned_models_beating_dummy,
+        "learned_models_beating_all_baselines_after_costs": (
+            learned_models_beating_all_baselines
+        ),
+        "meets_acceptance_target": full_history_meets_acceptance,
+    }
+    if specialist_verdicts is None:
+        # No recent window — fall back to the full-history acceptance
+        full_history.pop("note")
+        return full_history
+
+    any_accepted = any(
+        v.get("verdict") == "accepted" for v in specialist_verdicts.values()
+    )
+    all_conclusive = all(
+        v.get("verdict") != "inconclusive" for v in specialist_verdicts.values()
+    )
+    # Determine verdict basis from the verdicts themselves
+    verdict_bases = {
+        v.get("verdict_basis", "baseline_only")
+        for v in specialist_verdicts.values()
+        if v.get("verdict") != "inconclusive"
+    }
+    verdict_basis = (
+        "incumbent_comparison" if "incumbent_comparison" in verdict_bases
+        else "baseline_only"
+    )
+    block: dict[str, Any] = {
+        "scope": "recent_window",
+        "verdict_basis": verdict_basis,
+        "window_days": recent_window_meta.get("window_days") if recent_window_meta else None,
+        "meets_acceptance_target": any_accepted,
+        "all_verdicts_conclusive": all_conclusive,
+        "specialist_verdicts_summary": {
+            model_name: v.get("verdict", "unknown")
+            for model_name, v in specialist_verdicts.items()
+        },
+        "diagnostic_full_history": full_history,
+    }
+    if incumbent_model_version is not None:
+        block["incumbent_model_version"] = incumbent_model_version
+    return block
+
+
 def _build_summary_payload(
     *,
     config: TrainingConfig,
@@ -1738,6 +1889,10 @@ def _build_summary_payload(
     winner_training_config: dict[str, Any] | None = None,
     winner_registry_metadata: dict[str, Any] | None = None,
     candidate_artifacts: dict[str, SavedCandidateArtifact] | None = None,
+    recent_aggregate_summary: dict[str, dict[str, Any]] | None = None,
+    recent_window_meta: dict[str, Any] | None = None,
+    specialist_verdicts: dict[str, dict[str, Any]] | None = None,
+    incumbent_model_version: str | None = None,
 ) -> dict[str, Any]:
     winner_metrics = aggregate_summary[winner_name]
     learned_model_names = tuple(
@@ -1825,19 +1980,30 @@ def _build_summary_payload(
                 for model_name, candidate_artifact in sorted(candidate_artifacts.items())
             }
         ),
-        "acceptance": {
-            "winner_after_cost_positive": winner_metrics["mean_long_only_net_value_proxy"]
-            > 0.0,
-            "learned_models_positive_after_costs": learned_models_positive_after_costs,
-            "learned_models_beating_persistence_after_costs": (
-                learned_models_beating_persistence
-            ),
-            "learned_models_beating_dummy_after_costs": learned_models_beating_dummy,
-            "learned_models_beating_all_baselines_after_costs": (
-                learned_models_beating_all_baselines
-            ),
-            "meets_acceptance_target": meets_acceptance_target,
-        },
+        "acceptance": _build_acceptance_block(
+            winner_metrics=winner_metrics,
+            learned_models_positive_after_costs=learned_models_positive_after_costs,
+            learned_models_beating_persistence=learned_models_beating_persistence,
+            learned_models_beating_dummy=learned_models_beating_dummy,
+            learned_models_beating_all_baselines=learned_models_beating_all_baselines,
+            full_history_meets_acceptance=meets_acceptance_target,
+            specialist_verdicts=specialist_verdicts,
+            recent_window_meta=recent_window_meta,
+            incumbent_model_version=incumbent_model_version,
+        ),
+        **(
+            {"recent_scoring_window": {
+                **recent_window_meta,
+                "models": recent_aggregate_summary,
+            }}
+            if recent_aggregate_summary is not None and recent_window_meta is not None
+            else {}
+        ),
+        **(
+            {"specialist_verdicts": specialist_verdicts}
+            if specialist_verdicts is not None
+            else {}
+        ),
     }
 
 
@@ -2060,6 +2226,46 @@ def _learned_models_beating_after_costs(
         for model_name in learned_model_names
         if aggregate_summary[model_name]["mean_long_only_net_value_proxy"] > baseline_metric
     ]
+
+
+def _build_specialist_verdicts(
+    *,
+    recent_predictions: list[PredictionRecord],
+    model_configs: dict[str, dict[str, Any]],
+    incumbent_predictions: list[PredictionRecord] | None = None,
+    incumbent_model_version: str | None = None,
+    max_drawdown_tolerance: float | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Compatibility wrapper for M20 specialist verdict construction."""
+    return _build_specialist_verdicts_impl(
+        recent_predictions=recent_predictions,
+        model_configs=model_configs,
+        required_baselines=_REQUIRED_PROMOTION_BASELINES,
+        incumbent_predictions=incumbent_predictions,
+        incumbent_model_version=incumbent_model_version,
+        max_drawdown_tolerance=max_drawdown_tolerance,
+    )
+
+
+def _score_incumbent_on_recent_samples(
+    *,
+    incumbent_model: Any,
+    incumbent_model_name: str,
+    samples: tuple[DatasetSample, ...],
+    recent_cutoff_rfc3339: str,
+    fee_rate: float,
+    regime_labels_by_row_id: dict[str, str],
+) -> list[PredictionRecord]:
+    """Compatibility wrapper for incumbent recent-window scoring."""
+    return _score_incumbent_on_recent_samples_impl(
+        incumbent_model=incumbent_model,
+        incumbent_model_name=incumbent_model_name,
+        samples=samples,
+        recent_cutoff_rfc3339=recent_cutoff_rfc3339,
+        fee_rate=fee_rate,
+        regime_labels_by_row_id=regime_labels_by_row_id,
+        build_prediction_records=_build_prediction_records,
+    )
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:

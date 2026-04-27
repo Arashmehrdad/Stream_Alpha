@@ -12,6 +12,7 @@
   "first_train_fraction": 0.5,
   "interval_column": "interval_begin",
   "label_horizon_candles": 3,
+  "max_drawdown_tolerance": 0.005,
   "models": {
     "neuralforecast_nhits": {
       "batch_size": 1,
@@ -110,6 +111,7 @@
     "lag_log_return_3"
   ],
   "purge_gap_candles": 3,
+  "recent_scoring_window_days": 365,
   "round_trip_fee_bps": 20,
   "source_table": "feature_ohlc",
   "symbols": [

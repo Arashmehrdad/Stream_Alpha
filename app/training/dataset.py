@@ -77,6 +77,8 @@ class TrainingConfig:  # pylint: disable=too-many-instance-attributes
     round_trip_fee_bps: float
     artifact_root: str
     models: dict[str, dict[str, Any]]
+    recent_scoring_window_days: int | None = None
+    max_drawdown_tolerance: float | None = None
 
     @property
     def round_trip_fee_rate(self) -> float:
@@ -110,6 +112,8 @@ class TrainingConfig:  # pylint: disable=too-many-instance-attributes
                     model_name: dict(model_config)
                     for model_name, model_config in sorted(self.models.items())
                 },
+                "recent_scoring_window_days": self.recent_scoring_window_days,
+                "max_drawdown_tolerance": self.max_drawdown_tolerance,
             }
         )
 
@@ -238,6 +242,16 @@ def load_training_config(config_path: Path) -> TrainingConfig:
         round_trip_fee_bps=float(config_data["round_trip_fee_bps"]),
         artifact_root=str(config_data["artifact_root"]),
         models=models,
+        recent_scoring_window_days=(
+            int(config_data["recent_scoring_window_days"])
+            if config_data.get("recent_scoring_window_days") is not None
+            else None
+        ),
+        max_drawdown_tolerance=(
+            float(config_data["max_drawdown_tolerance"])
+            if config_data.get("max_drawdown_tolerance") is not None
+            else None
+        ),
     )
 
 

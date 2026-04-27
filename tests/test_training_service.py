@@ -22,6 +22,7 @@ from app.training.pretrained_forecasters import (
 from app.training.service import (
     TrainingRegimeContext,
     _TrainingProgressRecorder,
+    _build_acceptance_block,
     _build_model_factories,
     _build_prediction_records,
     _build_regime_economics,
@@ -749,3 +750,28 @@ def test_summary_records_winner_registry_metadata_and_candidate_artifacts() -> N
         summary["candidate_artifacts"]["neuralforecast_nhits"]["metadata"]["scope_regimes"]
         == ["TREND_UP", "TREND_DOWN"]
     )
+
+
+def test_acceptance_block_shows_incumbent_info() -> None:
+    """Acceptance metadata should expose the incumbent comparison basis."""
+    verdicts = {
+        "nhits": {
+            "candidate_role": "TREND_SPECIALIST",
+            "verdict": "accepted",
+            "verdict_basis": "incumbent_comparison",
+        }
+    }
+    block = _build_acceptance_block(
+        winner_metrics={"mean_long_only_net_value_proxy": 0.005},
+        learned_models_positive_after_costs=["nhits"],
+        learned_models_beating_persistence=["nhits"],
+        learned_models_beating_dummy=["nhits"],
+        learned_models_beating_all_baselines=["nhits"],
+        full_history_meets_acceptance=True,
+        specialist_verdicts=verdicts,
+        recent_window_meta={"window_days": 365},
+        incumbent_model_version="m7-20260401T043003Z",
+    )
+    assert block["verdict_basis"] == "incumbent_comparison"
+    assert block["incumbent_model_version"] == "m7-20260401T043003Z"
+    assert block["meets_acceptance_target"] is True
