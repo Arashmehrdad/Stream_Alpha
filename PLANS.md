@@ -2993,3 +2993,76 @@ against naive baselines.
   - If Docker-level auth proof is required later, rebuild and recreate only `inference`.
 - Remaining TODOs:
   - Live malformed Kafka payload injection, table-drop missing-table proof, and forced broker/database outage tests remain intentionally unrun because they are disruptive.
+
+### M20 score-only recent-window gating
+
+- Scope:
+  - Reduce M20 score-only scoring work by applying `recent_scoring_window_days` before fold model scoring, not only after OOF predictions are produced.
+  - Keep full training, fit-only, fitted model layout, promotion behavior, and runtime behavior unchanged.
+- Changed files:
+  - `app/training/service.py`
+  - `scripts/rescore_m20_training.ps1`
+  - `tests/test_training_service.py`
+  - `tests/test_training_scripts.py`
+  - `PLANS.md`
+- Completed work:
+  - Added score-only recent-window fold selection keyed by original walk-forward fold index so existing `foldN` fitted model directories still load correctly.
+  - Score-only mode now filters each fold's test samples to rows at or after the recent cutoff before scoring.
+  - Score-only mode skips old folds with no recent test rows and checkpoints the skip so old folds do not block completion.
+  - Score-only mode fails clearly if the configured recent window has no eligible fold test samples.
+  - Added `score_only_recent_window` metadata to `run_config.json` and progress output for auditability.
+  - Updated the M20 rescore dry-run output to show the configured recent score-only window.
+- Targeted checks passed:
+  - `python -m pytest tests/test_training_service.py tests/test_training_scripts.py tests/test_training_specialist_verdicts.py tests/test_training_neuralforecast.py -q` -> `56 passed, 2 warnings`
+  - `python -m compileall -q app/training tests/test_training_service.py tests/test_training_scripts.py` -> passed
+  - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/rescore_m20_training.ps1 -DryRun` -> passed and reports `score-only recent window days: 365`
+- Operational proof:
+  - Command: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/rescore_m20_training.ps1`
+  - Artifact: `artifacts/training/m20/20260427T112021Z`
+  - Source fitted models: `artifacts/training/m20/20260405T023104Z/fitted_models`
+  - Recent cutoff: `2025-04-02T11:35:00Z`
+  - Score-only gating result: `236153/1487233` fold test rows eligible in the 365-day window
+  - Skipped old folds: `[0, 1, 2, 3]`
+  - Fold 5 scored baselines over `236153` rows, then started `neuralforecast_nhits`
+  - No `summary.json` was produced.
+- Blockers:
+  - The real score-only proof stopped during fold 5 `neuralforecast_nhits` scoring with `OSError: [Errno 22] Invalid argument` after progress reached `150000/236153` rows (`6/10` batches).
+  - Incumbent comparison status is still unproven because the run did not reach summary/incumbent scoring.
+
+### M20 NHITS score-only console failure fix
+
+- Scope:
+  - Fix the Windows console/progress-output failure that interrupted resumed NHITS scoring.
+  - Keep NHITS/PatchTST model behavior, probabilities, fitted artifacts, score chunks, promotion behavior, and runtime behavior unchanged.
+- Changed files:
+  - `app/training/service.py`
+  - `tests/test_training_service.py`
+  - `tests/test_training_neuralforecast.py`
+  - `PLANS.md`
+- Completed work:
+  - Added best-effort sequence scoring console output so invalid/closed terminal handles cannot abort scoring.
+  - Reordered sequence progress handling so artifact progress logging happens before volatile terminal printing.
+  - Added tests proving console progress failures do not stop sequence scoring and scoring checkpoints resume from cached raw scores.
+- Targeted checks passed:
+  - `python -m pytest tests/test_training_service.py tests/test_training_neuralforecast.py -q` -> `37 passed, 2 warnings`
+  - `python -m pytest tests/test_training_scripts.py tests/test_training_specialist_verdicts.py -q` -> `22 passed`
+  - `python -m compileall -q app/training tests/test_training_service.py tests/test_training_neuralforecast.py` -> passed
+  - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/rescore_m20_training.ps1 -DryRun` -> passed
+  - `git diff --check` -> passed with CRLF normalization warnings only
+- Operational proof:
+  - Resumed command: `python -m app.training --config .\configs\training.m20.json --resume .\artifacts\training\m20\20260427T112021Z --score-only .\artifacts\training\m20\20260405T023104Z\fitted_models --parquet-dir .\exports\feature_ohlc_for_colab`
+  - Resumed artifact: `artifacts/training/m20/20260427T112021Z`
+  - NHITS resumed from `150000/236153` cached raw scores and completed.
+  - PatchTST completed score-only scoring over `236153` recent rows.
+  - `summary.json` was produced.
+  - Winner: `neuralforecast_patchtst`
+  - Acceptance scope: `recent_window`
+  - Verdict basis: `incumbent_comparison`
+  - Incumbent model version: `m7-20260401T043003Z`
+  - Specialist verdicts:
+    - `neuralforecast_nhits`: `rejected`, basis `incumbent_comparison`
+    - `neuralforecast_patchtst`: `rejected`, basis `incumbent_comparison`
+- Blockers:
+  - none for score-only completion
+- Residual note:
+  - M20 remains not promotable from this run because both specialists were rejected by incumbent comparison.

@@ -909,6 +909,7 @@ def test_rescore_m20_training_script_dry_run_prints_score_only_command() -> None
     assert result.returncode == 0, result.stderr
     assert "M20 specialist score-only dry run" in result.stdout
     assert "fitted models dir:" in result.stdout
+    assert "score-only recent window days: 365" in result.stdout
     assert "models: neuralforecast_nhits, neuralforecast_patchtst" in result.stdout
     assert "command: python -m app.training --config" in result.stdout
     assert "--score-only" in result.stdout

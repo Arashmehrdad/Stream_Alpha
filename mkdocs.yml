@@ -10,6 +10,7 @@ nav:
   - Data Pipeline: data-pipeline.md
   - Model Runtime: model-runtime.md
   - Training: training.md
+  - Project Report: report/index.md
   - API: api.md
   - Operations Runbook: operations-runbook.md
   - Testing and Validation: testing-and-validation.md

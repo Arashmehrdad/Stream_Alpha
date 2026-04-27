@@ -46,6 +46,9 @@ if ($DryRun) {
     Write-Host "training source table: $($config.source_table)"
     Write-Host "symbols: $(@($config.symbols) -join ', ')"
     Write-Host "artifact root: $($config.artifact_root)"
+    if ($null -ne $config.recent_scoring_window_days) {
+        Write-Host "score-only recent window days: $($config.recent_scoring_window_days)"
+    }
     Write-Host "models: $modelLabels"
     if ($null -ne $resolvedParquetDir) {
         Write-Host "parquet dataset: $resolvedParquetDir"
@@ -71,6 +74,9 @@ Write-Host "config path: $resolvedConfigPath"
 Write-Host "fitted models dir: $resolvedFittedModelsDir"
 if ($null -ne $resolvedParquetDir) {
     Write-Host "parquet dataset: $resolvedParquetDir"
+}
+if ($null -ne $config.recent_scoring_window_days) {
+    Write-Host "score-only recent window days: $($config.recent_scoring_window_days)"
 }
 Write-Host "models: $modelLabels"
 Write-Host ""

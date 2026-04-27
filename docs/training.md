@@ -64,7 +64,8 @@ python -m pytest `
   -q
 ```
 
-## Known Open Proof
+## Latest M20 Score-Only Proof
 
-`PLANS.md` records that the full real M20 score-only proof still needs a completed run that produces `summary.json` with `acceptance.verdict_basis = "incumbent_comparison"`.
+`PLANS.md` records that the local M20 score-only proof now completes at `artifacts/training/m20/20260427T112021Z` and produces `summary.json` with `acceptance.verdict_basis = "incumbent_comparison"`.
 
+The result is not promotable: both `neuralforecast_nhits` and `neuralforecast_patchtst` were rejected by incumbent comparison against `m7-20260401T043003Z`, so M20 remains `ACTIVE_WEAK`.

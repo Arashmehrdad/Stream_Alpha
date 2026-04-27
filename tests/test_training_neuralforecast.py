@@ -887,3 +887,42 @@ def test_predict_proba_samples_skips_insufficient_lookback(
     assert len(probabilities) == 3
     assert probabilities[2] == [0.5, 0.5]  # SOL sample
     assert all(len(row) == 2 for row in probabilities)
+
+
+def test_cross_validated_raw_scores_resumes_from_scoring_checkpoint(
+    tmp_path: Path,
+) -> None:
+    """Score-only retries should reuse cached raw scores instead of restarting."""
+    classifier = build_neuralforecast_nhits_classifier(
+        {
+            "input_size_candles": 2,
+            "calibration_windows": 1,
+            "scoring_chunk_size": 2,
+        }
+    )
+    checkpoint_path = tmp_path / "fold4_neuralforecast_nhits.json"
+    checkpoint_path.write_text(
+        json.dumps({"raw_scores": [0.1, 0.2], "total_samples": 3}),
+        encoding="utf-8",
+    )
+    scored_chunk_sizes: list[int] = []
+
+    def _score_remaining(rows, *, backend=None, progress_callback=None):
+        del backend, progress_callback
+        scored_chunk_sizes.append(len(rows))
+        return [0.3 for _ in rows]
+
+    classifier._predict_raw_scores_from_context_rows = (  # pylint: disable=protected-access
+        _score_remaining
+    )
+
+    raw_scores = classifier._cross_validated_raw_scores(  # pylint: disable=protected-access
+        target_samples=_samples(),
+        source_rows=_source_rows(),
+        scoring_checkpoint_path=checkpoint_path,
+    )
+
+    assert raw_scores == [0.1, 0.2, 0.3]
+    assert scored_chunk_sizes == [1]
+    persisted = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    assert persisted["raw_scores"] == [0.1, 0.2, 0.3]

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -14,6 +14,7 @@ from app.training.dataset import (
     TrainingConfig,
     load_training_config,
 )
+from app.training.splits import WalkForwardFold
 from app.training.pretrained_forecasters import (
     Chronos2Forecaster,
     Moirai1RBaseForecaster,
@@ -27,7 +28,9 @@ from app.training.service import (
     _build_prediction_records,
     _build_regime_economics,
     _build_summary_payload,
+    _prepare_score_only_recent_fold_selection,
     _predict_for_model,
+    _safe_progress_print,
     run_training,
 )
 
@@ -37,8 +40,9 @@ def _sample(
     row_id: str,
     future_return_3: float,
     label: int,
+    as_of_time: datetime | None = None,
 ) -> DatasetSample:
-    observed_at = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    observed_at = as_of_time or datetime(2025, 1, 1, tzinfo=timezone.utc)
     return DatasetSample(
         row_id=row_id,
         symbol="BTC/USD",
@@ -467,6 +471,76 @@ def test_training_progress_recorder_writes_artifact_log_and_status(tmp_path: Pat
     assert status_payload["model_name"] == "neuralforecast_nhits"
 
 
+def test_score_only_recent_fold_selection_skips_old_fold_test_rows() -> None:
+    """Score-only should score only recent test rows while preserving fold ids."""
+    base_time = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    samples = tuple(
+        _sample(
+            row_id=f"sample-{index}",
+            future_return_3=0.01,
+            label=1,
+            as_of_time=base_time + timedelta(days=index),
+        )
+        for index in range(6)
+    )
+    folds = (
+        WalkForwardFold(
+            fold_index=0,
+            train_timestamps=(samples[0].as_of_time, samples[1].as_of_time),
+            purged_timestamps=(),
+            test_timestamps=(samples[2].as_of_time,),
+        ),
+        WalkForwardFold(
+            fold_index=1,
+            train_timestamps=tuple(sample.as_of_time for sample in samples[:4]),
+            purged_timestamps=(),
+            test_timestamps=(samples[4].as_of_time, samples[5].as_of_time),
+        ),
+    )
+
+    selection = _prepare_score_only_recent_fold_selection(
+        samples,
+        folds,
+        window_days=1,
+    )
+
+    assert selection.cutoff == base_time + timedelta(days=4)
+    assert selection.eligible_rows == 2
+    assert selection.total_test_rows == 3
+    assert selection.skipped_fold_indices == (0,)
+    assert sorted(selection.test_samples_by_fold) == [1]
+    assert [sample.row_id for sample in selection.test_samples_by_fold[1]] == [
+        "sample-4",
+        "sample-5",
+    ]
+    assert selection.to_metadata()["skipped_fold_indices"] == [0]
+
+
+def test_score_only_recent_fold_selection_fails_without_recent_test_rows() -> None:
+    """Score-only should not produce a misleading empty recent-window summary."""
+    base_time = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    samples = tuple(
+        _sample(
+            row_id=f"sample-{index}",
+            future_return_3=0.01,
+            label=1,
+            as_of_time=base_time + timedelta(days=index),
+        )
+        for index in range(6)
+    )
+    folds = (
+        WalkForwardFold(
+            fold_index=0,
+            train_timestamps=(samples[0].as_of_time, samples[1].as_of_time),
+            purged_timestamps=(),
+            test_timestamps=(samples[2].as_of_time,),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="no eligible fold test samples"):
+        _prepare_score_only_recent_fold_selection(samples, folds, window_days=1)
+
+
 def test_build_model_factories_accepts_chronos2_generalist_builder() -> None:
     """The authoritative model stack should recognize the real Chronos-2 builder."""
     config = TrainingConfig(
@@ -637,6 +711,91 @@ def test_predict_for_model_uses_sequence_fit_and_single_probability_pass() -> No
     assert estimator.predicted_source_rows == evaluation_source_rows
     assert estimator.predict_samples_calls == 0
     assert estimator.predict_proba_samples_calls == 1
+
+
+def test_predict_for_model_keeps_sequence_scoring_when_console_progress_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Console progress failures should not abort sequence model scoring."""
+
+    class _SequenceEstimator:
+        def fit_samples(
+            self,
+            samples: list[DatasetSample],
+            *,
+            source_rows: list[SourceFeatureRow],
+            dataset_export_root=None,
+            progress_callback=None,
+        ) -> None:
+            del samples, source_rows, dataset_export_root, progress_callback
+
+        def predict_proba_samples(
+            self,
+            samples: list[DatasetSample],
+            *,
+            source_rows: list[SourceFeatureRow],
+            progress_callback=None,
+        ) -> list[list[float]]:
+            del source_rows
+            if progress_callback is not None:
+                progress_callback({
+                    "event": "sequence_scoring_start",
+                    "row_count": len(samples),
+                    "batch_count": 1,
+                    "batch_size": len(samples),
+                })
+                progress_callback({
+                    "event": "sequence_scoring_progress",
+                    "row_count": len(samples),
+                    "completed_rows": len(samples),
+                    "batch_count": 1,
+                    "completed_batches": 1,
+                    "progress": 1.0,
+                    "elapsed_seconds": 1.0,
+                    "eta_seconds": 0.0,
+                })
+            return [[0.1, 0.9] for _ in samples]
+
+    monkeypatch.setattr(
+        "app.training.service._safe_progress_print",
+        lambda *args, **kwargs: False,
+    )
+    progress_events: list[dict[str, object]] = []
+    sample = _sample(row_id="test", future_return_3=0.02, label=1)
+
+    predicted_labels, probabilities = _predict_for_model(
+        model_name="neuralforecast_nhits",
+        factory=lambda: _SequenceEstimator(),
+        train_samples=[
+            _sample(row_id="train-up", future_return_3=0.01, label=1),
+            _sample(row_id="train-down", future_return_3=-0.01, label=0),
+        ],
+        test_samples=[sample],
+        train_source_rows=[],
+        evaluation_source_rows=[_source_row(sample)],
+        progress_callback=lambda payload: progress_events.append(dict(payload)),
+    )
+
+    assert predicted_labels == [1]
+    assert probabilities == [0.9]
+    assert [event["event"] for event in progress_events] == [
+        "sequence_scoring_start",
+        "sequence_scoring_progress",
+    ]
+
+
+def test_safe_progress_print_suppresses_invalid_console_handle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Windows invalid-handle console failures should be non-fatal."""
+
+    def _raise_console_error(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise OSError(22, "Invalid argument")
+
+    monkeypatch.setattr("builtins.print", _raise_console_error)
+
+    assert _safe_progress_print("progress", end="", flush=True) is False
 
 
 def test_predict_for_model_keeps_flat_feature_path_for_tabular_estimators() -> None:

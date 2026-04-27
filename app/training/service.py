@@ -120,6 +120,28 @@ class PredictionRecord:  # pylint: disable=too-many-instance-attributes
 
 
 @dataclass(frozen=True, slots=True)
+class _ScoreOnlyRecentFoldSelection:
+    """Recent-window test rows keyed by the original walk-forward fold index."""
+
+    cutoff: Any
+    window_days: int
+    test_samples_by_fold: dict[int, list[DatasetSample]]
+    skipped_fold_indices: tuple[int, ...]
+    eligible_rows: int
+    total_test_rows: int
+
+    def to_metadata(self) -> dict[str, Any]:
+        """Return JSON-safe metadata for score-only artifact auditability."""
+        return {
+            "window_days": self.window_days,
+            "cutoff": to_rfc3339(self.cutoff),
+            "eligible_rows": self.eligible_rows,
+            "total_test_rows": self.total_test_rows,
+            "skipped_fold_indices": list(self.skipped_fold_indices),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class TrainingRegimeContext:
     """Deterministic M8-style regime labels used for training economics slices."""
 
@@ -361,6 +383,15 @@ def _save_fold_checkpoint(
     _write_json(artifact_dir / "checkpoint.json", checkpoint)
 
 
+def _safe_progress_print(*args: Any, **kwargs: Any) -> bool:
+    """Best-effort console output for long scoring runs with fragile pipes."""
+    try:
+        print(*args, **kwargs)
+    except (BrokenPipeError, OSError, ValueError):
+        return False
+    return True
+
+
 @dataclass
 class _CheckpointState:
     """Loaded checkpoint state for resume."""
@@ -450,6 +481,20 @@ def run_training(
         test_folds=config.test_folds,
         purge_gap_candles=config.purge_gap_candles,
     )
+    score_only_recent_selection = None
+    if score_only_dir is not None and config.recent_scoring_window_days is not None:
+        score_only_recent_selection = _prepare_score_only_recent_fold_selection(
+            dataset.samples,
+            folds,
+            window_days=config.recent_scoring_window_days,
+        )
+        meta = score_only_recent_selection.to_metadata()
+        print(
+            "[training] score-only recent window: "
+            f"{meta['eligible_rows']}/{meta['total_test_rows']} fold test rows "
+            f"at or after {meta['cutoff']}; "
+            f"skipping {len(meta['skipped_fold_indices'])} old folds"
+        )
 
     # --- resume vs. fresh run ---
     completed_fold_indices: list[int] = []
@@ -498,6 +543,11 @@ def run_training(
             if score_only_dir is not None
             else {}
         ),
+        **(
+            {"score_only_recent_window": score_only_recent_selection.to_metadata()}
+            if score_only_recent_selection is not None
+            else {}
+        ),
     }
     _write_json(artifact_dir / "run_config.json", run_config_payload)
     _write_json(
@@ -530,6 +580,12 @@ def run_training(
         labeled_rows=len(dataset.samples),
         unique_timestamps=int(dataset.manifest["unique_timestamps"]),
     )
+    if score_only_recent_selection is not None:
+        progress_recorder.record(
+            stage="score_only_recent_window",
+            message="score-only evaluation limited to recent fold test rows",
+            **score_only_recent_selection.to_metadata(),
+        )
 
     # --- pause flag: Ctrl+C sets this, loop checks between folds ---
     pause_requested = False
@@ -587,6 +643,12 @@ def run_training(
         # --- pre-load all score-only models once (avoid repeated joblib.load) ---
         if score_only_dir is not None:
             for fold in remaining_folds:
+                if (
+                    score_only_recent_selection is not None
+                    and fold.fold_index
+                    not in score_only_recent_selection.test_samples_by_fold
+                ):
+                    continue
                 for model_name in model_factories:
                     if model_name in _REQUIRED_PROMOTION_BASELINES:
                         continue
@@ -630,6 +692,33 @@ def run_training(
                 return artifact_dir
 
             train_samples, test_samples = _partition_samples(dataset.samples, fold)
+            original_test_rows = len(test_samples)
+            if score_only_recent_selection is not None:
+                test_samples = score_only_recent_selection.test_samples_by_fold.get(
+                    fold.fold_index,
+                    [],
+                )
+                if not test_samples:
+                    completed_fold_indices.append(fold.fold_index)
+                    console_progress.completed_units += len(model_factories)
+                    progress_recorder.record(
+                        stage="fold",
+                        message="skipped score-only fold outside recent window",
+                        fold_index=fold.fold_index + 1,
+                        total_folds=len(folds),
+                        original_test_rows=original_test_rows,
+                        test_rows=0,
+                        recent_cutoff=to_rfc3339(
+                            score_only_recent_selection.cutoff
+                        ),
+                    )
+                    _save_fold_checkpoint(
+                        artifact_dir,
+                        fold_metric_rows=fold_metric_rows,
+                        all_prediction_rows=all_prediction_rows,
+                        completed_fold_indices=completed_fold_indices,
+                    )
+                    continue
             train_source_rows, evaluation_source_rows = _partition_source_rows(
                 dataset.source_rows,
                 fold=fold,
@@ -648,6 +737,11 @@ def run_training(
                 total_folds=len(folds),
                 train_rows=len(train_samples),
                 test_rows=len(test_samples),
+                **(
+                    {"original_test_rows": original_test_rows}
+                    if score_only_recent_selection is not None
+                    else {}
+                ),
             )
 
             # determine which models to skip on resume
@@ -1092,6 +1186,53 @@ def _partition_samples(
     return train_samples, test_samples
 
 
+def _prepare_score_only_recent_fold_selection(
+    samples: tuple[DatasetSample, ...],
+    folds: tuple[WalkForwardFold, ...],
+    *,
+    window_days: int,
+) -> _ScoreOnlyRecentFoldSelection:
+    """Return recent score-only test rows without changing original fold indexes."""
+    if window_days <= 0:
+        raise ValueError("recent_scoring_window_days must be positive for score-only")
+    if not samples:
+        raise ValueError("Score-only recent-window scoring requires dataset samples")
+
+    latest_as_of = max(sample.as_of_time for sample in samples)
+    cutoff = latest_as_of - timedelta(days=window_days)
+    test_samples_by_fold: dict[int, list[DatasetSample]] = {}
+    skipped_fold_indices: list[int] = []
+    eligible_rows = 0
+    total_test_rows = 0
+
+    for fold in folds:
+        _, test_samples = _partition_samples(samples, fold)
+        total_test_rows += len(test_samples)
+        recent_test_samples = [
+            sample for sample in test_samples if sample.as_of_time >= cutoff
+        ]
+        if recent_test_samples:
+            test_samples_by_fold[fold.fold_index] = recent_test_samples
+            eligible_rows += len(recent_test_samples)
+        else:
+            skipped_fold_indices.append(fold.fold_index)
+
+    if eligible_rows == 0:
+        raise ValueError(
+            "Score-only recent-window scoring found no eligible fold test samples "
+            f"in the last {window_days} days."
+        )
+
+    return _ScoreOnlyRecentFoldSelection(
+        cutoff=cutoff,
+        window_days=window_days,
+        test_samples_by_fold=test_samples_by_fold,
+        skipped_fold_indices=tuple(skipped_fold_indices),
+        eligible_rows=eligible_rows,
+        total_test_rows=total_test_rows,
+    )
+
+
 def _partition_source_rows(
     source_rows: tuple[SourceFeatureRow, ...],
     *,
@@ -1368,11 +1509,17 @@ def _predict_for_model(
             f"[training]   {model_name}: scoring "
             f"{len(test_samples)} test samples"
         )
+        _console_progress_enabled = True
 
         def _scoring_progress(payload: dict[str, Any]) -> None:
+            nonlocal _console_progress_enabled
+            if progress_callback is not None:
+                progress_callback(payload)
+            if not _console_progress_enabled:
+                return
             event = payload.get("event", "")
             if event == "sequence_scoring_start":
-                print(
+                _console_progress_enabled = _safe_progress_print(
                     f"\r{_scoring_line_prefix}  "
                     f"[  0%]",
                     end="", flush=True,
@@ -1387,26 +1534,27 @@ def _predict_for_model(
                 )
                 done_k = f"{done_rows // 1000}K" if done_rows >= 1000 else str(done_rows)
                 total_k = f"{total_rows // 1000}K" if total_rows >= 1000 else str(total_rows)
-                print(
+                _console_progress_enabled = _safe_progress_print(
                     f"\r{_scoring_line_prefix}  "
                     f"[{pct:3d}%  {done_k}/{total_k}  "
                     f"elapsed {elapsed}  ETA {eta}]",
                     end="", flush=True,
                 )
-            if progress_callback is not None:
-                progress_callback(payload)
 
         predict_kwargs["progress_callback"] = _scoring_progress
-        print(f"\r{_scoring_line_prefix}...", end="", flush=True)
+        _console_progress_enabled = _safe_progress_print(
+            f"\r{_scoring_line_prefix}...", end="", flush=True,
+        )
         score_start = time.monotonic()
         predicted_probabilities = estimator.predict_proba_samples(test_samples, **predict_kwargs)
         score_elapsed = time.monotonic() - score_start
-        print(
-            f"\r{_scoring_line_prefix}  "
-            f"done ({_format_eta_seconds(score_elapsed)})"
-            + " " * 30,
-            flush=True,
-        )
+        if _console_progress_enabled:
+            _safe_progress_print(
+                f"\r{_scoring_line_prefix}  "
+                f"done ({_format_eta_seconds(score_elapsed)})"
+                + " " * 30,
+                flush=True,
+            )
         probabilities = [float(probability[1]) for probability in predicted_probabilities]
         predicted_labels = [1 if probability >= 0.5 else 0 for probability in probabilities]
         return predicted_labels, probabilities

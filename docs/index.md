@@ -42,9 +42,9 @@ The local Docker proof recorded in `PLANS.md` used the `paper` profile. `.env.ex
 - [Runtime vs Training](runtime-vs-training.md)
 - [Model Runtime](model-runtime.md)
 - [Training](training.md)
+- [Project Report](report/index.md)
 - [API](api.md)
 - [Operations Runbook](operations-runbook.md)
 - [Testing and Validation](testing-and-validation.md)
 - [Troubleshooting](troubleshooting.md)
 - [Release and Maintenance](release-and-maintenance.md)
-
