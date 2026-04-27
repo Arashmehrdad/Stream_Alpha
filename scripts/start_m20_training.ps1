@@ -60,7 +60,9 @@ $memoryProfiles = @(
         $inferenceWindowsBatchSize = if ($null -ne $modelKwargs.inference_windows_batch_size) { $modelKwargs.inference_windows_batch_size } else { "default" }
         $stepSize = if ($null -ne $modelKwargs.step_size) { $modelKwargs.step_size } else { "default" }
         $precision = if ($null -ne $modelKwargs.precision) { $modelKwargs.precision } else { "default" }
-        "$($modelProperty.Name)(batch=$($modelConfig.batch_size), valid=$validBatchSize, windows=$windowsBatchSize, infer_windows=$inferenceWindowsBatchSize, step=$stepSize, precision=$precision)"
+        $scoringChunkSize = if ($null -ne $modelConfig.scoring_chunk_size) { $modelConfig.scoring_chunk_size } else { "default" }
+        $predictContextBatchSize = if ($null -ne $modelConfig.predict_context_batch_size) { $modelConfig.predict_context_batch_size } else { "default" }
+        "$($modelProperty.Name)(batch=$($modelConfig.batch_size), valid=$validBatchSize, windows=$windowsBatchSize, infer_windows=$inferenceWindowsBatchSize, score_chunk=$scoringChunkSize, context_batch=$predictContextBatchSize, step=$stepSize, precision=$precision)"
     }
 )
 $memoryProfilesLabel = $memoryProfiles -join "; "

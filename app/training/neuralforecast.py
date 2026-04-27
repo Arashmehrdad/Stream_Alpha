@@ -35,8 +35,8 @@ from app.training.workdirs import create_local_training_work_dir
 
 
 _DEFAULT_CALIBRATION_WINDOWS = 256
-_PREDICT_CONTEXT_BATCH_SIZE = 256
-_SCORING_CHUNK_SIZE = 50000
+_DEFAULT_PREDICT_CONTEXT_BATCH_SIZE = 512
+_DEFAULT_SCORING_CHUNK_SIZE = 25000
 
 
 class _BaseNeuralForecastClassifier:  # pylint: disable=too-many-instance-attributes
@@ -65,6 +65,8 @@ class _BaseNeuralForecastClassifier:  # pylint: disable=too-many-instance-attrib
         enable_progress_bar: bool,
         logger: bool,
         refit_each_window: bool,
+        scoring_chunk_size: int = _DEFAULT_SCORING_CHUNK_SIZE,
+        predict_context_batch_size: int = _DEFAULT_PREDICT_CONTEXT_BATCH_SIZE,
         model_kwargs: dict[str, Any] | None = None,
     ) -> None:
         self.model_family = str(model_family)
@@ -91,6 +93,14 @@ class _BaseNeuralForecastClassifier:  # pylint: disable=too-many-instance-attrib
         self.enable_progress_bar = bool(enable_progress_bar)
         self.logger = bool(logger)
         self.refit_each_window = bool(refit_each_window)
+        self.scoring_chunk_size = _positive_int(
+            scoring_chunk_size,
+            field_name="scoring_chunk_size",
+        )
+        self.predict_context_batch_size = _positive_int(
+            predict_context_batch_size,
+            field_name="predict_context_batch_size",
+        )
         self.model_kwargs = (
             {}
             if model_kwargs is None
@@ -288,6 +298,8 @@ class _BaseNeuralForecastClassifier:  # pylint: disable=too-many-instance-attrib
             "input_size_candles": self.input_size_candles,
             "hist_exog_columns": list(self._hist_exog_columns),
             "calibration_windows": self.calibration_windows,
+            "scoring_chunk_size": self.scoring_chunk_size,
+            "predict_context_batch_size": self.predict_context_batch_size,
             "dataset_mode": self.dataset_mode,
             "max_steps": self.max_steps,
             "learning_rate": self.learning_rate,
@@ -323,6 +335,8 @@ class _BaseNeuralForecastClassifier:  # pylint: disable=too-many-instance-attrib
             "hist_exog_columns": list(self.hist_exog_columns or ()),
             "resolved_hist_exog_columns": list(self._hist_exog_columns),
             "calibration_windows": self.calibration_windows,
+            "scoring_chunk_size": self.scoring_chunk_size,
+            "predict_context_batch_size": self.predict_context_batch_size,
             "dataset_mode": self.dataset_mode,
             "max_steps": self.max_steps,
             "learning_rate": self.learning_rate,
@@ -357,6 +371,17 @@ class _BaseNeuralForecastClassifier:  # pylint: disable=too-many-instance-attrib
             str(column) for column in state.get("resolved_hist_exog_columns", [])
         )
         self.calibration_windows = int(state["calibration_windows"])
+        self.scoring_chunk_size = _positive_int(
+            state.get("scoring_chunk_size", _DEFAULT_SCORING_CHUNK_SIZE),
+            field_name="scoring_chunk_size",
+        )
+        self.predict_context_batch_size = _positive_int(
+            state.get(
+                "predict_context_batch_size",
+                _DEFAULT_PREDICT_CONTEXT_BATCH_SIZE,
+            ),
+            field_name="predict_context_batch_size",
+        )
         self.dataset_mode = str(state.get("dataset_mode", "local_files_partitioned"))
         self.max_steps = int(state["max_steps"])
         self.learning_rate = float(state["learning_rate"])
@@ -454,7 +479,7 @@ class _BaseNeuralForecastClassifier:  # pylint: disable=too-many-instance-attrib
             return all_raw_scores[:sample_count]
 
         remaining = target_samples[completed_count:]
-        chunk_size = _SCORING_CHUNK_SIZE
+        chunk_size = self.scoring_chunk_size
         total_chunks = (len(remaining) + chunk_size - 1) // chunk_size
         started_at = perf_counter()
 
@@ -557,7 +582,10 @@ class _BaseNeuralForecastClassifier:  # pylint: disable=too-many-instance-attrib
         total_batches = (
             0
             if total_rows == 0
-            else ((total_rows + _PREDICT_CONTEXT_BATCH_SIZE - 1) // _PREDICT_CONTEXT_BATCH_SIZE)
+            else (
+                (total_rows + self.predict_context_batch_size - 1)
+                // self.predict_context_batch_size
+            )
         )
         started_at = perf_counter()
         if progress_callback is not None:
@@ -566,12 +594,14 @@ class _BaseNeuralForecastClassifier:  # pylint: disable=too-many-instance-attrib
                     "event": "sequence_scoring_start",
                     "row_count": total_rows,
                     "batch_count": total_batches,
-                    "batch_size": _PREDICT_CONTEXT_BATCH_SIZE,
+                    "batch_size": self.predict_context_batch_size,
                 }
             )
 
-        for batch_start in range(0, total_rows, _PREDICT_CONTEXT_BATCH_SIZE):
-            batch_rows = rows[batch_start : batch_start + _PREDICT_CONTEXT_BATCH_SIZE]
+        for batch_start in range(0, total_rows, self.predict_context_batch_size):
+            batch_rows = rows[
+                batch_start : batch_start + self.predict_context_batch_size
+            ]
             raw_scores.extend(
                 self._predict_raw_scores_from_context_batch(
                     batch_rows,
@@ -579,7 +609,9 @@ class _BaseNeuralForecastClassifier:  # pylint: disable=too-many-instance-attrib
                 )
             )
             if progress_callback is not None and total_batches > 0:
-                completed_batches = (batch_start // _PREDICT_CONTEXT_BATCH_SIZE) + 1
+                completed_batches = (
+                    batch_start // self.predict_context_batch_size
+                ) + 1
                 completed_rows = min(total_rows, batch_start + len(batch_rows))
                 elapsed_seconds = perf_counter() - started_at
                 eta_seconds = 0.0
@@ -619,9 +651,12 @@ class _BaseNeuralForecastClassifier:  # pylint: disable=too-many-instance-attrib
         if not rows:
             return []
 
-        batch_records: list[dict[str, Any]] = []
+        # Column-oriented construction is ~3-5× faster than dict-per-row
+        col_unique_id: list[str] = []
+        col_ds: list[Any] = []
+        col_y: list[float] = []
+        exog_cols: dict[str, list[Any]] = {col: [] for col in self._hist_exog_columns}
         expected_targets: list[tuple[str, pd.Timestamp, float]] = []
-        hist_exog_columns = self._hist_exog_columns
         for row_index, row in enumerate(rows):
             context = row.get(SEQUENCE_CONTEXT_KEY)
             if not isinstance(context, list) or not context:
@@ -631,18 +666,15 @@ class _BaseNeuralForecastClassifier:  # pylint: disable=too-many-instance-attrib
             current_close = float(context[-1]["close_price"])
             synthetic_series_id = f"ctx_{row_index:06d}"
             for context_row in context:
-                record = {
-                    "unique_id": synthetic_series_id,
-                    "ds": context_row["as_of_time"],
-                    "y": float(context_row["close_price"]),
-                }
-                for column in hist_exog_columns:
-                    record[column] = (
+                col_unique_id.append(synthetic_series_id)
+                col_ds.append(context_row["as_of_time"])
+                col_y.append(float(context_row["close_price"]))
+                for column in self._hist_exog_columns:
+                    exog_cols[column].append(
                         float(context_row["close_price"])
                         if column == "close_price"
                         else context_row[column]
                     )
-                batch_records.append(record)
             target_timestamp = future_target_timestamp(
                 as_of_time=pd.Timestamp(context[-1]["as_of_time"]).to_pydatetime(),
                 horizon_candles=self.horizon_candles,
@@ -656,7 +688,13 @@ class _BaseNeuralForecastClassifier:  # pylint: disable=too-many-instance-attrib
                 )
             )
 
-        batch_frame = pd.DataFrame.from_records(batch_records)
+        frame_data: dict[str, Any] = {
+            "unique_id": col_unique_id,
+            "ds": col_ds,
+            "y": col_y,
+        }
+        frame_data.update(exog_cols)
+        batch_frame = pd.DataFrame(frame_data)
         predictions = backend.predict(df=batch_frame)
         normalized_predictions = self._normalize_forecast_prediction_frame(predictions).copy()
         normalized_predictions["unique_id"] = normalized_predictions["unique_id"].astype(str)
@@ -874,7 +912,8 @@ class _BaseNeuralForecastClassifier:  # pylint: disable=too-many-instance-attrib
         print(
             "[training] "
             f"{self.model_alias} specialist dataset mode: {self.dataset_mode} "
-            f"({len(source_rows)} source rows -> {len(directories)} parquet partitions at {export_root_path})"
+            f"({len(source_rows)} source rows -> {len(directories)} "
+            f"parquet partitions at {export_root_path})"
         )
         return directories, export_root_path, cleanup_export_root
 
@@ -1105,6 +1144,30 @@ class _BaseNeuralForecastClassifier:  # pylint: disable=too-many-instance-attrib
             try:
                 _restore_backend_dir(self._backend_archive, backend_dir)
                 neuralforecast_core, _ = _import_neuralforecast_runtime(self.model_class_name)
+                # PyTorch 2.6+ defaults weights_only=True which rejects
+                # lightning_fabric globals. Allowlist them so the checkpoint
+                # loads correctly (we trust our own fitted artifacts).
+                import torch
+                try:
+                    from lightning_fabric.utilities.data import AttributeDict
+                    torch.serialization.add_safe_globals([AttributeDict])
+                except ImportError:
+                    pass
+                # Allowlist neuralforecast loss classes stored in checkpoints.
+                try:
+                    from neuralforecast.losses.pytorch import (
+                        MAE, MSE, RMSE, MAPE, SMAPE, QuantileLoss,
+                        MQLoss, DistributionLoss, GMM, PMM, NBMM,
+                        HuberLoss, TukeyLoss, HuberQLoss, HuberMQLoss,
+                    )
+                    _nf_loss_globals = [
+                        MAE, MSE, RMSE, MAPE, SMAPE, QuantileLoss,
+                        MQLoss, DistributionLoss, GMM, PMM, NBMM,
+                        HuberLoss, TukeyLoss, HuberQLoss, HuberMQLoss,
+                    ]
+                    torch.serialization.add_safe_globals(_nf_loss_globals)
+                except (ImportError, AttributeError):
+                    pass
                 self._backend = neuralforecast_core.load(path=str(backend_dir))
                 self._runtime_dir = runtime_root
             except Exception:
@@ -1231,6 +1294,15 @@ def build_neuralforecast_nhits_classifier(
         enable_progress_bar=bool(model_config.get("enable_progress_bar", False)),
         logger=bool(model_config.get("logger", False)),
         refit_each_window=bool(model_config.get("refit_each_window", False)),
+        scoring_chunk_size=int(
+            model_config.get("scoring_chunk_size", _DEFAULT_SCORING_CHUNK_SIZE)
+        ),
+        predict_context_batch_size=int(
+            model_config.get(
+                "predict_context_batch_size",
+                _DEFAULT_PREDICT_CONTEXT_BATCH_SIZE,
+            )
+        ),
         model_kwargs=dict(model_config.get("model_kwargs", {})),
     )
 
@@ -1265,6 +1337,15 @@ def build_neuralforecast_patchtst_classifier(
         enable_progress_bar=bool(model_config.get("enable_progress_bar", False)),
         logger=bool(model_config.get("logger", False)),
         refit_each_window=bool(model_config.get("refit_each_window", False)),
+        scoring_chunk_size=int(
+            model_config.get("scoring_chunk_size", _DEFAULT_SCORING_CHUNK_SIZE)
+        ),
+        predict_context_batch_size=int(
+            model_config.get(
+                "predict_context_batch_size",
+                _DEFAULT_PREDICT_CONTEXT_BATCH_SIZE,
+            )
+        ),
         model_kwargs=dict(model_config.get("model_kwargs", {})),
     )
 
@@ -1273,6 +1354,13 @@ def _resolve_optional_columns(columns: Any) -> tuple[str, ...] | None:
     if columns is None:
         return None
     return tuple(str(column) for column in columns)
+
+
+def _positive_int(value: Any, *, field_name: str) -> int:
+    resolved = int(value)
+    if resolved <= 0:
+        raise ValueError(f"{field_name} must be positive")
+    return resolved
 
 
 def _resolve_scope_regimes(

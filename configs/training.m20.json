@@ -25,10 +25,12 @@
       "learning_rate": 0.001,
       "logger": false,
       "max_steps": 200,
+      "predict_context_batch_size": 512,
+      "scoring_chunk_size": 25000,
       "model_kwargs": {
         "accelerator": "auto",
         "devices": 1,
-        "inference_windows_batch_size": 8,
+        "inference_windows_batch_size": 32,
         "n_pool_kernel_size": [
           8,
           4,
@@ -64,11 +66,13 @@
       "learning_rate": 0.001,
       "logger": false,
       "max_steps": 200,
+      "predict_context_batch_size": 512,
+      "scoring_chunk_size": 25000,
       "model_kwargs": {
         "accelerator": "auto",
         "devices": 1,
         "hidden_size": 32,
-        "inference_windows_batch_size": 4,
+        "inference_windows_batch_size": 16,
         "n_heads": 4,
         "patch_len": 16,
         "precision": "16-mixed",

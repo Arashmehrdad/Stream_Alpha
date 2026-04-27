@@ -218,6 +218,25 @@ def test_forecast_to_probability_calibrator_serializes(tmp_path: Path) -> None:
     assert low_prob < high_prob
 
 
+def test_neuralforecast_scoring_batch_config_defaults_and_overrides() -> None:
+    """Scoring chunk controls should default conservatively and accept overrides."""
+    default_classifier = build_neuralforecast_nhits_classifier({})
+    assert default_classifier.scoring_chunk_size == 25000
+    assert default_classifier.predict_context_batch_size == 512
+
+    custom_classifier = build_neuralforecast_patchtst_classifier(
+        {
+            "scoring_chunk_size": 7,
+            "predict_context_batch_size": 3,
+        }
+    )
+    training_config = custom_classifier.get_training_config()
+    assert custom_classifier.scoring_chunk_size == 7
+    assert custom_classifier.predict_context_batch_size == 3
+    assert training_config["scoring_chunk_size"] == 7
+    assert training_config["predict_context_batch_size"] == 3
+
+
 def test_build_sequence_context_rows_preserves_order_and_no_leakage() -> None:
     """Sequence contexts should only use same-symbol history up to the target row."""
     source_rows = _source_rows()
@@ -651,7 +670,6 @@ def test_extract_forecast_value_recovers_unique_id_from_reset_index_field() -> N
 
 
 def test_predict_raw_scores_from_context_rows_batches_sequence_contexts(
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Sequence scoring should batch synthetic contexts and emit progress payloads."""
 
@@ -676,12 +694,13 @@ def test_predict_raw_scores_from_context_rows_batches_sequence_contexts(
                 index.append(str(unique_id))
             return pd.DataFrame(records, index=pd.Index(index, name="unique_id"))
 
-    classifier = build_neuralforecast_nhits_classifier({})
+    classifier = build_neuralforecast_nhits_classifier(
+        {"predict_context_batch_size": 2}
+    )
     classifier._hist_exog_columns = ("close_price", "realized_vol_12")  # pylint: disable=protected-access
     classifier._frequency_minutes = 5  # pylint: disable=protected-access
     backend = _BatchPredictBackend()
     progress_events: list[dict[str, object]] = []
-    monkeypatch.setattr(neuralforecast_module, "_PREDICT_CONTEXT_BATCH_SIZE", 2)
 
     def _context_rows(
         *,

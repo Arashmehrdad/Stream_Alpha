@@ -480,7 +480,23 @@ def run_training(
         fold_metric_rows = []
         all_prediction_rows = []
 
-    _write_json(artifact_dir / "run_config.json", config.to_dict())
+    execution_mode = (
+        "score_only"
+        if score_only_dir is not None
+        else "fit_only"
+        if fit_only
+        else "full_training"
+    )
+    run_config_payload = {
+        **config.to_dict(),
+        "execution_mode": execution_mode,
+        **(
+            {"score_only_dir": str(score_only_dir)}
+            if score_only_dir is not None
+            else {}
+        ),
+    }
+    _write_json(artifact_dir / "run_config.json", run_config_payload)
     _write_json(
         artifact_dir / "dataset_manifest.json",
         {
@@ -539,6 +555,14 @@ def run_training(
     if resume_completed_models:
         console_progress.completed_units += len(resume_completed_models)
 
+    # Initialized before the try block so crash recovery never masks an
+    # earlier setup/preload failure with an unbound local.
+    _completed_models_this_fold: list[str] = []
+    _fold_metrics_this_fold: list[dict[str, Any]] = []
+    _fold_predictions_this_fold: list[PredictionRecord] = []
+    _current_fold_index = -1
+    _preloaded_estimators: dict[tuple[int, str], Any] = {}
+
     try:
         remaining_folds = [
             fold for fold in folds
@@ -557,12 +581,26 @@ def run_training(
             total_models=len(model_factories),
         )
 
-        # accumulators for crash-recovery (initialised before loop so the
-        # except block can always reference them safely)
-        _completed_models_this_fold: list[str] = []
-        _fold_metrics_this_fold: list[dict[str, Any]] = []
-        _fold_predictions_this_fold: list[PredictionRecord] = []
-        _current_fold_index: int = -1
+        # --- pre-load all score-only models once (avoid repeated joblib.load) ---
+        if score_only_dir is not None:
+            for fold in remaining_folds:
+                for model_name in model_factories:
+                    if model_name in _REQUIRED_PROMOTION_BASELINES:
+                        continue
+                    load_path = (
+                        score_only_dir / f"fold{fold.fold_index}"
+                        / f"{model_name}.joblib"
+                    )
+                    if load_path.exists():
+                        _preloaded_estimators[(fold.fold_index, model_name)] = (
+                            joblib.load(load_path)
+                        )
+            if _preloaded_estimators:
+                print(
+                    f"[training] pre-loaded {len(_preloaded_estimators)} "
+                    f"fitted models from {score_only_dir.name}/",
+                    flush=True,
+                )
 
         for fold in remaining_folds:
             if pause_requested:
@@ -667,6 +705,7 @@ def run_training(
                 model_checkpoint_callback=_model_checkpoint_callback,
                 fit_only=fit_only,
                 fitted_models_dir=score_only_dir,
+                preloaded_estimators=_preloaded_estimators,
             )
             fold_metric_rows.extend(fold_metrics)
             all_prediction_rows.extend(fold_predictions)
@@ -1099,6 +1138,7 @@ def _evaluate_fold(
     ] | None = None,
     fit_only: bool = False,
     fitted_models_dir: Path | None = None,
+    preloaded_estimators: dict[tuple[int, str], Any] | None = None,
 ) -> tuple[list[dict[str, Any]], list[PredictionRecord]]:
     # The explicit inputs keep the fold evaluation contract inspectable for M3/M7.
     fold_metrics: list[dict[str, Any]] = []
@@ -1143,9 +1183,17 @@ def _evaluate_fold(
                 / f"{model_name}.joblib"
             ) if fit_only and model_name not in _REQUIRED_PROMOTION_BASELINES else None
             _score_load = (
-                fitted_models_dir / f"fold{fold.fold_index}"
-                / f"{model_name}.joblib"
-            ) if fitted_models_dir is not None and model_name not in _REQUIRED_PROMOTION_BASELINES else None
+                fitted_models_dir / f"fold{fold.fold_index}" / f"{model_name}.joblib"
+                if fitted_models_dir is not None
+                and model_name not in _REQUIRED_PROMOTION_BASELINES
+                else None
+            )
+
+            # use pre-loaded estimator when available (avoids repeated joblib.load)
+            _preloaded = (
+                preloaded_estimators.get((fold.fold_index, model_name))
+                if preloaded_estimators else None
+            )
 
             predicted_labels, probabilities = _predict_for_model(
                 model_name=model_name,
@@ -1170,6 +1218,7 @@ def _evaluate_fold(
                 ),
                 fit_only_save_path=_fit_save,
                 score_only_load_path=_score_load,
+                preloaded_estimator=_preloaded,
             )
         except Exception as error:
             if progress_recorder is not None:
@@ -1239,6 +1288,7 @@ def _predict_for_model(
     scoring_checkpoint_path: Path | None = None,
     fit_only_save_path: Path | None = None,
     score_only_load_path: Path | None = None,
+    preloaded_estimator: Any | None = None,
 ) -> tuple[list[int], list[float]]:
     if model_name == "persistence_3":
         baseline = factory().fit(train_samples)
@@ -1255,8 +1305,14 @@ def _predict_for_model(
         constant_label = int(train_labels[0])
         return [constant_label] * len(test_samples), [float(constant_label)] * len(test_samples)
 
-    # --- score-only: load pre-fitted model from disk ---
-    if score_only_load_path is not None:
+    # --- score-only: use pre-loaded or load from disk ---
+    if preloaded_estimator is not None:
+        estimator = preloaded_estimator
+        print(
+            f"\n[training]   {model_name}: using pre-loaded fitted model",
+            flush=True,
+        )
+    elif score_only_load_path is not None:
         estimator = joblib.load(score_only_load_path)
         print(
             f"\n[training]   {model_name}: loaded pre-fitted model from "

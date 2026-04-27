@@ -867,9 +867,12 @@ def test_start_m20_training_script_dry_run_prints_full_dataset_training_truth() 
         in result.stdout
     )
     assert (
-        "specialist memory profile: neuralforecast_nhits(batch=1, valid=1, windows=8, "
-        "infer_windows=8, step=128, precision=16-mixed); "
-        "neuralforecast_patchtst(batch=1, valid=1, windows=4, infer_windows=4, step=128, precision=16-mixed)"
+        "specialist memory profile: neuralforecast_nhits(batch=1, valid=1, "
+        "windows=8, infer_windows=32, score_chunk=25000, "
+        "context_batch=512, step=128, precision=16-mixed); "
+        "neuralforecast_patchtst(batch=1, valid=1, windows=4, "
+        "infer_windows=16, score_chunk=25000, context_batch=512, "
+        "step=128, precision=16-mixed)"
         in result.stdout
     )
     assert "allocator hint: expandable_segments:True" in result.stdout
@@ -879,6 +882,159 @@ def test_start_m20_training_script_dry_run_prints_full_dataset_training_truth() 
         in result.stdout
     )
     assert "command: python -m app.training --config" in result.stdout
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32" or _POWERSHELL is None,
+    reason="These operator-script dry-run tests are Windows-specific.",
+)
+def test_rescore_m20_training_script_dry_run_prints_score_only_command() -> None:
+    result = subprocess.run(
+        [
+            _POWERSHELL,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(_REPO_ROOT / "scripts" / "rescore_m20_training.ps1"),
+            "-DryRun",
+        ],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "M20 specialist score-only dry run" in result.stdout
+    assert "fitted models dir:" in result.stdout
+    assert "models: neuralforecast_nhits, neuralforecast_patchtst" in result.stdout
+    assert "command: python -m app.training --config" in result.stdout
+    assert "--score-only" in result.stdout
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32" or _POWERSHELL is None,
+    reason="These operator-script tests are Windows-specific.",
+)
+def test_status_m20_training_script_handles_empty_partial_and_completed_runs(
+    tmp_path: Path,
+) -> None:
+    artifact_root = tmp_path / "m20"
+    artifact_root.mkdir()
+
+    empty_result = subprocess.run(
+        [
+            _POWERSHELL,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(_REPO_ROOT / "scripts" / "status_m20_training.ps1"),
+            "-ArtifactRoot",
+            str(artifact_root),
+        ],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert empty_result.returncode == 0, empty_result.stderr
+    assert "run status: no_artifacts" in empty_result.stdout
+
+    partial_dir = artifact_root / "20260426T010000Z"
+    partial_dir.mkdir()
+    (partial_dir / "run_config.json").write_text(
+        json.dumps({"execution_mode": "score_only"}),
+        encoding="utf-8",
+    )
+    (partial_dir / "progress_status.json").write_text(
+        json.dumps(
+            {
+                "state": "running",
+                "stage": "sequence_scoring",
+                "event": "sequence_scoring_start",
+                "model_name": "neuralforecast_nhits",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (partial_dir / "checkpoint.json").write_text("{}", encoding="utf-8")
+
+    partial_result = subprocess.run(
+        [
+            _POWERSHELL,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(_REPO_ROOT / "scripts" / "status_m20_training.ps1"),
+            "-RunDir",
+            str(partial_dir),
+        ],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert partial_result.returncode == 0, partial_result.stderr
+    assert "execution mode: score_only" in partial_result.stdout
+    assert "progress model: neuralforecast_nhits" in partial_result.stdout
+    assert "run status: incomplete" in partial_result.stdout
+    assert "checkpoint: present" in partial_result.stdout
+
+    completed_dir = artifact_root / "20260426T020000Z"
+    completed_dir.mkdir()
+    (completed_dir / "run_config.json").write_text(
+        json.dumps({"execution_mode": "full_training"}),
+        encoding="utf-8",
+    )
+    (completed_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "winner": {"model_name": "neuralforecast_nhits"},
+                "acceptance": {
+                    "scope": "recent_window",
+                    "verdict_basis": "incumbent_comparison",
+                    "incumbent_model_version": "m7-test",
+                    "meets_acceptance_target": False,
+                },
+                "specialist_verdicts": {
+                    "neuralforecast_nhits": {
+                        "candidate_role": "TREND_SPECIALIST",
+                        "verdict": "rejected",
+                        "verdict_basis": "incumbent_comparison",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    completed_result = subprocess.run(
+        [
+            _POWERSHELL,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(_REPO_ROOT / "scripts" / "status_m20_training.ps1"),
+            "-RunDir",
+            str(completed_dir),
+        ],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert completed_result.returncode == 0, completed_result.stderr
+    assert "run status: completed" in completed_result.stdout
+    assert "verdict basis: incumbent_comparison" in completed_result.stdout
+    assert "specialist verdict: neuralforecast_nhits" in completed_result.stdout
 
 
 @pytest.mark.skipif(
@@ -914,26 +1070,32 @@ def test_start_m20_training_script_tolerates_native_stderr_when_training_exits_z
     }
     _write_fake_python_launcher(tmp_path, readiness_payload=readiness_payload)
     env = _script_env(tmp_path)
+    artifact_root = _REPO_ROOT / "artifacts" / "training" / "m20"
+    artifact_stamp = f"test-{int(time.time())}"
+    generated_artifact_dir = artifact_root / artifact_stamp
     env["STREAMALPHA_TEST_ARTIFACT_ROOT"] = "artifacts/training/m20"
-    env["STREAMALPHA_TEST_ARTIFACT_STAMP"] = f"test-{int(time.time())}"
+    env["STREAMALPHA_TEST_ARTIFACT_STAMP"] = artifact_stamp
     env["STREAMALPHA_TEST_TRAINING_EXIT_CODE"] = "0"
 
-    result = subprocess.run(
-        [
-            _POWERSHELL,
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(_REPO_ROOT / "scripts" / "start_m20_training.ps1"),
-        ],
-        cwd=_REPO_ROOT,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            [
+                _POWERSHELL,
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(_REPO_ROOT / "scripts" / "start_m20_training.ps1"),
+            ],
+            cwd=_REPO_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    finally:
+        shutil.rmtree(generated_artifact_dir, ignore_errors=True)
 
     assert result.returncode == 0, result.stderr
     assert "M20 specialist training completed" in result.stdout
