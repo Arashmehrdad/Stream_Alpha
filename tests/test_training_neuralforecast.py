@@ -287,7 +287,7 @@ def test_neuralforecast_nhits_wrapper_trains_saves_loads_and_scores(
         feature_columns=tuple(classifier.get_feature_columns()),
         lookback_candles=classifier.input_size_candles,
     )
-    artifact_path = Path("D:/Github/Stream_Alpha/artifacts/tmp/neuralforecast-wrapper-test.joblib")
+    artifact_path = tmp_path / "neuralforecast-wrapper-test.joblib"
     if artifact_path.exists():
         artifact_path.unlink()
     joblib.dump(classifier, artifact_path)

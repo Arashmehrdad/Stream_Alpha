@@ -1147,33 +1147,43 @@ class _BaseNeuralForecastClassifier:  # pylint: disable=too-many-instance-attrib
                 # PyTorch 2.6+ defaults weights_only=True which rejects
                 # lightning_fabric globals. Allowlist them so the checkpoint
                 # loads correctly (we trust our own fitted artifacts).
-                import torch
                 try:
-                    from lightning_fabric.utilities.data import AttributeDict
-                    torch.serialization.add_safe_globals([AttributeDict])
+                    import torch
                 except ImportError:
-                    pass
-                # Allowlist neuralforecast loss classes stored in checkpoints.
-                try:
-                    from neuralforecast.losses.pytorch import (
-                        MAE, MSE, RMSE, MAPE, SMAPE, QuantileLoss,
-                        MQLoss, DistributionLoss, GMM, PMM, NBMM,
-                        HuberLoss, TukeyLoss, HuberQLoss, HuberMQLoss,
-                    )
-                    _nf_loss_globals = [
-                        MAE, MSE, RMSE, MAPE, SMAPE, QuantileLoss,
-                        MQLoss, DistributionLoss, GMM, PMM, NBMM,
-                        HuberLoss, TukeyLoss, HuberQLoss, HuberMQLoss,
-                    ]
-                    torch.serialization.add_safe_globals(_nf_loss_globals)
-                except (ImportError, AttributeError):
-                    pass
+                    torch = None
+                if torch is not None:
+                    self._allowlist_torch_checkpoint_globals(torch)
                 self._backend = neuralforecast_core.load(path=str(backend_dir))
                 self._runtime_dir = runtime_root
             except Exception:
                 shutil.rmtree(runtime_root, ignore_errors=True)
                 raise
         return self._backend
+
+    @staticmethod
+    def _allowlist_torch_checkpoint_globals(torch_module: Any) -> None:
+        """Allowlist trusted checkpoint globals when PyTorch is available."""
+        try:
+            from lightning_fabric.utilities.data import AttributeDict
+
+            torch_module.serialization.add_safe_globals([AttributeDict])
+        except ImportError:
+            pass
+        # Allowlist neuralforecast loss classes stored in checkpoints.
+        try:
+            from neuralforecast.losses.pytorch import (
+                MAE, MSE, RMSE, MAPE, SMAPE, QuantileLoss,
+                MQLoss, DistributionLoss, GMM, PMM, NBMM,
+                HuberLoss, TukeyLoss, HuberQLoss, HuberMQLoss,
+            )
+            _nf_loss_globals = [
+                MAE, MSE, RMSE, MAPE, SMAPE, QuantileLoss,
+                MQLoss, DistributionLoss, GMM, PMM, NBMM,
+                HuberLoss, TukeyLoss, HuberQLoss, HuberMQLoss,
+            ]
+            torch_module.serialization.add_safe_globals(_nf_loss_globals)
+        except (ImportError, AttributeError):
+            pass
 
     def _cleanup_runtime_dir(self) -> None:
         if self._runtime_dir is None:
