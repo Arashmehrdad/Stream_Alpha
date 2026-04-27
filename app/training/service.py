@@ -427,7 +427,10 @@ def run_training(
     if parquet_dir is not None:
         print(f"[training] loading dataset from parquet: {parquet_dir}")
     else:
-        print(f"[training] readiness gate: probing {config.source_table} for {list(config.symbols)}")
+        print(
+            "[training] readiness gate: probing "
+            f"{config.source_table} for {list(config.symbols)}"
+        )
         assert_training_data_ready(config, config_path=config_path)
         print("[training] readiness gate passed")
         print(f"[training] loading full offline dataset from {config.source_table}")

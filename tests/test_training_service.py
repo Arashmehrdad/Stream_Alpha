@@ -389,7 +389,10 @@ def test_run_training_fails_early_when_readiness_gate_blocks(
     monkeypatch.setattr(
         "app.training.service.assert_training_data_ready",
         lambda config, config_path=None: (_ for _ in ()).throw(
-            ValueError("feature_ohlc does not yet satisfy the configured walk-forward timestamp requirement (4/9).")
+            ValueError(
+                "feature_ohlc does not yet satisfy the configured "
+                "walk-forward timestamp requirement (4/9)."
+            )
         ),
     )
     monkeypatch.setattr(
@@ -732,7 +735,10 @@ def test_summary_records_winner_registry_metadata_and_candidate_artifacts() -> N
         },
         candidate_artifacts={
             "neuralforecast_nhits": type("CandidateArtifact", (), {
-                "model_path": Path("artifacts/training/m20/candidate_artifacts/neuralforecast_nhits/model.joblib"),
+                "model_path": Path(
+                    "artifacts/training/m20/candidate_artifacts/"
+                    "neuralforecast_nhits/model.joblib"
+                ),
                 "training_model_config": {"model_family": "NEURALFORECAST_NHITS"},
                 "registry_metadata": {
                     "model_family": "NEURALFORECAST_NHITS",
