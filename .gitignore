@@ -4,7 +4,10 @@ __pycache__/
 .venv/
 .env.secrets
 artifacts/
+checkpoints/
 Datasets/
+exports/
+*.ckpt
 *.pyc
 *.pyo
 *.pyd
