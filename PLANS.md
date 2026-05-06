@@ -4968,3 +4968,50 @@ against naive baselines.
 - Blockers:
   - This is setup/label-lift diagnostics only.
   - No strategy-family model, runtime selector, backtest, registry artifact, promotion, trading behavior, or profit evidence exists.
+
+### M20 gate + momentum combo diagnostic
+
+- Scope:
+  - Add research-only combo diagnostics for locked `CONDITION_THEN_TOP_0.25` plus stable momentum-breakout setup candidates.
+  - Compare momentum-only, gate-only, gate-and-momentum, gate-or-momentum, and gate-then-momentum top-k policies.
+  - Do not optimize on test or implement strategy/trading logic.
+  - Do not implement execution logic, runtime routing, registry writes, promotion, trading/backtest, model retraining, long runs, or profit claims.
+- Changed files:
+  - `app/training/m20_gate_momentum_combo.py`
+  - `scripts/analyze_m20_gate_momentum_combo.py`
+  - `tests/test_training_m20_gate_momentum_combo.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real command run:
+  - `python scripts/analyze_m20_gate_momentum_combo.py --base-run-dir artifacts/training/m20/20260505T212518Z`
+- Real output directory:
+  - `artifacts/training/m20/20260505T212518Z/research_labels/vol_scaled/gate_momentum_combo`
+- Real output files:
+  - `manifest.json`
+  - `report.json`
+  - `report.md`
+  - `policy_metrics.csv`
+  - `by_run.csv`
+  - `by_symbol.csv`
+  - `by_time.csv`
+  - `tail_summary.csv`
+  - `recommendation.json`
+- Result:
+  - Recommendation: `NO_INCREMENTAL_COMBO_EDGE_OVER_PAUSED_GATE`.
+  - `GATE_AND_MOMENTUM` and `GATE_THEN_MOMENTUM_TOPK` are equivalent to `GATE_ONLY_CONDITION_THEN_TOP_0.25` on selected rows.
+  - Gate-only still has the best lift by run, but remains paused because net proxy is mixed.
+  - Momentum-only setups have label lift but broad negative net proxies.
+- Honesty flags:
+  - `RESEARCH_ONLY`
+  - `COMBO_DIAGNOSTIC_ONLY`
+  - `NOT_BACKTEST`
+  - `NOT_PNL`
+  - `NO_RUNTIME`
+  - `NO_REGISTRY`
+  - `NO_PROMOTION`
+  - `NO_PROFIT_CLAIM`
+- Blockers:
+  - Combo diagnostic adds no incremental edge over the paused locked gate.
+  - Momentum-only setups remain too broad for economics claims.
+  - No strategy-family model, runtime selector, backtest, registry artifact, promotion, trading behavior, or profit evidence exists.

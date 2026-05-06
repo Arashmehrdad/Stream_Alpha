@@ -783,3 +783,24 @@ diagnostic candidates:
 This remains `RESEARCH_ONLY`, `DIAGNOSTIC_ONLY`, `NOT_BACKTEST`, and has no
 runtime, registry, promotion, trading/backtest, model-retrain, long-run, or
 profit-claim effect.
+
+M20 gate+momentum combo diagnostic:
+
+```powershell
+python .\scripts\analyze_m20_gate_momentum_combo.py --base-run-dir .\artifacts\training\m20\20260505T212518Z
+```
+
+This writes `research_labels/vol_scaled/gate_momentum_combo/` and compares
+momentum-only setups, locked `CONDITION_THEN_TOP_0.25`, gate-and-momentum,
+gate-or-momentum, and gate-then-momentum top-k policies.
+
+Current result:
+
+- Recommendation: `NO_INCREMENTAL_COMBO_EDGE_OVER_PAUSED_GATE`.
+- `GATE_AND_MOMENTUM` and `GATE_THEN_MOMENTUM_TOPK` are equivalent to the
+  paused locked gate on selected rows.
+- Momentum-only setups have fee-label lift but broad negative net proxies.
+
+This remains `COMBO_DIAGNOSTIC_ONLY`, `NOT_BACKTEST`, `NOT_PNL`, and has no
+runtime, registry, promotion, trading/backtest, model-retrain, long-run, or
+profit-claim effect.
