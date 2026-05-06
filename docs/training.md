@@ -854,3 +854,12 @@ Current recommendation: KEEP_ABSTENTION_AS_RESEARCH_FILTER.
 Watchlist prediction-time rule: HOLD_BROAD_UNSTABLE_VOLATILITY. It skipped 36 selected rows in the original window, avoided 0.115118 negative net proxy, missed 4 positives, and did not fire in the prior-year or prev-prev-year selected rows.
 Oracle-only diagnostics HOLD_SELECTED_NEGATIVE_NET_PROXY and HOLD_SELECTED_BELOW_MEDIAN_NET_PROXY produce clean-looking avoided-loss results, but they use after-the-fact net proxy and are not implementable as runtime rules.
 Existing artifacts only. Diagnostic-only. No runtime HOLD logic, registry, promotion, paper/live execution, trading/backtest, model-retrain, long-run, PnL, or profitability status change.
+
+<!-- M20_RESEARCH_PATH_ADJUDICATION -->
+## Research-Only M20 Path Adjudication
+Command: python .\scripts\write_m20_research_path_adjudication.py --base-run-dir .\artifacts\training\m20\20260505T212518Z
+Outputs: manifest.json, research_path_adjudication.json, research_path_adjudication.md, evidence_rollup.csv, path_decisions.csv, next_actions.csv.
+Current decision: STOP_CURRENT_FILTER_CHAIN_AND_PLAN_SPECIALIST_EXPORT.
+Recommended next action: PLAN_ROW_LEVEL_SPECIALIST_PREDICTION_EXPORT.
+The adjudication preserves the confirmed rank-gate signal but records unstable economics, volatility combo instability, weak implementable abstention, and non-implementable oracle HOLD rules. Current filter-chain work is paused; the next useful research move is planning row-level predictions for existing specialist candidates.
+Existing artifacts only. Decision/tracking only. No runtime, registry, promotion, paper/live execution, trading/backtest, model-retrain, long-run, PnL, or profitability status change.

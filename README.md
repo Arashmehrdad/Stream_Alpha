@@ -1061,3 +1061,8 @@ Writes research_labels/vol_scaled/volatility_combo_economics/. Current recommend
 M20 abstention/HOLD research diagnostic:
 Command: python .\scripts\analyze_m20_abstention_hold.py --base-run-dir .\artifacts\training\m20\20260505T212518Z
 Writes research_labels/vol_scaled/abstention_hold_research/. Current recommendation is `KEEP_ABSTENTION_AS_RESEARCH_FILTER`: `HOLD_BROAD_UNSTABLE_VOLATILITY` is watchlist only, while the strongest avoided-loss rules use after-the-fact net-proxy oracle information and are not implementable. This remains research-only and not runtime HOLD logic, registry, promotion, trading/backtest, PnL, or profit evidence.
+
+<!-- M20_RESEARCH_PATH_ADJUDICATION -->
+M20 research path adjudication:
+Command: python .\scripts\write_m20_research_path_adjudication.py --base-run-dir .\artifacts\training\m20\20260505T212518Z
+Writes research_labels/vol_scaled/m20_research_path_adjudication/. Current decision is `STOP_CURRENT_FILTER_CHAIN_AND_PLAN_SPECIALIST_EXPORT`; next action is `PLAN_ROW_LEVEL_SPECIALIST_PREDICTION_EXPORT`. Rank-gate signal remains real, but current filter/volatility/abstention paths do not provide stable implementable economics. No runtime, registry, promotion, trading/backtest, model-retrain, long-run, PnL, or profit-claim behavior is added.

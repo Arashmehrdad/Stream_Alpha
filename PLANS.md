@@ -5278,3 +5278,51 @@ against naive baselines.
   - `ORACLE_NET_PROXY_RULES_NOT_IMPLEMENTABLE`.
   - Prediction-time abstention evidence is watchlist-only and not stable across windows.
   - No runtime HOLD logic, strategy-family model, runtime selector, backtest, registry artifact, promotion, trading behavior, or profit evidence exists.
+
+<!-- M20_RESEARCH_PATH_ADJUDICATION -->
+### M20 research path adjudication
+
+- Scope:
+  - Add a research-only path adjudication after the rank-gate, volatility, momentum, and abstention diagnostics.
+  - Use existing artifacts only.
+  - Preserve positive signal evidence separately from unstable economics.
+  - Mark oracle HOLD rules as non-implementable.
+  - Redirect next research action away from more filters on the same logistic gate and toward row-level specialist prediction export planning.
+  - Do not run exports, training, backtests, policy simulations, runtime code, registry writes, promotion, long runs, or profit-claim workflows.
+- Changed files:
+  - `app/training/m20_research_path_adjudication.py`
+  - `scripts/write_m20_research_path_adjudication.py`
+  - `tests/test_training_m20_research_path_adjudication.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real command run:
+  - `python scripts/write_m20_research_path_adjudication.py --base-run-dir artifacts/training/m20/20260505T212518Z`
+- Real output directory:
+  - `artifacts/training/m20/20260505T212518Z/research_labels/vol_scaled/m20_research_path_adjudication`
+- Real output files:
+  - `manifest.json`
+  - `research_path_adjudication.json`
+  - `research_path_adjudication.md`
+  - `evidence_rollup.csv`
+  - `path_decisions.csv`
+  - `next_actions.csv`
+- Result:
+  - Decision: `STOP_CURRENT_FILTER_CHAIN_AND_PLAN_SPECIALIST_EXPORT`.
+  - Recommended next action: `PLAN_ROW_LEVEL_SPECIALIST_PREDICTION_EXPORT`.
+  - Preserved statuses: `RANK_GATE_SIGNAL_CONFIRMED`, `RANK_GATE_ECONOMICS_UNSTABLE`, `VOLATILITY_LABEL_LIFT_CONFIRMED`, `VOLATILITY_COMBO_NOT_ECONOMICALLY_STABLE`, `ABSTENTION_IMPLEMENTABLE_RULES_WEAK`, `ORACLE_HOLD_RULES_NOT_IMPLEMENTABLE`, `NOT_RUNTIME_READY`, `NOT_PROMOTABLE`.
+  - Rank gate remains paused as standalone.
+  - Volatility/momentum remain context features only.
+  - Abstention remains research filter only.
+- Honesty flags:
+  - `RESEARCH_ONLY_PATH_ADJUDICATION`
+  - `EXISTING_ARTIFACTS_ONLY`
+  - `NO_RUNTIME_EFFECT`
+  - `NO_REGISTRY_WRITE`
+  - `NO_PROMOTION_EFFECT`
+  - `NOT_BACKTEST`
+  - `NO_PROFIT_CLAIM`
+- Blockers:
+  - Current filter-chain work does not provide stable implementable economics.
+  - Row-level specialist predictions are still needed before conditional specialist claims.
+  - No runtime selector, strategy-family model, backtest, registry artifact, promotion, trading behavior, or profit evidence exists.
