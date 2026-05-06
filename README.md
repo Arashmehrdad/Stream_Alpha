@@ -1051,3 +1051,8 @@ Writes research_labels/vol_scaled/strategy_family_adjudication/. Current recomme
 M20 volatility_expansion deep dive:
 Command: python .\scripts\analyze_m20_volatility_expansion_deep_dive.py --base-run-dir .\artifacts\training\m20\20260505T212518Z
 Writes research_labels/vol_scaled/volatility_expansion_deep_dive/. Current recommendation is `TEST_VOLATILITY_EXPANSION_COMBO_NEXT`; primary setup `vol_plus_range_high` has lift `1.610740` original, `1.602734` prior-year, and `1.892837` prev-prev-year. This remains diagnostic-only and uses existing artifacts only; no runtime, registry, promotion, trading/backtest, model-retrain, long-run, PnL, or profit-claim behavior is added.
+
+<!-- M20_VOLATILITY_COMBO_ECONOMICS -->
+M20 volatility combo economics diagnostic:
+Command: python .\scripts\analyze_m20_volatility_combo_economics.py --base-run-dir .\artifacts\training\m20\20260505T212518Z
+Writes research_labels/vol_scaled/volatility_combo_economics/. Current recommendation is `TRY_VOLATILITY_AS_OPTIONAL_GATE_FILTER`: gate-and-volatility is equivalent to the paused locked rank gate, while volatility-only setups preserve label lift but show negative average net proxy across all three windows. This remains research-only and not runtime, registry, promotion, trading/backtest, PnL, or profit evidence.

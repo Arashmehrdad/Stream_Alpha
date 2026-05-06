@@ -836,3 +836,12 @@ Current recommendation: TEST_VOLATILITY_EXPANSION_COMBO_NEXT.
 Primary setup: vol_plus_range_high, with lift 1.610740 original, 1.602734 prior-year, and 1.892837 prev-prev-year.
 Secondary setups: vol_plus_volume_high, range_plus_volume_high, realized_vol_high, and range_high.
 Existing artifacts only. Diagnostic-only. No runtime, registry, promotion, paper/live execution, trading/backtest, model-retrain, long-run, PnL, or profitability status change.
+
+<!-- M20_VOLATILITY_COMBO_ECONOMICS -->
+## Research-Only M20 Volatility Combo Economics
+Command: python .\scripts\analyze_m20_volatility_combo_economics.py --base-run-dir .\artifacts\training\m20\20260505T212518Z
+Outputs: manifest.json, report.json, report.md, policy_metrics.csv, by_run.csv, by_symbol.csv, by_time.csv, tail_summary.csv, stability.csv, recommendation.json.
+Current recommendation: TRY_VOLATILITY_AS_OPTIONAL_GATE_FILTER.
+Gate-and-volatility variants are equivalent to the paused locked rank gate: min lift 1.841966, average net proxy -0.003195, and two negative-net windows.
+Volatility-only setups preserve label lift, but all volatility-only policies have negative average net proxy across the three existing windows, so they are not an escalation path by themselves.
+Existing artifacts only. Diagnostic-only. No runtime, registry, promotion, paper/live execution, trading/backtest, model-retrain, long-run, PnL, or profitability status change.

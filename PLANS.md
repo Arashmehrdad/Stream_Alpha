@@ -5172,3 +5172,57 @@ against naive baselines.
 - Blockers:
   - Setup lift is not PnL or profitability evidence.
   - No strategy-family model, runtime selector, backtest, registry artifact, promotion, trading behavior, or profit evidence exists.
+
+<!-- M20_VOLATILITY_COMBO_ECONOMICS -->
+### M20 volatility combo economics diagnostic
+
+- Scope:
+  - Add research-only combo economics diagnostics for top `volatility_expansion` setups against the paused locked rank gate and momentum branch.
+  - Use existing original/prior/prev-prev artifacts only.
+  - Evaluate volatility-only, rank-gate-only, rank-gate-and-volatility, rank-gate-or-volatility, momentum-and-volatility, and rank-gate-and-momentum-and-volatility policies.
+  - Compute selected rows, coverage, precision, lift, recall, false positives, net proxy, worst/best 5 row contribution, disable-gap exposure, symbol/time mixes, and stability.
+  - Do not run exports, training, backtests, policy simulations, runtime code, registry writes, promotion, long runs, or profit-claim workflows.
+- Changed files:
+  - `app/training/m20_volatility_combo_economics.py`
+  - `scripts/analyze_m20_volatility_combo_economics.py`
+  - `tests/test_training_m20_volatility_combo_economics.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real command run:
+  - `python scripts/analyze_m20_volatility_combo_economics.py --base-run-dir artifacts/training/m20/20260505T212518Z`
+- Real output directory:
+  - `artifacts/training/m20/20260505T212518Z/research_labels/vol_scaled/volatility_combo_economics`
+- Real output files:
+  - `manifest.json`
+  - `report.json`
+  - `report.md`
+  - `policy_metrics.csv`
+  - `by_run.csv`
+  - `by_symbol.csv`
+  - `by_time.csv`
+  - `tail_summary.csv`
+  - `stability.csv`
+  - `recommendation.json`
+- Result:
+  - Recommendation: `TRY_VOLATILITY_AS_OPTIONAL_GATE_FILTER`.
+  - `RANK_GATE_AND_VOLATILITY` and `RANK_GATE_AND_MOMENTUM_AND_VOLATILITY` are equivalent to the paused locked rank gate.
+  - Gate-and-volatility min lift: `1.841966`.
+  - Gate-and-volatility average net proxy: `-0.003195`, with `2` negative-net windows.
+  - Volatility-only policies preserve label lift but all have negative average net proxy across the three existing windows.
+  - Broad `RANK_GATE_OR_VOLATILITY` and `MOMENTUM_AND_VOLATILITY` policies are net-proxy unstable.
+- Honesty flags:
+  - `RESEARCH_ONLY`
+  - `EXISTING_ARTIFACTS_ONLY`
+  - `COMBO_ECONOMICS_DIAGNOSTIC_ONLY`
+  - `NOT_BACKTEST`
+  - `NOT_PNL`
+  - `NO_RUNTIME`
+  - `NO_REGISTRY`
+  - `NO_PROMOTION`
+  - `NO_PROFIT_CLAIM`
+- Blockers:
+  - Combo economics are diagnostics only.
+  - Volatility does not fix the paused rank gate's mixed net proxy.
+  - Volatility-only label lift is not PnL or profitability evidence.
+  - No strategy-family model, runtime selector, backtest, registry artifact, promotion, trading behavior, or profit evidence exists.
