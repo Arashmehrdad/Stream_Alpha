@@ -577,3 +577,24 @@ Short post-export research pipeline result for `20260506T063818Z`:
 
 This remains research-only. It does not add runtime, registry, promotion, policy
 simulation, trading/backtest, model-retrain, or profit-claim behavior.
+
+Missing-slice adjudication from existing artifacts only:
+
+- Evidence files:
+  - `confirmation_plan/confirmation_comparison/confirmation_slice_comparison.csv`
+  - `rank_gate_nested_tuning/disable_gap_exposure.csv`
+  - `rank_gate_nested_tuning/confirmation_metrics.csv`
+- Missing slices:
+  - `month=2025-11`
+  - `month=2025-12`
+  - `month=2026-04`
+  - `quarter=2025Q4`
+  - `quarter=2026Q2`
+- Adjudication: `CALENDAR_SLICE_NON_OVERLAP`
+- Locked gate status: `DISABLE_GAP_NO_SELECTED_EXPOSURE_IN_LOCKED_GATE`
+- General blocker preserved:
+  `DISABLE_GAP_STILL_UNCONFIRMED_FOR_GENERAL_CONDITIONAL_ANALYSIS`
+
+This means the missing slices should not be counted as model failures for the
+locked `CONDITION_THEN_TOP_0.25` research gate. They also should not be treated
+as resolved for broad conditional analysis or runtime use.

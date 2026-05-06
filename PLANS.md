@@ -4563,3 +4563,32 @@ against naive baselines.
   - This is still research-only confirmation evidence, not runtime logic.
   - Missing slices remain in the comparison output and should not be hidden.
   - No runtime, registry, promotion, policy simulation, trading/backtest, model retrain, or profit-claim workflow is allowed from this batch.
+
+### M20 missing-slice adjudication for locked rank gate
+
+- Scope:
+  - Create a lightweight research-only adjudication note from existing M20 outputs only.
+  - Do not run exports, long training, model retraining, policy simulation, trading/backtest, registry writes, promotion, or profit-claim workflows.
+- Changed files:
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Evidence used:
+  - `artifacts/training/m20/20260505T212518Z/research_labels/vol_scaled/confirmation_plan/confirmation_comparison/confirmation_slice_comparison.csv`
+  - `artifacts/training/m20/20260505T212518Z/research_labels/vol_scaled/rank_gate_nested_tuning/disable_gap_exposure.csv`
+  - `artifacts/training/m20/20260505T212518Z/research_labels/vol_scaled/rank_gate_nested_tuning/confirmation_metrics.csv`
+- Missing slices adjudicated as `CALENDAR_SLICE_NON_OVERLAP`:
+  - `month=2025-11`
+  - `month=2025-12`
+  - `month=2026-04`
+  - `quarter=2025Q4`
+  - `quarter=2026Q2`
+- Locked gate evidence:
+  - Policy: `CONDITION_THEN_TOP_0.25`.
+  - Latest confirmation selected rows: `153`.
+  - Latest confirmation disable-gap exposure: `0`.
+  - Adjudication: `DISABLE_GAP_NO_SELECTED_EXPOSURE_IN_LOCKED_GATE`.
+- Final blocker wording:
+  - Missing calendar slices are not model failures for the locked rank gate; they are `CALENDAR_SLICE_NON_OVERLAP`.
+  - Preserve `DISABLE_GAP_STILL_UNCONFIRMED_FOR_GENERAL_CONDITIONAL_ANALYSIS`.
+  - No runtime, registry, promotion, policy simulation, trading/backtest, model retrain, or profit-claim workflow is allowed.
