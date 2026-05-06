@@ -827,3 +827,12 @@ Outputs: manifest.json, report.json, report.md, family_comparison.csv, setup_com
 Current recommendation: TEST_VOLATILITY_EXPANSION_NEXT.
 Family roles: volatility_expansion primary with best setup vol_plus_range_high, momentum_breakout secondary with best setup realized_vol_high, and range_mean_reversion watchlist with best setup macd_near_zero.
 Existing artifacts only. No runtime, registry, promotion, paper/live execution, trading/backtest, model-retrain, long-run, PnL, or profitability status change.
+
+<!-- M20_VOLATILITY_EXPANSION_DEEP_DIVE -->
+## Research-Only M20 Volatility Expansion Deep Dive
+Command: python .\scripts\analyze_m20_volatility_expansion_deep_dive.py --base-run-dir .\artifacts\training\m20\20260505T212518Z
+Outputs: manifest.json, report.json, report.md, setup_deep_metrics.csv, by_run.csv, by_symbol.csv, by_time.csv, rank_gate_overlap_deep.csv, condition_intersection_matrix.csv, recommendation.json.
+Current recommendation: TEST_VOLATILITY_EXPANSION_COMBO_NEXT.
+Primary setup: vol_plus_range_high, with lift 1.610740 original, 1.602734 prior-year, and 1.892837 prev-prev-year.
+Secondary setups: vol_plus_volume_high, range_plus_volume_high, realized_vol_high, and range_high.
+Existing artifacts only. Diagnostic-only. No runtime, registry, promotion, paper/live execution, trading/backtest, model-retrain, long-run, PnL, or profitability status change.

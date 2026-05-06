@@ -5119,3 +5119,56 @@ against naive baselines.
 - Blockers:
   - Setup lift is not PnL or profitability evidence.
   - No strategy-family model, runtime selector, backtest, registry artifact, promotion, trading behavior, or profit evidence exists.
+
+<!-- M20_VOLATILITY_EXPANSION_DEEP_DIVE -->
+### M20 volatility_expansion deep dive
+
+- Scope:
+  - Add research-only deep diagnostics for the adjudicated primary strategy family, `volatility_expansion`.
+  - Use existing original/prior/prev-prev artifacts only.
+  - Focus on `vol_plus_range_high`, `vol_plus_volume_high`, `range_plus_volume_high`, `realized_vol_high`, `range_high`, and `volume_high`.
+  - Compute coverage, positive rate, lift versus base, recall, false positives, optional net proxy, symbol/time slices, rank-gate overlap, and condition intersections.
+  - Do not run exports, training, backtests, policy simulations, runtime code, registry writes, promotion, long runs, or profit-claim workflows.
+- Changed files:
+  - `app/training/m20_volatility_expansion_deep_dive.py`
+  - `scripts/analyze_m20_volatility_expansion_deep_dive.py`
+  - `tests/test_training_m20_volatility_expansion_deep_dive.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real command run:
+  - `python scripts/analyze_m20_volatility_expansion_deep_dive.py --base-run-dir artifacts/training/m20/20260505T212518Z`
+- Real output directory:
+  - `artifacts/training/m20/20260505T212518Z/research_labels/vol_scaled/volatility_expansion_deep_dive`
+- Real output files:
+  - `manifest.json`
+  - `report.json`
+  - `report.md`
+  - `setup_deep_metrics.csv`
+  - `by_run.csv`
+  - `by_symbol.csv`
+  - `by_time.csv`
+  - `rank_gate_overlap_deep.csv`
+  - `condition_intersection_matrix.csv`
+  - `recommendation.json`
+- Result:
+  - Recommendation: `TEST_VOLATILITY_EXPANSION_COMBO_NEXT`.
+  - Primary setup: `vol_plus_range_high`.
+  - `vol_plus_range_high` lift: `1.610740` original, `1.602734` prior-year, `1.892837` prev-prev-year.
+  - Secondary setups: `vol_plus_volume_high`, `range_plus_volume_high`, `realized_vol_high`, and `range_high`.
+  - Best setup by run: `vol_plus_range_high` in original and prior-year; `vol_plus_volume_high` in prev-prev-year.
+- Honesty flags:
+  - `RESEARCH_ONLY_VOLATILITY_EXPANSION_DEEP_DIVE`
+  - `EXISTING_ARTIFACTS_ONLY`
+  - `DIAGNOSTIC_ONLY`
+  - `NOT_BACKTEST`
+  - `NOT_PNL`
+  - `NOT_RUNTIME_READY`
+  - `NOT_PROMOTABLE`
+  - `NO_RUNTIME_EFFECT`
+  - `NO_REGISTRY_WRITE`
+  - `NO_PROMOTION_EFFECT`
+  - `NO_PROFIT_CLAIM`
+- Blockers:
+  - Setup lift is not PnL or profitability evidence.
+  - No strategy-family model, runtime selector, backtest, registry artifact, promotion, trading behavior, or profit evidence exists.

@@ -1046,3 +1046,8 @@ Writes research_labels/vol_scaled/volatility_expansion_research/. The result kee
 M20 strategy-family adjudication packet:
 Command: python .\scripts\adjudicate_m20_strategy_families.py --base-run-dir .\artifacts\training\m20\20260505T212518Z
 Writes research_labels/vol_scaled/strategy_family_adjudication/. Current recommendation is `TEST_VOLATILITY_EXPANSION_NEXT`: `volatility_expansion` is primary, `momentum_breakout` is secondary, and `range_mean_reversion` stays watchlist. This uses existing artifacts only and remains research-only: no runtime, registry, promotion, trading/backtest, model-retrain, long-run, PnL, or profit-claim behavior is added.
+
+<!-- M20_VOLATILITY_EXPANSION_DEEP_DIVE -->
+M20 volatility_expansion deep dive:
+Command: python .\scripts\analyze_m20_volatility_expansion_deep_dive.py --base-run-dir .\artifacts\training\m20\20260505T212518Z
+Writes research_labels/vol_scaled/volatility_expansion_deep_dive/. Current recommendation is `TEST_VOLATILITY_EXPANSION_COMBO_NEXT`; primary setup `vol_plus_range_high` has lift `1.610740` original, `1.602734` prior-year, and `1.892837` prev-prev-year. This remains diagnostic-only and uses existing artifacts only; no runtime, registry, promotion, trading/backtest, model-retrain, long-run, PnL, or profit-claim behavior is added.
