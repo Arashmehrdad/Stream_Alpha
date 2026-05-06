@@ -666,3 +666,31 @@ The diagnostic records symbol, time, probability-bin, volatility, range, volume,
 MACD, momentum, top-negative, and top-positive selected-row tables. It is
 `RESEARCH_ONLY`, `NET_PROXY_MIXED`, `NOT_PNL`, `NO_RUNTIME`, `NO_REGISTRY`,
 `NO_PROMOTION`, `NO_PROFIT_CLAIM`, and `SPARSE_SELECTION`.
+
+Rank-gate tail/condition concentration analysis:
+
+```powershell
+python .\scripts\analyze_m20_rank_gate_tail.py --base-run-dir .\artifacts\training\m20\20260505T212518Z
+```
+
+This writes `research_labels/vol_scaled/rank_gate_tail_analysis/` and checks
+whether mixed net proxies are driven by a few tail rows, symbol/time
+concentration, or condition buckets.
+
+Key result:
+
+- Original locked test: net proxy `-0.180157`; worst-5 selected rows contribute
+  `-0.083755`.
+- Prior-year confirmation: net proxy `0.189677`; worst-5 selected rows
+  contribute `-0.490083`.
+- Prev-prev-year confirmation: net proxy `-0.019105`; worst-5 selected rows
+  contribute `-0.278726`.
+- Negative net windows: `original_locked_test`,
+  `prev_prev_year_confirmation`.
+- Unstable concentration slices flagged: `9`.
+
+The recommendation is
+`REVIEW_TAIL_CONCENTRATION_BEFORE_ANY_POLICY_OR_STRATEGY_STEP`. This is
+`TAIL_DIAGNOSTIC_ONLY`, `NOT_PNL`, `NO_PROFIT_CLAIM`, and still has no runtime,
+registry, promotion, policy simulation, trading/backtest, or model-retrain
+effect.

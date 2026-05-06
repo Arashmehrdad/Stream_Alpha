@@ -4717,3 +4717,63 @@ against naive baselines.
   - Diagnostics are not PnL, not a backtest, and not profitability evidence.
   - Sparse 0.25% selection remains.
   - No runtime, registry, promotion, policy simulation, trading/backtest, model retrain, or profit-claim workflow is allowed.
+
+### M20 rank-gate tail/condition concentration analysis
+
+- Scope:
+  - Add research-only tail/condition concentration analysis for locked `CONDITION_THEN_TOP_0.25`.
+  - Identify whether mixed net proxies are driven by few tail losses, symbol/time concentration, or condition buckets.
+  - Use existing `rank_gate_net_diagnostics`, `rank_gate_economics`, predictions, features, and labels only.
+  - Do not run exports, long training, model retraining, policy simulation, trading/backtest, registry writes, promotion, or profit-claim workflows.
+- Detected pre-existing uncommitted related files:
+  - `app/training/m20_rank_gate_economics.py`
+  - `app/training/m20_rank_gate_net_diagnostics.py`
+  - `scripts/diagnose_m20_rank_gate_net.py`
+  - `scripts/simulate_m20_rank_gate_economics.py`
+  - `tests/test_training_m20_rank_gate_economics.py`
+  - `tests/test_training_m20_rank_gate_net_diagnostics.py`
+- Changed files:
+  - `app/training/m20_rank_gate_tail_analysis.py`
+  - `scripts/analyze_m20_rank_gate_tail.py`
+  - `tests/test_training_m20_rank_gate_tail_analysis.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real command run:
+  - `python scripts/analyze_m20_rank_gate_tail.py --base-run-dir artifacts/training/m20/20260505T212518Z`
+- Real output directory:
+  - `artifacts/training/m20/20260505T212518Z/research_labels/vol_scaled/rank_gate_tail_analysis`
+- Real output files:
+  - `manifest.json`
+  - `report.json`
+  - `report.md`
+  - `tail_contribution.csv`
+  - `by_symbol.csv`
+  - `by_time.csv`
+  - `by_condition.csv`
+  - `worst_rows.csv`
+  - `best_rows.csv`
+  - `recommendation.json`
+- Tail contribution results:
+  - Original locked test: selected `118`, net proxy `-0.180157`, worst-5 contribution `-0.083755`, best-5 contribution `0.056493`.
+  - Prior-year confirmation: selected `156`, net proxy `0.189677`, worst-5 contribution `-0.490083`, best-5 contribution `0.306909`.
+  - Prev-prev-year confirmation: selected `153`, net proxy `-0.019105`, worst-5 contribution `-0.278726`, best-5 contribution `0.245669`.
+  - Negative net windows: `original_locked_test`, `prev_prev_year_confirmation`.
+  - Unstable concentration slices flagged: `9`.
+  - Recommendation: `REVIEW_TAIL_CONCENTRATION_BEFORE_ANY_POLICY_OR_STRATEGY_STEP`.
+- Honesty flags:
+  - `RESEARCH_ONLY`
+  - `TAIL_DIAGNOSTIC_ONLY`
+  - `NOT_PNL`
+  - `NO_RUNTIME`
+  - `NO_REGISTRY`
+  - `NO_PROMOTION`
+  - `NO_PROFIT_CLAIM`
+  - `SPARSE_SELECTION`
+  - `NET_PROXY_MIXED`
+- Blockers:
+  - Tail analysis is not PnL, not a backtest, and not profitability evidence.
+  - Net proxy remains mixed across windows.
+  - Sparse 0.25% selection remains.
+  - Tail/condition concentration must be reviewed before any future research policy or strategy step.
+  - No runtime, registry, promotion, policy simulation, trading/backtest, model retrain, or profit-claim workflow is allowed.
