@@ -514,3 +514,66 @@ and confirmation test. The first real selection is `CONDITION_THEN_TOP_0.25`
 with original test precision/lift `0.347458` / `1.841966` and confirmation
 precision/lift `0.512821` / `2.185905`. It remains research-only and does not
 change runtime, registry, promotion, paper/live, trading, or threshold behavior.
+
+Manual execution break for the next comparable confirmation window:
+
+Codex must not run this confirmation job. Codex should print these commands,
+stop, and wait for Arash to run them manually in a separate PowerShell terminal
+and paste back the new run directory and results.
+
+```powershell
+python -m app.training --config .\configs\training.m20.json --score-only .\artifacts\training\m20\20260405T023104Z\fitted_models --parquet-dir .\exports\feature_ohlc_for_colab --export-training-frame-only --confirmation-window-start 2023-04-02T11:30:00Z --confirmation-window-end 2024-04-02T11:30:00Z --confirmation-tag confirm_prev_prev_year
+```
+
+After Arash provides the new `<CONFIRMATION_RUN_DIR>`, only the short
+post-export research pipeline should be run:
+
+```powershell
+python .\scripts\generate_m20_research_labels.py --run-dir <CONFIRMATION_RUN_DIR> --source training-frame --use-volatility
+python .\scripts\analyze_m20_label_readiness.py --run-dir <CONFIRMATION_RUN_DIR>
+python .\scripts\train_m20_fee_exceedance_baseline.py --run-dir <CONFIRMATION_RUN_DIR> --export-full-predictions
+python .\scripts\analyze_m20_conditional_usefulness.py --run-dir <CONFIRMATION_RUN_DIR> --prediction-source full-test
+python .\scripts\compare_m20_confirmation_slices.py --original-run-dir .\artifacts\training\m20\20260505T212518Z --confirmation-run-dir <CONFIRMATION_RUN_DIR>
+python .\scripts\tune_m20_rank_gate_nested.py --original-run-dir .\artifacts\training\m20\20260505T212518Z --confirmation-run-dir <CONFIRMATION_RUN_DIR>
+```
+
+Do not promote `CONDITION_THEN_TOP_0.25` to runtime, registry, policy
+simulation, trading/backtest, model-retrain, or profit-claim workflows before
+that manual confirmation is complete and reviewed.
+
+Manual export result reviewed:
+
+- Run directory: `artifacts/training/m20/20260506T063818Z`
+- Window: `2023-04-02T11:30:00Z` to `2024-04-02T11:30:00Z`
+- Tag: `confirm_prev_prev_year`
+- Exported rows: `306319`
+- Feature count: `22`
+- Symbol coverage: BTC/USD, ETH/USD, SOL/USD
+- Eligible folds: `2`, `3`
+- Export complete: `true`
+
+Short post-export research pipeline result for `20260506T063818Z`:
+
+- Label readiness: fee-exceedance READY, triple-barrier NOT_READY.
+- Fee baseline best model: `logistic_regression_tiny`
+- Test positive rate: `0.231057`
+- Balanced accuracy: `0.607586`
+- PR-AUC / average precision: `0.338437`
+- ROC-AUC: `0.641974`
+- Top 5% precision/lift: `0.419197` / `1.814259`
+- Conditional usefulness: `61262` rows, `21` enable, `11` watchlist, `0`
+  disable candidates.
+- Slice comparison recommendation: `CONFIRM_FEE_GATE_FOR_RESEARCH_POLICY`
+- Slice comparison counts: `15` strongly confirmed, `10` confirmed, `1`
+  inconclusive, `5` missing, `0` not confirmed.
+- Locked nested rank gate: `CONDITION_THEN_TOP_0.25`
+- Locked confirmation coverage/precision/lift: `0.002497` / `0.522876` /
+  `2.262976`
+- Locked confirmation recall: `0.005652`
+- Locked confirmation selected rows: `153`
+- Locked confirmation false positives: `73`
+- Locked confirmation average probability: `0.998087`
+- Locked confirmation disable-gap exposure: `0`
+
+This remains research-only. It does not add runtime, registry, promotion, policy
+simulation, trading/backtest, model-retrain, or profit-claim behavior.

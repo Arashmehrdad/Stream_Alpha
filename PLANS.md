@@ -4459,3 +4459,107 @@ against naive baselines.
   - Disable-gap slices still need later comparable-window confirmation.
   - The selected 0.25% rank gate is sparse and needs another window before strategy or policy simulation.
   - No runtime selector, backtest, registry artifact, promotion, trading behavior, or profit evidence exists.
+
+### M20 manual execution break for next comparable confirmation window
+
+- Scope:
+  - Documentation/tracking only.
+  - Preserve `CONDITION_THEN_TOP_0.25` as research-only until another comparable confirmation window is completed and reviewed.
+  - Record that Codex must not launch the next long confirmation run.
+- Changed files:
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Manual execution break:
+  - Codex must stop before the next confirmation export-only run.
+  - Codex must print the exact PowerShell command below and wait for Arash to run it manually in a separate PowerShell terminal.
+  - Arash should paste back the new confirmation run directory and results before Codex runs any short post-export processing.
+- Manual command for Arash:
+  - `python -m app.training --config .\configs\training.m20.json --score-only .\artifacts\training\m20\20260405T023104Z\fitted_models --parquet-dir .\exports\feature_ohlc_for_colab --export-training-frame-only --confirmation-window-start 2023-04-02T11:30:00Z --confirmation-window-end 2024-04-02T11:30:00Z --confirmation-tag confirm_prev_prev_year`
+- Short post-export commands after Arash provides `<CONFIRMATION_RUN_DIR>`:
+  - `python .\scripts\generate_m20_research_labels.py --run-dir <CONFIRMATION_RUN_DIR> --source training-frame --use-volatility`
+  - `python .\scripts\analyze_m20_label_readiness.py --run-dir <CONFIRMATION_RUN_DIR>`
+  - `python .\scripts\train_m20_fee_exceedance_baseline.py --run-dir <CONFIRMATION_RUN_DIR> --export-full-predictions`
+  - `python .\scripts\analyze_m20_conditional_usefulness.py --run-dir <CONFIRMATION_RUN_DIR> --prediction-source full-test`
+  - `python .\scripts\compare_m20_confirmation_slices.py --original-run-dir .\artifacts\training\m20\20260505T212518Z --confirmation-run-dir <CONFIRMATION_RUN_DIR>`
+  - `python .\scripts\tune_m20_rank_gate_nested.py --original-run-dir .\artifacts\training\m20\20260505T212518Z --confirmation-run-dir <CONFIRMATION_RUN_DIR>`
+- Blockers:
+  - The next long confirmation run has not been executed.
+  - Codex must not run the long confirmation command inside this thread.
+  - No runtime, registry, promotion, policy simulation, trading/backtest, model retrain, or profit-claim workflow is allowed from the current evidence.
+
+### M20 next comparable confirmation export reviewed
+
+- Scope:
+  - Review the manually created confirmation artifact only.
+  - Update docs/tracking with available artifact facts.
+  - Keep `CONDITION_THEN_TOP_0.25` research-only.
+- Changed files:
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Artifact reviewed:
+  - `artifacts/training/m20/20260506T063818Z`
+- Available export facts:
+  - Confirmation window: `2023-04-02T11:30:00Z` to `2024-04-02T11:30:00Z`.
+  - Confirmation tag: `confirm_prev_prev_year`.
+  - Exported rows: `306319`.
+  - Feature count: `22`.
+  - Symbol coverage: BTC/USD, ETH/USD, SOL/USD.
+  - Eligible folds: `2`, `3`.
+  - Export complete: `true`.
+  - Runtime effect: `none_research_only`.
+  - Registry write: `false`.
+  - Promotion effect: `false`.
+- Metrics status:
+  - No `research_labels/` artifacts are present under this run yet.
+  - No full prediction exports, conditional usefulness output, comparison output, or nested rank-gate confirmation metrics are present yet.
+  - New `CONDITION_THEN_TOP_0.25` coverage/precision/lift and disable-gap exposure cannot be extracted from the current artifact state.
+- Blockers:
+  - The short post-export research pipeline still needs to be run before this window can confirm or reject `CONDITION_THEN_TOP_0.25`.
+  - No runtime, registry, promotion, policy simulation, trading/backtest, model retrain, or profit-claim workflow is allowed.
+
+### M20 next comparable confirmation post-export pipeline
+
+- Scope:
+  - Run only the short post-export research pipeline for `artifacts/training/m20/20260506T063818Z`.
+  - Use the existing exported `training_frame/`.
+  - Keep `CONDITION_THEN_TOP_0.25` research-only.
+  - Do not rerun the long export or change runtime, registry, promotion, policy simulation, trading/backtest, model retrain, or profit-claim workflows.
+- Commands run:
+  - `python scripts/generate_m20_research_labels.py --run-dir artifacts/training/m20/20260506T063818Z --source training-frame --use-volatility`
+  - `python scripts/analyze_m20_label_readiness.py --run-dir artifacts/training/m20/20260506T063818Z`
+  - `python scripts/train_m20_fee_exceedance_baseline.py --run-dir artifacts/training/m20/20260506T063818Z --export-full-predictions`
+  - `python scripts/analyze_m20_conditional_usefulness.py --run-dir artifacts/training/m20/20260506T063818Z --prediction-source full-test`
+  - `python scripts/compare_m20_confirmation_slices.py --original-run-dir artifacts/training/m20/20260505T212518Z --confirmation-run-dir artifacts/training/m20/20260506T063818Z`
+  - `python scripts/tune_m20_rank_gate_nested.py --original-run-dir artifacts/training/m20/20260505T212518Z --confirmation-run-dir artifacts/training/m20/20260506T063818Z`
+- Generated/updated artifact directories:
+  - `artifacts/training/m20/20260506T063818Z/research_labels/vol_scaled`
+  - `artifacts/training/m20/20260506T063818Z/research_labels/vol_scaled/readiness`
+  - `artifacts/training/m20/20260506T063818Z/research_labels/vol_scaled/fee_exceedance_baselines`
+  - `artifacts/training/m20/20260506T063818Z/research_labels/vol_scaled/conditional_usefulness_full_test`
+  - `artifacts/training/m20/20260505T212518Z/research_labels/vol_scaled/confirmation_plan/confirmation_comparison`
+  - `artifacts/training/m20/20260505T212518Z/research_labels/vol_scaled/rank_gate_nested_tuning`
+- Results:
+  - Label readiness: fee-exceedance READY, triple-barrier NOT_READY, meta-label not applicable.
+  - Fee baseline best model: `logistic_regression_tiny`.
+  - Test positive rate: `0.231057`.
+  - Balanced accuracy: `0.607586`.
+  - PR-AUC / average precision: `0.338437`.
+  - ROC-AUC: `0.641974`.
+  - Top 5% precision/lift: `0.419197` / `1.814259`.
+  - Conditional usefulness rows: `61262`.
+  - Conditional usefulness candidates: `21` enable, `11` watchlist, `0` disable.
+  - Slice comparison recommendation: `CONFIRM_FEE_GATE_FOR_RESEARCH_POLICY`.
+  - Slice comparison counts: `15` strongly confirmed, `10` confirmed, `1` inconclusive, `5` missing, `0` not confirmed.
+  - Locked nested rank gate: `CONDITION_THEN_TOP_0.25`.
+  - Locked confirmation rows selected: `153`.
+  - Locked confirmation coverage/precision/lift: `0.002497` / `0.522876` / `2.262976`.
+  - Locked confirmation recall: `0.005652`.
+  - Locked confirmation false positives: `73`.
+  - Locked confirmation average probability: `0.998087`.
+  - Locked confirmation disable-gap exposure: `0`.
+- Blockers:
+  - This is still research-only confirmation evidence, not runtime logic.
+  - Missing slices remain in the comparison output and should not be hidden.
+  - No runtime, registry, promotion, policy simulation, trading/backtest, model retrain, or profit-claim workflow is allowed from this batch.
