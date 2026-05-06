@@ -1031,3 +1031,8 @@ A research-only strategy-family scaffold is available at `artifacts/training/m20
 The first momentum_breakout diagnostic is available at `artifacts/training/m20/20260505T212518Z/research_labels/vol_scaled/momentum_breakout_research/`. It keeps `realized_vol_high`, `range_high`, and `volume_high` as research diagnostic setup candidates across the original/prior/prev-prev windows, but it is setup-frequency and fee-label lift analysis only: no runtime, registry, promotion, trading/backtest, model-retrain, or profit claim.
 
 The gate+momentum combo diagnostic is available at `artifacts/training/m20/20260505T212518Z/research_labels/vol_scaled/gate_momentum_combo/`. It shows `GATE_AND_MOMENTUM` and `GATE_THEN_MOMENTUM_TOPK` are equivalent to the paused locked gate on selected rows, so the recommendation is `NO_INCREMENTAL_COMBO_EDGE_OVER_PAUSED_GATE`; momentum-only setups have label lift but broad negative net proxies. This remains diagnostic-only and non-runtime.
+
+<!-- M20_RANGE_MEAN_REVERSION_RESEARCH -->
+M20 range_mean_reversion research diagnostic:
+Command: python .\scripts\analyze_m20_range_mean_reversion.py --base-run-dir .\artifacts\training\m20\20260505T212518Z
+Writes research_labels/vol_scaled/range_mean_reversion_research/. Research-only diagnostic: no runtime, registry, promotion, trading/backtest, model-retrain, long-run, or profit-claim behavior is added.

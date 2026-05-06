@@ -804,3 +804,9 @@ Current result:
 This remains `COMBO_DIAGNOSTIC_ONLY`, `NOT_BACKTEST`, `NOT_PNL`, and has no
 runtime, registry, promotion, trading/backtest, model-retrain, long-run, or
 profit-claim effect.
+
+<!-- M20_RANGE_MEAN_REVERSION_RESEARCH -->
+## Research-Only M20 Range Mean-Reversion Diagnostic
+Command: python .\scripts\analyze_m20_range_mean_reversion.py --base-run-dir .\artifacts\training\m20\20260505T212518Z
+Outputs: manifest.json, report.json, report.md, setup_metrics.csv, by_run.csv, by_symbol.csv, by_time.csv, rank_gate_overlap.csv, recommendation.json.
+Diagnostic-only. No runtime, registry, promotion, paper/live execution, trading/backtest, or profitability status change.

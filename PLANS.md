@@ -5015,3 +5015,11 @@ against naive baselines.
   - Combo diagnostic adds no incremental edge over the paused locked gate.
   - Momentum-only setups remain too broad for economics claims.
   - No strategy-family model, runtime selector, backtest, registry artifact, promotion, trading behavior, or profit evidence exists.
+
+<!-- M20_RANGE_MEAN_REVERSION_RESEARCH -->
+### M20 range_mean_reversion research diagnostic
+- Added research-only setup diagnostics for range_mean_reversion.
+- Uses existing training-frame market features and fee-exceedance labels only.
+- Rank-gate evidence is overlap diagnostics only.
+- No runtime routing, registry writes, promotion, trading/backtest, model retraining, long runs, or profit claims.
+- Command: python scripts/analyze_m20_range_mean_reversion.py --base-run-dir artifacts/training/m20/20260505T212518Z
