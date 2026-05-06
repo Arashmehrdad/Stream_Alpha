@@ -819,3 +819,11 @@ Current recommendation: KEEP_VOLATILITY_EXPANSION_AS_RESEARCH_DIAGNOSTIC_CANDIDA
 Strongest stable setup: vol_plus_range_high, with lift 1.610740 original, 1.602734 prior-year, and 1.892837 prev-prev-year.
 Other stable setup candidates include realized_vol_high, range_high, volume_high, vol_plus_volume_high, range_plus_volume_high, abs_log_return_high, shock_continuation, and shock_reversal.
 Diagnostic-only. No runtime, registry, promotion, paper/live execution, trading/backtest, model-retrain, long-run, PnL, or profitability status change.
+
+<!-- M20_STRATEGY_FAMILY_ADJUDICATION -->
+## Research-Only M20 Strategy-Family Adjudication
+Command: python .\scripts\adjudicate_m20_strategy_families.py --base-run-dir .\artifacts\training\m20\20260505T212518Z
+Outputs: manifest.json, report.json, report.md, family_comparison.csv, setup_comparison.csv, rank_gate_overlap_summary.csv, recommended_next_experiments.csv, recommendation.json.
+Current recommendation: TEST_VOLATILITY_EXPANSION_NEXT.
+Family roles: volatility_expansion primary with best setup vol_plus_range_high, momentum_breakout secondary with best setup realized_vol_high, and range_mean_reversion watchlist with best setup macd_near_zero.
+Existing artifacts only. No runtime, registry, promotion, paper/live execution, trading/backtest, model-retrain, long-run, PnL, or profitability status change.

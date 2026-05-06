@@ -5071,3 +5071,51 @@ against naive baselines.
 - Blockers:
   - This is setup/label-lift diagnostics only.
   - No strategy-family model, runtime selector, backtest, registry artifact, promotion, trading behavior, or profit evidence exists.
+
+<!-- M20_STRATEGY_FAMILY_ADJUDICATION -->
+### M20 strategy-family adjudication packet
+
+- Scope:
+  - Add research-only adjudication across the completed `momentum_breakout`, `range_mean_reversion`, and `volatility_expansion` diagnostics.
+  - Use existing artifacts only.
+  - Compare setup minimum lift, average lift, setup frequency, positive rate, optional net proxy, and rank-gate overlap summaries.
+  - Do not run exports, training, backtests, policy simulations, runtime code, registry writes, promotion, long runs, or profit-claim workflows.
+- Changed files:
+  - `app/training/m20_strategy_family_adjudication.py`
+  - `scripts/adjudicate_m20_strategy_families.py`
+  - `tests/test_training_m20_strategy_family_adjudication.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real command run:
+  - `python scripts/adjudicate_m20_strategy_families.py --base-run-dir artifacts/training/m20/20260505T212518Z`
+- Real output directory:
+  - `artifacts/training/m20/20260505T212518Z/research_labels/vol_scaled/strategy_family_adjudication`
+- Real output files:
+  - `manifest.json`
+  - `report.json`
+  - `report.md`
+  - `family_comparison.csv`
+  - `setup_comparison.csv`
+  - `rank_gate_overlap_summary.csv`
+  - `recommended_next_experiments.csv`
+  - `recommendation.json`
+- Result:
+  - Recommendation: `TEST_VOLATILITY_EXPANSION_NEXT`.
+  - Primary family: `volatility_expansion`, best setup `vol_plus_range_high`, min lift `1.602734`.
+  - Secondary family: `momentum_breakout`, best setup `realized_vol_high`, min lift `1.500163`.
+  - Watchlist family: `range_mean_reversion`, best setup `macd_near_zero`, min lift `1.186979`.
+- Honesty flags:
+  - `RESEARCH_ONLY_STRATEGY_FAMILY_ADJUDICATION`
+  - `EXISTING_ARTIFACTS_ONLY`
+  - `NOT_BACKTEST`
+  - `NOT_PNL`
+  - `NOT_RUNTIME_READY`
+  - `NOT_PROMOTABLE`
+  - `NO_RUNTIME_EFFECT`
+  - `NO_REGISTRY_WRITE`
+  - `NO_PROMOTION_EFFECT`
+  - `NO_PROFIT_CLAIM`
+- Blockers:
+  - Setup lift is not PnL or profitability evidence.
+  - No strategy-family model, runtime selector, backtest, registry artifact, promotion, trading behavior, or profit evidence exists.

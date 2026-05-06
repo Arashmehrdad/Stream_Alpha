@@ -1041,3 +1041,8 @@ Writes research_labels/vol_scaled/range_mean_reversion_research/. Research-only 
 M20 volatility_expansion research diagnostic:
 Command: python .\scripts\analyze_m20_volatility_expansion.py --base-run-dir .\artifacts\training\m20\20260505T212518Z
 Writes research_labels/vol_scaled/volatility_expansion_research/. The result keeps volatility-expansion as a research diagnostic candidate, with the strongest stable setup `vol_plus_range_high` at minimum lift `1.602734` across the original/prior/prev-prev windows. This is fee-label/setup diagnostics only: no runtime, registry, promotion, trading/backtest, model-retrain, long-run, PnL, or profit-claim behavior is added.
+
+<!-- M20_STRATEGY_FAMILY_ADJUDICATION -->
+M20 strategy-family adjudication packet:
+Command: python .\scripts\adjudicate_m20_strategy_families.py --base-run-dir .\artifacts\training\m20\20260505T212518Z
+Writes research_labels/vol_scaled/strategy_family_adjudication/. Current recommendation is `TEST_VOLATILITY_EXPANSION_NEXT`: `volatility_expansion` is primary, `momentum_breakout` is secondary, and `range_mean_reversion` stays watchlist. This uses existing artifacts only and remains research-only: no runtime, registry, promotion, trading/backtest, model-retrain, long-run, PnL, or profit-claim behavior is added.
