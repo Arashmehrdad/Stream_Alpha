@@ -79,6 +79,7 @@ class TrainingConfig:  # pylint: disable=too-many-instance-attributes
     models: dict[str, dict[str, Any]]
     recent_scoring_window_days: int | None = None
     max_drawdown_tolerance: float | None = None
+    export_training_frame: bool = False
 
     @property
     def round_trip_fee_rate(self) -> float:
@@ -114,6 +115,7 @@ class TrainingConfig:  # pylint: disable=too-many-instance-attributes
                 },
                 "recent_scoring_window_days": self.recent_scoring_window_days,
                 "max_drawdown_tolerance": self.max_drawdown_tolerance,
+                "export_training_frame": self.export_training_frame,
             }
         )
 
@@ -252,6 +254,7 @@ def load_training_config(config_path: Path) -> TrainingConfig:
             if config_data.get("max_drawdown_tolerance") is not None
             else None
         ),
+        export_training_frame=bool(config_data.get("export_training_frame", False)),
     )
 
 

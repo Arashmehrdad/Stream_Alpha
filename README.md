@@ -322,6 +322,194 @@ The status helper prints the latest artifact directory, execution mode, progress
 state, incumbent version, specialist verdicts, and any obvious blocker such as a
 missing `summary.json`.
 
+For research-only post-processing of a completed M20 run into simple BUY/HOLD
+threshold candidates on the saved winner-model OOF rows, use:
+
+* `python .\scripts\analyze_m20_policy_candidates.py --run-dir .\artifacts\training\m20\<run_id>`
+
+That helper defaults to the newest completed M20 artifact when `--run-dir` is
+omitted, sweeps global probability thresholds against the saved winner-model
+OOF predictions, compares each candidate against the simple `prob_up >= 0.50`
+baseline policy, and writes deterministic `policy_eval/` artifacts into the run
+directory:
+
+* `policy_candidates.csv`
+* `policy_report.json`
+* `policy_report.md`
+
+If regime labels are already present in `oof_predictions.csv`, the saved report
+also includes regime-conditional summaries. The report flags zero-trade or
+low-coverage candidates, fold concentration, and simple higher-cost/slippage
+scenarios so threshold "wins" are not mistaken for promotion evidence.
+
+The current completed score-only artifact
+`artifacts/training/m20/20260427T112021Z` can be post-processed by this helper,
+but the saved policy report remains non-promotable research truth: the tested
+threshold family takes zero trades on the winning PatchTST OOF rows.
+
+To diagnose that zero-trade result without changing thresholds, labels, runtime
+behavior, or promotion state, run:
+
+* `python .\scripts\diagnose_m20_oof_signal.py --run-dir .\artifacts\training\m20\<run_id>`
+
+The diagnostic writes `policy_eval/diagnostics/` artifacts showing the OOF
+filter funnel, score quantiles, threshold crossing counts, cost-scenario counts,
+label balance, and honesty flags. On `20260427T112021Z`, the PatchTST `prob_up`
+scores are tightly clustered around `0.398436`, so thresholds `0.50` through
+`0.90` have zero crossings before cost; lower diagnostic thresholds cross before
+cost but still have zero positive after-cost rows under the tested fee/slippage
+scenarios. That points the next recovery batch toward calibration/score mapping
+analysis or candidate rejection before any label-generation work.
+
+The recovery branch also includes research-only trading-aware label helpers for
+triple-barrier events, fee/slippage exceedance, incumbent meta-labels, and label
+diagnostics. They are offline utilities only and are not wired into runtime
+inference, registry promotion, or live/paper execution.
+
+To generate deterministic research label artifacts for a completed M20 run, use:
+
+* `python .\scripts\generate_m20_research_labels.py --run-dir .\artifacts\training\m20\<run_id>`
+
+For `20260427T112021Z`, this writes `research_labels/` artifacts for
+return-proxy triple-barrier labels, fee-exceedance labels, incumbent meta-labels,
+label diagnostics, and slice distributions. The real artifact lacks OHLC price
+path and volatility columns, so the batch uses the saved `future_return_3`
+column with a fixed-bps fallback and marks the labels `LABELS_NOT_TRAINING_READY`.
+This is a target-space diagnostic only; it does not train a model or make M20
+promotable.
+
+To gate those labels before any training batch, run:
+
+* `python .\scripts\analyze_m20_label_readiness.py --run-dir .\artifacts\training\m20\<run_id>`
+
+For `20260427T112021Z`, the readiness report marks triple-barrier and
+fee-exceedance targets as coarse research-ready, blocks meta-labeling because all
+meta-labels are zero and no default entry signal fires, and keeps the fixed-bps
+labels research-only. Tiny baselines are emitted only as feasibility diagnostics
+and are not comparable to the runtime incumbent.
+
+To audit volatility sources and, where possible, generate volatility-scaled
+research labels:
+
+* `python .\scripts\audit_m20_volatility_sources.py --run-dir .\artifacts\training\m20\<run_id>`
+* `python .\scripts\generate_m20_research_labels.py --run-dir .\artifacts\training\m20\<run_id> --use-volatility`
+
+For `20260427T112021Z`, volatility columns such as `realized_vol_12` are present
+in the saved feature manifests but not row-aligned in `oof_predictions.csv`, so
+the audit computes a past-looking research volatility proxy from ordered returns.
+Fixed-bps labels are retained for comparison. This remains research-only and
+does not train models or alter runtime behavior.
+
+To train only tiny research baseline diagnostics on the volatility-scaled
+triple-barrier labels, run:
+
+* `python .\scripts\train_m20_research_baseline.py --run-dir .\artifacts\training\m20\<run_id>`
+
+For `20260427T112021Z`, this writes `research_labels/vol_scaled/baselines/`
+artifacts. The best tiny diagnostic baseline is `logistic_regression_tiny`
+with balanced accuracy `0.372175`, above majority/random diagnostics but still
+low on positive and negative recall. The labels come from a no-lookahead
+research volatility proxy because manifest volatility columns are not
+row-aligned in OOF predictions. These baselines are not runtime-comparable, not
+promotable, and are not written to the registry.
+
+To audit available row-aligned research features for those labels, run:
+
+* `python .\scripts\build_m20_research_feature_matrix.py --run-dir .\artifacts\training\m20\<run_id>`
+
+For `20260427T112021Z`, the audit selects `oof_predictions.csv`, filters it to
+the winning PatchTST rows, confirms `symbol + interval_begin` alignment, and
+writes `research_labels/vol_scaled/feature_matrix/` artifacts. The emitted
+matrix matches all `236117` label rows, but only four safe OOF score/signal
+features survive leakage screening: `y_pred`, `prob_up`, `confidence`, and
+`long_trade_taken`. No stronger model training is performed by this batch.
+
+To attempt a market-feature training-frame export for a completed M20 run, use:
+
+* `python .\scripts\export_m20_training_frame_features.py --run-dir .\artifacts\training\m20\<run_id>`
+
+For `20260427T112021Z`, this writes a blocker under
+`research_labels/vol_scaled/training_frame_export/`: the manifests preserve the
+configured OHLC-derived feature names, but the completed artifact does not
+contain a row-level market feature frame with `symbol + interval_begin` keys.
+Only OOF score/policy outputs are row-aligned today. The blocker includes the
+required future export schema for the next M20 scoring/training run and does
+not train a model or change runtime behavior.
+
+Future M20 runs can opt in to preserving that row-level market-feature frame:
+
+* `python -m app.training --config .\configs\training.m20.json --export-training-frame`
+* `.\scripts\start_m20_training.ps1 -DryRun -ExportTrainingFrame`
+
+The hook writes `training_frame/` artifacts inside the active run directory and
+excludes score outputs, labels, future returns, barrier metadata, realized
+outcomes, and post-event columns. The flag is off by default.
+
+Evidence note: the first export-enabled score-only run
+`artifacts/training/m20/20260505T200658Z` completed model scoring too late for
+the hook to persist `training_frame/` before interruption/timeout. The next
+recovery patch should move the export earlier or add an export-only path before
+any market-feature baseline is trained.
+
+Follow-up evidence: export-only mode now writes the frame before model scoring.
+Run `artifacts/training/m20/20260505T212518Z` contains `training_frame/` with
+`236153` rows, fold `4`, and `22` configured OHLC-derived market features.
+Folds `0` through `3` are recorded as skipped by the recent-window filter, and
+model scoring was skipped.
+
+That export-only run can now generate research labels directly from
+`training_frame/`:
+
+* `python .\scripts\generate_m20_research_labels.py --run-dir .\artifacts\training\m20\20260505T212518Z --source training-frame --use-volatility`
+
+The generated `research_labels/vol_scaled/` artifacts use row-aligned
+`realized_vol_12` and `close_price`. Meta-labeling is not applicable for this
+export-only run because no OOF/default prediction signals exist. The readiness
+gate marks fee-exceedance labels ready by coarse class-balance checks and
+triple-barrier labels not ready because the neutral/HOLD rate remains high. No
+model training, runtime inference, registry authority, promotion, paper/live
+execution, thresholds, NeuralForecast behavior, or roster behavior changed.
+
+The next research-only batch trains tiny fee-exceedance baselines on those
+market features:
+
+* `python .\scripts\train_m20_fee_exceedance_baseline.py --run-dir .\artifacts\training\m20\20260505T212518Z`
+
+The current result is a feasibility diagnostic only: `logistic_regression_tiny`
+beats always-negative and fixed-seed random diagnostics on balanced accuracy and
+average precision, but it is not runtime-comparable, not promotable, not written
+to the registry, and not profitability evidence.
+
+Conditional usefulness analysis is available for the fee-exceedance baseline:
+
+* `python .\scripts\analyze_m20_conditional_usefulness.py --run-dir .\artifacts\training\m20\20260505T212518Z`
+
+The current report analyzes the available deterministic test prediction sample
+and classifies slices by symbol, time, volatility, momentum, RSI, MACD, volume,
+range, and simple regime-lite buckets. Slice findings are strategy-ensemble
+inputs only and require confirmation on another fold/window before any runtime
+use.
+
+Full-test confirmation is available after exporting full split predictions:
+
+* `python .\scripts\train_m20_fee_exceedance_baseline.py --run-dir .\artifacts\training\m20\20260505T212518Z --export-full-predictions`
+* `python .\scripts\analyze_m20_conditional_usefulness.py --run-dir .\artifacts\training\m20\20260505T212518Z --prediction-source full-test`
+
+The full-test report uses `47229` test rows and writes
+`research_labels/vol_scaled/conditional_usefulness_full_test/`. It remains
+research-only, single recent-fold only, not runtime-comparable, not promotable,
+and not profitability evidence.
+
+M20 also has a research-only model/member audit:
+
+* `python .\scripts\audit_m20_model_members.py --run-dir .\artifacts\training\m20\20260505T212518Z --previous-run-dir .\artifacts\training\m20\20260427T112021Z --fitted-models-dir .\artifacts\training\m20\20260405T023104Z\fitted_models`
+
+The audit treats AutoGluon as a model factory / ensemble manager rather than one
+indivisible model. In the inspected M20 paths, AutoGluon member metadata and
+member-level predictions were not present, so the ledger records a future export
+requirement instead of inventing member evidence. Existing weak candidates are
+retained for conditional review.
+
 ## Historical backfill and feature replay
 
 To import the full local Kraken downloadable OHLCVT CSV dataset into the real `raw_ohlc` table, replay the same live feature logic into `feature_ohlc`, and persist a training-readiness artifact, run:
@@ -805,3 +993,17 @@ That means:
 * GitHub Actions baseline validation now protects the accepted v2 branch, while local-first validation remains primary
 
 The honest current limitation is that the old sklearn models now remain legacy-only historical artifacts, while the authoritative path has only one real `autogluon_tabular` family and that proof is still negative after costs. M19/M21 should therefore be judged from the real persisted truth now generated at runtime rather than stronger profile, promotion, or specialist-model diversity that does not yet exist.
+
+M20 research now has a manual-only confirmation plan for the first full-test signal-positive fee-exceedance logistic baseline. The plan records the target slices, success rules, expected artifacts, and follow-up commands under `artifacts/training/m20/20260505T212518Z/research_labels/vol_scaled/confirmation_plan/`, while explicitly keeping the evidence single-recent-fold only, not runtime-comparable, not promotable, and not profitability evidence. AutoGluon member analysis remains blocked until member-level metadata or predictions are exported.
+
+The M20 training CLI also supports a safe manual-only confirmation window override for future score-only/export-only research runs: `--confirmation-window-start`, `--confirmation-window-end`, and `--confirmation-tag`. The override is off by default, validates timestamps and tag safety, records metadata when used, and still requires Arash to launch any long confirmation run manually.
+
+The first manual confirmation artifact, `artifacts/training/m20/20260506T054337Z`, has now been processed through the short research pipeline. Its prior-year fee-exceedance baseline confirmed the original strongest slices (`momentum=flat`, `range=low`, `symbol=BTC/USD`, `macd=positive`, `volume=low`) as strongly confirmed research signals, while the April 2026 disable slices were outside the confirmation window and remain untested coverage gaps. This supports continuing research-only strategy-selector design, but it still does not create runtime, registry, promotion, live/paper, threshold, NeuralForecast, roster, or profitability evidence.
+
+That evidence now feeds a research-only selector design artifact, `fee_exceedance_gate_v0_research`, under `artifacts/training/m20/20260505T212518Z/research_labels/vol_scaled/strategy_selector_design/`. It is an opportunity-gate design for future simulations only, not runtime selector logic, not promotable, not registry-backed, and not a trading or profitability claim. PatchTST/NHITS remain conditionally unknown, and AutoGluon member predictions remain missing.
+
+The first selector simulation is also research-negative for the broad selector rules: global logistic top-5% ranking stayed much sharper, while the weighted confirmed-slice selector admitted nearly all rows and fell back to base-rate precision. The fee-exceedance score remains useful as a ranker, but the selector needs narrower held-out tuning or another confirmation-window simulation before any strategy-family design work.
+
+A rank-gated selector evaluation now compares global top-k fee-exceedance ranking with condition-then-rank policies at 1%, 2%, 5%, and 10% coverage under `artifacts/training/m20/20260505T212518Z/research_labels/vol_scaled/rank_gated_selector/`. This remains research-only and does not implement runtime selector behavior. The strongest stable result still comes from rank gating around the logistic score; it is not a backtest, not promotable, not registry-backed, and not profitability evidence.
+
+Nested held-out rank-gate tuning now selects rank-gate parameters on validation only and evaluates locked parameters on original test plus the prior-year confirmation run. The selected research policy is `CONDITION_THEN_TOP_0.25`, with original test lift `1.841966` and confirmation lift `2.185905`. This is still research-only, not runtime, not a backtest, not promotable, and not a profit claim.

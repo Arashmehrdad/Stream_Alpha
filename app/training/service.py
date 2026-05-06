@@ -1,5 +1,9 @@
 """Offline training orchestration for Stream Alpha M3."""
 
+# pylint: disable=too-many-lines,too-many-instance-attributes,missing-function-docstring
+# pylint: disable=too-many-locals,disallowed-name,too-many-arguments
+# pylint: disable=unused-argument,cell-var-from-loop,too-many-return-statements
+
 from __future__ import annotations
 
 import csv
@@ -33,6 +37,12 @@ from app.regime.service import (
 )
 from app.training.baselines import PersistenceBaseline, build_dummy_classifier
 from app.training.autogluon import build_autogluon_tabular_classifier
+from app.training.confirmation_window import (
+    ConfirmationWindowOverride,
+    build_confirmation_window_override,
+    confirmation_window_validation,
+    filter_rows_for_confirmation_window,
+)
 from app.training.data_readiness import assert_training_data_ready
 from app.training.dataset import (
     DatasetSample,
@@ -45,6 +55,11 @@ from app.training.dataset import (
 from app.training.incumbent_scoring import (
     load_incumbent_model as _load_incumbent_model,
     score_incumbent_on_recent_samples as _score_incumbent_on_recent_samples_impl,
+)
+from app.training.m20_training_frame_export_hook import (
+    export_m20_training_frame_fold,
+    finalize_m20_training_frame_export,
+    maybe_export_m20_training_frame,
 )
 from app.training.neuralforecast import (
     build_neuralforecast_nhits_classifier,
@@ -129,16 +144,36 @@ class _ScoreOnlyRecentFoldSelection:
     skipped_fold_indices: tuple[int, ...]
     eligible_rows: int
     total_test_rows: int
+    window_start: Any | None = None
+    window_end: Any | None = None
+    confirmation_tag: str | None = None
+    confirmation_override_enabled: bool = False
+    confirmation_validation: dict[str, Any] | None = None
 
     def to_metadata(self) -> dict[str, Any]:
         """Return JSON-safe metadata for score-only artifact auditability."""
-        return {
+        metadata = {
             "window_days": self.window_days,
             "cutoff": to_rfc3339(self.cutoff),
             "eligible_rows": self.eligible_rows,
             "total_test_rows": self.total_test_rows,
             "skipped_fold_indices": list(self.skipped_fold_indices),
         }
+        if self.confirmation_override_enabled:
+            metadata.update(
+                {
+                    "confirmation_override_enabled": True,
+                    "confirmation_window_start": (
+                        to_rfc3339(self.window_start) if self.window_start else None
+                    ),
+                    "confirmation_window_end": (
+                        to_rfc3339(self.window_end) if self.window_end else None
+                    ),
+                    "confirmation_tag": self.confirmation_tag,
+                    "confirmation_validation": self.confirmation_validation or {},
+                }
+            )
+        return metadata
 
 
 @dataclass(frozen=True, slots=True)
@@ -437,6 +472,11 @@ def run_training(
     parquet_dir: Path | None = None,
     fit_only: bool = False,
     score_only_dir: Path | None = None,
+    export_training_frame: bool | None = None,
+    export_training_frame_only: bool = False,
+    confirmation_window_start: str | None = None,
+    confirmation_window_end: str | None = None,
+    confirmation_tag: str | None = None,
 ) -> Path:
     """Run the full offline M3 training flow and save artifacts to disk.
 
@@ -454,6 +494,18 @@ def run_training(
     directory and run scoring only (skip fitting).
     """
     config = load_training_config(config_path)
+    confirmation_override = build_confirmation_window_override(
+        start=confirmation_window_start,
+        end=confirmation_window_end,
+        tag=confirmation_tag,
+    )
+    export_training_frame_enabled = (
+        config.export_training_frame
+        if export_training_frame is None
+        else bool(export_training_frame)
+    )
+    if export_training_frame_only:
+        export_training_frame_enabled = True
     _validate_authoritative_model_stack(config)
     if parquet_dir is not None:
         print(f"[training] loading dataset from parquet: {parquet_dir}")
@@ -482,19 +534,41 @@ def run_training(
         purge_gap_candles=config.purge_gap_candles,
     )
     score_only_recent_selection = None
-    if score_only_dir is not None and config.recent_scoring_window_days is not None:
-        score_only_recent_selection = _prepare_score_only_recent_fold_selection(
-            dataset.samples,
-            folds,
-            window_days=config.recent_scoring_window_days,
-        )
+    if score_only_dir is not None and (
+        config.recent_scoring_window_days is not None
+        or confirmation_override is not None
+    ):
+        if confirmation_override is not None:
+            score_only_recent_selection = _prepare_score_only_confirmation_fold_selection(
+                dataset.samples,
+                folds,
+                override=confirmation_override,
+                default_window_days=config.recent_scoring_window_days,
+                expected_symbols=config.symbols,
+            )
+        else:
+            score_only_recent_selection = _prepare_score_only_recent_fold_selection(
+                dataset.samples,
+                folds,
+                window_days=config.recent_scoring_window_days,
+            )
         meta = score_only_recent_selection.to_metadata()
-        print(
-            "[training] score-only recent window: "
-            f"{meta['eligible_rows']}/{meta['total_test_rows']} fold test rows "
-            f"at or after {meta['cutoff']}; "
-            f"skipping {len(meta['skipped_fold_indices'])} old folds"
-        )
+        if confirmation_override is not None:
+            print(
+                "[training] confirmation score-only window: "
+                f"{meta['eligible_rows']}/{meta['total_test_rows']} fold test rows "
+                f"from {meta['confirmation_window_start']} "
+                f"to {meta['confirmation_window_end']}; "
+                f"tag={meta['confirmation_tag']}; "
+                f"skipping {len(meta['skipped_fold_indices'])} folds"
+            )
+        else:
+            print(
+                "[training] score-only recent window: "
+                f"{meta['eligible_rows']}/{meta['total_test_rows']} fold test rows "
+                f"at or after {meta['cutoff']}; "
+                f"skipping {len(meta['skipped_fold_indices'])} old folds"
+            )
 
     # --- resume vs. fresh run ---
     completed_fold_indices: list[int] = []
@@ -548,6 +622,13 @@ def run_training(
             if score_only_recent_selection is not None
             else {}
         ),
+        "export_training_frame": export_training_frame_enabled,
+        "export_training_frame_only": bool(export_training_frame_only),
+        "confirmation_window_override": (
+            confirmation_override.to_metadata()
+            if confirmation_override is not None
+            else {"override_enabled": False}
+        ),
     }
     _write_json(artifact_dir / "run_config.json", run_config_payload)
     _write_json(
@@ -586,6 +667,16 @@ def run_training(
             message="score-only evaluation limited to recent fold test rows",
             **score_only_recent_selection.to_metadata(),
         )
+    training_frame_export_rows: list[dict[str, Any]] = []
+    training_frame_skipped_folds: list[dict[str, Any]] = []
+    confirmation_window_metadata = (
+        score_only_recent_selection.confirmation_validation
+        if (
+            score_only_recent_selection is not None
+            and score_only_recent_selection.confirmation_override_enabled
+        )
+        else {"override_enabled": False}
+    )
 
     # --- pause flag: Ctrl+C sets this, loop checks between folds ---
     pause_requested = False
@@ -699,6 +790,14 @@ def run_training(
                     [],
                 )
                 if not test_samples:
+                    if export_training_frame_enabled:
+                        training_frame_skipped_folds.append(
+                            {
+                                "fold_index": fold.fold_index,
+                                "reason": "outside_recent_score_only_window",
+                                "original_test_rows": original_test_rows,
+                            }
+                        )
                     completed_fold_indices.append(fold.fold_index)
                     console_progress.completed_units += len(model_factories)
                     progress_recorder.record(
@@ -725,6 +824,45 @@ def run_training(
                 horizon_candles=config.label_horizon_candles,
                 frequency_minutes=dataset.frequency_minutes,
             )
+            if export_training_frame_enabled:
+                fold_export_rows = _training_frame_export_rows_for_samples(
+                    test_samples,
+                    fold_index=fold.fold_index,
+                    feature_columns=dataset.feature_columns,
+                )
+                training_frame_export_rows.extend(fold_export_rows)
+                export_m20_training_frame_fold(
+                    run_dir=artifact_dir,
+                    fold_index=fold.fold_index,
+                    rows=fold_export_rows,
+                    feature_columns=dataset.feature_columns,
+                    config_path=config_path,
+                    score_only_source_path=score_only_dir,
+                    parquet_dir=parquet_dir,
+                    export_mode=(
+                        "export_only" if export_training_frame_only
+                        else "early_score_only" if score_only_dir is not None
+                        else "full_pipeline"
+                    ),
+                    skipped_folds=training_frame_skipped_folds,
+                    confirmation_window=confirmation_window_metadata,
+                )
+                progress_recorder.record(
+                    stage="training_frame_export",
+                    message="research-only fold training-frame export written before scoring",
+                    fold_index=fold.fold_index + 1,
+                    row_count=len(fold_export_rows),
+                    export_dir=str(artifact_dir / "training_frame"),
+                )
+                if export_training_frame_only:
+                    completed_fold_indices.append(fold.fold_index)
+                    _save_fold_checkpoint(
+                        artifact_dir,
+                        fold_metric_rows=fold_metric_rows,
+                        all_prediction_rows=all_prediction_rows,
+                        completed_fold_indices=completed_fold_indices,
+                    )
+                    continue
             print(
                 f"\n[training] fold "
                 f"{fold.fold_index + 1}/{len(folds)}: "
@@ -825,8 +963,41 @@ def run_training(
                 completed_fold_indices=completed_fold_indices,
             )
 
+        if export_training_frame_only:
+            _finalize_m20_training_frame_export(
+                artifact_dir=artifact_dir,
+                feature_columns=dataset.feature_columns,
+                config_path=config_path,
+                score_only_dir=score_only_dir,
+                parquet_dir=parquet_dir,
+                skipped_folds=training_frame_skipped_folds,
+                export_mode="export_only",
+                complete=True,
+                progress_recorder=progress_recorder,
+                confirmation_window=confirmation_window_metadata,
+            )
+            progress_recorder.record(
+                stage="complete",
+                message="export-only training-frame export completed",
+                state="completed",
+                export_dir=str(artifact_dir / "training_frame"),
+            )
+            print(
+                "\n[training] export-only complete. Training frame at:\n"
+                f"  {artifact_dir / 'training_frame'}"
+            )
+            return artifact_dir
+
         # ---- fit-only: do full-fit, save, and return early ----
         if fit_only:
+            _write_m20_training_frame_export_if_requested(
+                enabled=export_training_frame_enabled,
+                artifact_dir=artifact_dir,
+                rows=training_frame_export_rows,
+                feature_columns=dataset.feature_columns,
+                config_path=config_path,
+                progress_recorder=progress_recorder,
+            )
             print("[training] fit-only: fitting full-dataset models for later scoring")
             _fit_only_full_dataset(
                 model_factories=model_factories,
@@ -862,6 +1033,21 @@ def run_training(
             )
             return artifact_dir
 
+        if export_training_frame_enabled:
+            _finalize_m20_training_frame_export(
+                artifact_dir=artifact_dir,
+                feature_columns=dataset.feature_columns,
+                config_path=config_path,
+                score_only_dir=score_only_dir,
+                parquet_dir=parquet_dir,
+                skipped_folds=training_frame_skipped_folds,
+                export_mode=(
+                    "early_score_only" if score_only_dir is not None else "full_pipeline"
+                ),
+                complete=True,
+                progress_recorder=progress_recorder,
+                confirmation_window=confirmation_window_metadata,
+            )
         _write_csv(artifact_dir / "fold_metrics.csv", fold_metric_rows)
         _write_csv(
             artifact_dir / "oof_predictions.csv",
@@ -1233,6 +1419,59 @@ def _prepare_score_only_recent_fold_selection(
     )
 
 
+def _prepare_score_only_confirmation_fold_selection(
+    samples: tuple[DatasetSample, ...],
+    folds: tuple[WalkForwardFold, ...],
+    *,
+    override: ConfirmationWindowOverride,
+    default_window_days: int | None,
+    expected_symbols: tuple[str, ...],
+) -> _ScoreOnlyRecentFoldSelection:
+    """Return score-only test rows inside an explicit confirmation window."""
+    if not samples:
+        raise ValueError("Score-only confirmation-window scoring requires dataset samples")
+    test_samples_by_fold: dict[int, list[DatasetSample]] = {}
+    skipped_fold_indices: list[int] = []
+    eligible_rows = 0
+    total_test_rows = 0
+    selected_rows: list[DatasetSample] = []
+    for fold in folds:
+        _, test_samples = _partition_samples(samples, fold)
+        total_test_rows += len(test_samples)
+        try:
+            fold_rows = filter_rows_for_confirmation_window(test_samples, override)
+        except ValueError as error:
+            if str(error) != "CONFIRMATION_WINDOW_EMPTY":
+                raise
+            fold_rows = []
+        if fold_rows:
+            test_samples_by_fold[fold.fold_index] = fold_rows
+            eligible_rows += len(fold_rows)
+            selected_rows.extend(fold_rows)
+        else:
+            skipped_fold_indices.append(fold.fold_index)
+    if eligible_rows == 0:
+        raise ValueError("CONFIRMATION_WINDOW_EMPTY")
+    validation = confirmation_window_validation(
+        selected_rows=selected_rows,
+        all_symbols=expected_symbols,
+        override=override,
+    )
+    return _ScoreOnlyRecentFoldSelection(
+        cutoff=override.start,
+        window_days=default_window_days or 0,
+        test_samples_by_fold=test_samples_by_fold,
+        skipped_fold_indices=tuple(skipped_fold_indices),
+        eligible_rows=eligible_rows,
+        total_test_rows=total_test_rows,
+        window_start=override.start,
+        window_end=override.end,
+        confirmation_tag=override.tag,
+        confirmation_override_enabled=True,
+        confirmation_validation=validation,
+    )
+
+
 def _partition_source_rows(
     source_rows: tuple[SourceFeatureRow, ...],
     *,
@@ -1259,6 +1498,89 @@ def _partition_source_rows(
     if not evaluation_source_rows:
         raise ValueError(f"Fold {fold.fold_index} has no sequence evaluation source rows")
     return train_source_rows, evaluation_source_rows
+
+
+def _training_frame_export_rows_for_samples(
+    samples: list[DatasetSample],
+    *,
+    fold_index: int,
+    feature_columns: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    rows = []
+    for sample in samples:
+        row = {
+            "symbol": sample.symbol,
+            "interval_begin": to_rfc3339(sample.interval_begin),
+            "fold_index": fold_index,
+            "row_id": sample.row_id,
+        }
+        for column in feature_columns:
+            if column == "symbol":
+                continue
+            row[column] = sample.features.get(column)
+        rows.append(row)
+    return rows
+
+
+def _write_m20_training_frame_export_if_requested(
+    *,
+    enabled: bool,
+    artifact_dir: Path,
+    rows: list[dict[str, Any]],
+    feature_columns: tuple[str, ...],
+    config_path: Path,
+    progress_recorder: _TrainingProgressRecorder,
+) -> None:
+    report = maybe_export_m20_training_frame(
+        enabled=enabled,
+        run_dir=artifact_dir,
+        rows=rows,
+        feature_columns=feature_columns,
+        config_path=config_path,
+    )
+    if report is None:
+        return
+    progress_recorder.record(
+        stage="training_frame_export",
+        message="research-only training-frame export written",
+        row_count=report["report"]["row_count"],
+        feature_count=report["report"]["feature_count"],
+        export_dir=str(artifact_dir / "training_frame"),
+    )
+
+
+def _finalize_m20_training_frame_export(
+    *,
+    artifact_dir: Path,
+    feature_columns: tuple[str, ...],
+    config_path: Path,
+    score_only_dir: Path | None,
+    parquet_dir: Path | None,
+    skipped_folds: list[dict[str, Any]],
+    export_mode: str,
+    complete: bool,
+    progress_recorder: _TrainingProgressRecorder,
+    confirmation_window: dict[str, Any] | None = None,
+) -> None:
+    report = finalize_m20_training_frame_export(
+        run_dir=artifact_dir,
+        feature_columns=feature_columns,
+        config_path=config_path,
+        score_only_source_path=score_only_dir,
+        parquet_dir=parquet_dir,
+        export_mode=export_mode,
+        skipped_folds=skipped_folds,
+        complete=complete,
+        confirmation_window=confirmation_window,
+    )
+    progress_recorder.record(
+        stage="training_frame_export",
+        message="research-only training-frame export finalized",
+        row_count=report["report"]["row_count"],
+        feature_count=report["report"]["feature_count"],
+        export_complete=report["report"]["export_complete"],
+        export_dir=str(artifact_dir / "training_frame"),
+    )
 
 
 # pylint: disable=too-many-arguments

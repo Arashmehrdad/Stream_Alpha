@@ -41,6 +41,36 @@ def main() -> None:
         metavar="FITTED_MODELS_DIR",
         help="Score only (CPU phase) — load pre-fitted models from this directory",
     )
+    parser.add_argument(
+        "--export-training-frame",
+        action="store_true",
+        default=False,
+        help="Research-only: export row-level market feature frame into the run artifact",
+    )
+    parser.add_argument(
+        "--export-training-frame-only",
+        action="store_true",
+        default=False,
+        help=(
+            "Research-only: export row-level market feature frame and exit "
+            "before model scoring"
+        ),
+    )
+    parser.add_argument(
+        "--confirmation-window-start",
+        default=None,
+        help="Research-only confirmation window start timestamp, e.g. 2024-04-02T11:30:00Z",
+    )
+    parser.add_argument(
+        "--confirmation-window-end",
+        default=None,
+        help="Research-only confirmation window end timestamp, e.g. 2025-04-02T11:30:00Z",
+    )
+    parser.add_argument(
+        "--confirmation-tag",
+        default=None,
+        help="Safe reporting-only tag for a manual confirmation run",
+    )
     arguments = parser.parse_args()
     try:
         resume_dir = Path(arguments.resume) if arguments.resume else None
@@ -52,6 +82,15 @@ def main() -> None:
             parquet_dir=parquet_dir,
             fit_only=arguments.fit_only,
             score_only_dir=score_only_dir,
+            export_training_frame=(
+                arguments.export_training_frame
+                or arguments.export_training_frame_only
+                or None
+            ),
+            export_training_frame_only=arguments.export_training_frame_only,
+            confirmation_window_start=arguments.confirmation_window_start,
+            confirmation_window_end=arguments.confirmation_window_end,
+            confirmation_tag=arguments.confirmation_tag,
         )
     except ValueError as error:
         raise SystemExit(str(error)) from error

@@ -1,6 +1,11 @@
 param(
     [string]$ConfigPath = ".\configs\training.m20.json",
     [switch]$RequireGpu,
+    [switch]$ExportTrainingFrame,
+    [switch]$ExportTrainingFrameOnly,
+    [string]$ConfirmationWindowStart,
+    [string]$ConfirmationWindowEnd,
+    [string]$ConfirmationTag,
     [switch]$DryRun
 )
 
@@ -37,7 +42,23 @@ function Import-StreamAlphaEnvFile {
 Import-StreamAlphaEnvFile ".env"
 
 $config = Get-Content -Path $resolvedConfigPath -Raw | ConvertFrom-Json
-$trainingCommand = @("python", "-m", "app.training", "--config", $resolvedConfigPath)
+$trainingArgs = @("-m", "app.training", "--config", $resolvedConfigPath)
+if ($ExportTrainingFrame) {
+    $trainingArgs += "--export-training-frame"
+}
+if ($ExportTrainingFrameOnly) {
+    $trainingArgs += "--export-training-frame-only"
+}
+if (-not [string]::IsNullOrWhiteSpace($ConfirmationWindowStart)) {
+    $trainingArgs += @("--confirmation-window-start", $ConfirmationWindowStart)
+}
+if (-not [string]::IsNullOrWhiteSpace($ConfirmationWindowEnd)) {
+    $trainingArgs += @("--confirmation-window-end", $ConfirmationWindowEnd)
+}
+if (-not [string]::IsNullOrWhiteSpace($ConfirmationTag)) {
+    $trainingArgs += @("--confirmation-tag", $ConfirmationTag)
+}
+$trainingCommand = @("python") + $trainingArgs
 $trainingCommandText = $trainingCommand -join " "
 $modelNames = @($config.models.PSObject.Properties.Name)
 $modelLabels = $modelNames -join ", "
@@ -90,6 +111,15 @@ if ($DryRun) {
     Write-Host "specialist dataset mode: $datasetModesLabel"
     Write-Host "specialist memory profile: $memoryProfilesLabel"
     Write-Host "allocator hint: $allocatorHint"
+    Write-Host "export training frame: $($ExportTrainingFrame.IsPresent)"
+    Write-Host "export training frame only: $($ExportTrainingFrameOnly.IsPresent)"
+    Write-Host "confirmation run: manual-only"
+    Write-Host "confirmation window start: $ConfirmationWindowStart"
+    Write-Host "confirmation window end: $ConfirmationWindowEnd"
+    Write-Host "confirmation tag: $ConfirmationTag"
+    if ($ExportTrainingFrameOnly) {
+        Write-Host "model scoring: skipped by export-only mode"
+    }
     Write-Host "progress output: terminal bars disabled by config; see progress.log and progress_status.json inside the new artifact run directory"
     if ($RequireGpu) {
         Write-Host "gpu required: yes"
@@ -136,13 +166,18 @@ Write-Host "models: $modelLabels"
 Write-Host "specialist dataset mode: $datasetModesLabel"
 Write-Host "specialist memory profile: $memoryProfilesLabel"
 Write-Host "allocator hint: $allocatorHint"
+Write-Host "export training frame: $($ExportTrainingFrame.IsPresent)"
+Write-Host "export training frame only: $($ExportTrainingFrameOnly.IsPresent)"
+if ($ExportTrainingFrameOnly) {
+    Write-Host "model scoring: skipped by export-only mode"
+}
 Write-Host "progress output: terminal bars disabled by config; see progress.log and progress_status.json inside the new artifact run directory"
 Write-Host ""
 
 $previousUseErrorActionPreference = $PSNativeCommandUseErrorActionPreference
 $PSNativeCommandUseErrorActionPreference = $false
 try {
-    & python -m app.training --config $resolvedConfigPath
+    & python @trainingArgs
     $trainingExitCode = $LASTEXITCODE
 } finally {
     $PSNativeCommandUseErrorActionPreference = $previousUseErrorActionPreference
