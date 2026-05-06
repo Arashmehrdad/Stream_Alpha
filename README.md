@@ -1056,3 +1056,8 @@ Writes research_labels/vol_scaled/volatility_expansion_deep_dive/. Current recom
 M20 volatility combo economics diagnostic:
 Command: python .\scripts\analyze_m20_volatility_combo_economics.py --base-run-dir .\artifacts\training\m20\20260505T212518Z
 Writes research_labels/vol_scaled/volatility_combo_economics/. Current recommendation is `TRY_VOLATILITY_AS_OPTIONAL_GATE_FILTER`: gate-and-volatility is equivalent to the paused locked rank gate, while volatility-only setups preserve label lift but show negative average net proxy across all three windows. This remains research-only and not runtime, registry, promotion, trading/backtest, PnL, or profit evidence.
+
+<!-- M20_ABSTENTION_HOLD_RESEARCH -->
+M20 abstention/HOLD research diagnostic:
+Command: python .\scripts\analyze_m20_abstention_hold.py --base-run-dir .\artifacts\training\m20\20260505T212518Z
+Writes research_labels/vol_scaled/abstention_hold_research/. Current recommendation is `KEEP_ABSTENTION_AS_RESEARCH_FILTER`: `HOLD_BROAD_UNSTABLE_VOLATILITY` is watchlist only, while the strongest avoided-loss rules use after-the-fact net-proxy oracle information and are not implementable. This remains research-only and not runtime HOLD logic, registry, promotion, trading/backtest, PnL, or profit evidence.

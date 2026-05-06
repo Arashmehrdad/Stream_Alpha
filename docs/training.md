@@ -845,3 +845,12 @@ Current recommendation: TRY_VOLATILITY_AS_OPTIONAL_GATE_FILTER.
 Gate-and-volatility variants are equivalent to the paused locked rank gate: min lift 1.841966, average net proxy -0.003195, and two negative-net windows.
 Volatility-only setups preserve label lift, but all volatility-only policies have negative average net proxy across the three existing windows, so they are not an escalation path by themselves.
 Existing artifacts only. Diagnostic-only. No runtime, registry, promotion, paper/live execution, trading/backtest, model-retrain, long-run, PnL, or profitability status change.
+
+<!-- M20_ABSTENTION_HOLD_RESEARCH -->
+## Research-Only M20 Abstention/HOLD Diagnostic
+Command: python .\scripts\analyze_m20_abstention_hold.py --base-run-dir .\artifacts\training\m20\20260505T212518Z
+Outputs: manifest.json, report.json, report.md, hold_rule_metrics.csv, by_run.csv, by_symbol.csv, by_time.csv, avoided_loss_proxy.csv, missed_positive_proxy.csv, recommendation.json.
+Current recommendation: KEEP_ABSTENTION_AS_RESEARCH_FILTER.
+Watchlist prediction-time rule: HOLD_BROAD_UNSTABLE_VOLATILITY. It skipped 36 selected rows in the original window, avoided 0.115118 negative net proxy, missed 4 positives, and did not fire in the prior-year or prev-prev-year selected rows.
+Oracle-only diagnostics HOLD_SELECTED_NEGATIVE_NET_PROXY and HOLD_SELECTED_BELOW_MEDIAN_NET_PROXY produce clean-looking avoided-loss results, but they use after-the-fact net proxy and are not implementable as runtime rules.
+Existing artifacts only. Diagnostic-only. No runtime HOLD logic, registry, promotion, paper/live execution, trading/backtest, model-retrain, long-run, PnL, or profitability status change.

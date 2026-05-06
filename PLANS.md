@@ -5226,3 +5226,55 @@ against naive baselines.
   - Volatility does not fix the paused rank gate's mixed net proxy.
   - Volatility-only label lift is not PnL or profitability evidence.
   - No strategy-family model, runtime selector, backtest, registry artifact, promotion, trading behavior, or profit evidence exists.
+
+<!-- M20_ABSTENTION_HOLD_RESEARCH -->
+### M20 abstention/HOLD research diagnostic
+
+- Scope:
+  - Add research-only abstention/HOLD diagnostics for weak, unstable, or fake-alpha-prone conditions.
+  - Use existing original/prior/prev-prev artifacts only.
+  - Evaluate low probability, no confirmed conditions, disable-gap exposure, broad unstable volatility, selected negative net proxy, and selected below-median net proxy HOLD rules.
+  - Compute skipped rows, skip coverage, selected rows before/after HOLD, false positives avoided, positives missed, avoided negative net proxy, remaining lift, remaining net proxy, and symbol/time slices.
+  - Do not run exports, training, backtests, policy simulations, runtime code, registry writes, promotion, long runs, or profit-claim workflows.
+- Changed files:
+  - `app/training/m20_abstention_hold_research.py`
+  - `scripts/analyze_m20_abstention_hold.py`
+  - `tests/test_training_m20_abstention_hold_research.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real command run:
+  - `python scripts/analyze_m20_abstention_hold.py --base-run-dir artifacts/training/m20/20260505T212518Z`
+- Real output directory:
+  - `artifacts/training/m20/20260505T212518Z/research_labels/vol_scaled/abstention_hold_research`
+- Real output files:
+  - `manifest.json`
+  - `report.json`
+  - `report.md`
+  - `hold_rule_metrics.csv`
+  - `by_run.csv`
+  - `by_symbol.csv`
+  - `by_time.csv`
+  - `avoided_loss_proxy.csv`
+  - `missed_positive_proxy.csv`
+  - `recommendation.json`
+- Result:
+  - Recommendation: `KEEP_ABSTENTION_AS_RESEARCH_FILTER`.
+  - Watchlist prediction-time rule: `HOLD_BROAD_UNSTABLE_VOLATILITY`.
+  - In the original window, `HOLD_BROAD_UNSTABLE_VOLATILITY` skipped `36` selected rows, avoided `0.115118` negative net proxy, missed `4` positives, and left remaining net proxy `-0.068913`.
+  - The same watchlist rule did not fire in prior-year or prev-prev-year selected rows.
+  - Oracle-only diagnostics `HOLD_SELECTED_NEGATIVE_NET_PROXY` and `HOLD_SELECTED_BELOW_MEDIAN_NET_PROXY` show clean avoided-loss behavior but use after-the-fact net proxy and are not implementable as runtime rules.
+- Honesty flags:
+  - `RESEARCH_ONLY`
+  - `EXISTING_ARTIFACTS_ONLY`
+  - `ABSTENTION_DIAGNOSTIC_ONLY`
+  - `NOT_BACKTEST`
+  - `NOT_PNL`
+  - `NO_RUNTIME`
+  - `NO_REGISTRY`
+  - `NO_PROMOTION`
+  - `NO_PROFIT_CLAIM`
+- Blockers:
+  - `ORACLE_NET_PROXY_RULES_NOT_IMPLEMENTABLE`.
+  - Prediction-time abstention evidence is watchlist-only and not stable across windows.
+  - No runtime HOLD logic, strategy-family model, runtime selector, backtest, registry artifact, promotion, trading behavior, or profit evidence exists.
