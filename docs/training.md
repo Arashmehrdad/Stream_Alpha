@@ -619,3 +619,50 @@ Rank-gate evidence packet:
 The packet is documentation/research evidence only and does not authorize
 runtime selector behavior, registry writes, promotion, policy simulation,
 trading/backtest, model retraining, or profit claims.
+
+Rank-gate economics diagnostics:
+
+```powershell
+python .\scripts\simulate_m20_rank_gate_economics.py --base-run-dir .\artifacts\training\m20\20260505T212518Z
+```
+
+This writes `research_labels/vol_scaled/rank_gate_economics/` and compares
+`CONDITION_THEN_TOP_0.25` against `GLOBAL_TOP_0.25`, `GLOBAL_TOP_1`,
+`GLOBAL_TOP_5`, and `NO_GATE` using existing labels and predictions only.
+
+Locked gate economics proxy results:
+
+- Original locked test: selected `118`, coverage `0.002498`, precision
+  `0.347458`, lift `1.841966`, net value proxy `-0.180157`.
+- Prior-year confirmation: selected `156`, coverage `0.002496`, precision
+  `0.512821`, lift `2.185905`, net value proxy `0.189677`.
+- Prev-prev-year confirmation: selected `153`, coverage `0.002497`, precision
+  `0.522876`, lift `2.262976`, net value proxy `-0.019105`.
+
+The recommendation is `KEEP_RESEARCH_ONLY_RANK_GATE_ECONOMICS_CANDIDATE`.
+Because net proxies are mixed and derived from label artifacts, this remains
+`NOT_BACKTEST`, `NOT_PROFIT_EVIDENCE`, and `FORWARD_RETURN_PROXY_LIMITED`.
+
+Rank-gate net-proxy diagnostics:
+
+```powershell
+python .\scripts\diagnose_m20_rank_gate_net.py --base-run-dir .\artifacts\training\m20\20260505T212518Z
+```
+
+This writes `research_labels/vol_scaled/rank_gate_net_diagnostics/` and explains
+the mixed net-proxy signs for locked `CONDITION_THEN_TOP_0.25` using existing
+selected rows, fee labels, prediction rows, and training-frame features only.
+
+Locked gate net-proxy decomposition:
+
+- Original locked test: selected `118`, true positives `41`, false positives
+  `77`, precision `0.347458`, net value proxy `-0.180157`.
+- Prior-year confirmation: selected `156`, true positives `80`, false positives
+  `76`, precision `0.512821`, net value proxy `0.189677`.
+- Prev-prev-year confirmation: selected `153`, true positives `80`, false
+  positives `73`, precision `0.522876`, net value proxy `-0.019105`.
+
+The diagnostic records symbol, time, probability-bin, volatility, range, volume,
+MACD, momentum, top-negative, and top-positive selected-row tables. It is
+`RESEARCH_ONLY`, `NET_PROXY_MIXED`, `NOT_PNL`, `NO_RUNTIME`, `NO_REGISTRY`,
+`NO_PROMOTION`, `NO_PROFIT_CLAIM`, and `SPARSE_SELECTION`.

@@ -4620,3 +4620,100 @@ against naive baselines.
   - Disable gaps unconfirmed for general conditional analysis.
   - No profitability evidence.
   - Not runtime-ready.
+
+### M20 rank-gate economics diagnostics
+
+- Scope:
+  - Add research-only opportunity-filter economics diagnostics for locked `CONDITION_THEN_TOP_0.25`.
+  - Compare against `GLOBAL_TOP_0.25`, `GLOBAL_TOP_1`, `GLOBAL_TOP_5`, and `NO_GATE`.
+  - Use existing evidence packet, rank-gate outputs, fee labels, predictions, and training-frame features only.
+  - Do not run exports, long training, model retraining, policy simulation, trading/backtest, registry writes, promotion, or profit-claim workflows.
+- Changed files:
+  - `app/training/m20_rank_gate_economics.py`
+  - `scripts/simulate_m20_rank_gate_economics.py`
+  - `tests/test_training_m20_rank_gate_economics.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real command run:
+  - `python scripts/simulate_m20_rank_gate_economics.py --base-run-dir artifacts/training/m20/20260505T212518Z`
+- Real output directory:
+  - `artifacts/training/m20/20260505T212518Z/research_labels/vol_scaled/rank_gate_economics`
+- Real output files:
+  - `manifest.json`
+  - `report.json`
+  - `report.md`
+  - `policy_metrics.csv`
+  - `by_run.csv`
+  - `by_symbol.csv`
+  - `by_time.csv`
+  - `comparison.csv`
+  - `recommendation.json`
+- Locked gate results:
+  - Original locked test: selected `118`, coverage `0.002498`, precision `0.347458`, lift `1.841966`, net value proxy `-0.180157`, disable-gap exposure `0`.
+  - Prior-year confirmation: selected `156`, coverage `0.002496`, precision `0.512821`, lift `2.185905`, net value proxy `0.189677`, disable-gap exposure `0`.
+  - Prev-prev-year confirmation: selected `153`, coverage `0.002497`, precision `0.522876`, lift `2.262976`, net value proxy `-0.019105`, disable-gap exposure `0`.
+  - Recommendation: `KEEP_RESEARCH_ONLY_RANK_GATE_ECONOMICS_CANDIDATE`.
+- Honesty flags:
+  - `RESEARCH_ONLY`
+  - `NOT_BACKTEST`
+  - `NOT_PROFIT_EVIDENCE`
+  - `NO_RUNTIME`
+  - `NO_REGISTRY`
+  - `NO_PROMOTION`
+  - `SPARSE_COVERAGE`
+  - `FORWARD_RETURN_PROXY_LIMITED`
+- Blockers:
+  - Net return proxies are mixed across windows.
+  - Forward-return economics are label-artifact proxies, not trade/backtest PnL.
+  - Sparse 0.25% coverage remains.
+  - Not runtime-ready and not promotable.
+
+### M20 rank-gate net-proxy diagnostics
+
+- Scope:
+  - Add research-only net-proxy decomposition for locked `CONDITION_THEN_TOP_0.25`.
+  - Explain why the signal-positive rank gate has mixed net proxy signs across windows.
+  - Use existing rank-gate economics outputs, fee labels, predictions, and training-frame features only.
+  - Do not run exports, long training, model retraining, policy simulation, trading/backtest, registry writes, promotion, or profit-claim workflows.
+- Changed files:
+  - `app/training/m20_rank_gate_net_diagnostics.py`
+  - `scripts/diagnose_m20_rank_gate_net.py`
+  - `tests/test_training_m20_rank_gate_net_diagnostics.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real command run:
+  - `python scripts/diagnose_m20_rank_gate_net.py --base-run-dir artifacts/training/m20/20260505T212518Z`
+- Real output directory:
+  - `artifacts/training/m20/20260505T212518Z/research_labels/vol_scaled/rank_gate_net_diagnostics`
+- Real output files:
+  - `manifest.json`
+  - `report.json`
+  - `report.md`
+  - `by_run.csv`
+  - `by_symbol.csv`
+  - `by_time.csv`
+  - `by_feature_bucket.csv`
+  - `tail_events.csv`
+  - `selected_row_diagnostics.csv`
+  - `recommendation.json`
+- Locked gate net-proxy decomposition:
+  - Original locked test: selected `118`, true positives `41`, false positives `77`, precision `0.347458`, net value proxy `-0.180157`.
+  - Prior-year confirmation: selected `156`, true positives `80`, false positives `76`, precision `0.512821`, net value proxy `0.189677`.
+  - Prev-prev-year confirmation: selected `153`, true positives `80`, false positives `73`, precision `0.522876`, net value proxy `-0.019105`.
+  - Recommendation: `DIAGNOSE_TAIL_AND_CONDITION_CONCENTRATION_BEFORE_ANY_POLICY_STEP`.
+- Honesty flags:
+  - `RESEARCH_ONLY`
+  - `NET_PROXY_MIXED`
+  - `NOT_PNL`
+  - `NO_RUNTIME`
+  - `NO_REGISTRY`
+  - `NO_PROMOTION`
+  - `NO_PROFIT_CLAIM`
+  - `SPARSE_SELECTION`
+- Blockers:
+  - Net proxy is mixed across windows despite stable lift.
+  - Diagnostics are not PnL, not a backtest, and not profitability evidence.
+  - Sparse 0.25% selection remains.
+  - No runtime, registry, promotion, policy simulation, trading/backtest, model retrain, or profit-claim workflow is allowed.
