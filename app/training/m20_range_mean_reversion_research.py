@@ -238,10 +238,10 @@ def _overlap_row(
     setup_name: str,
     rows: Sequence[Mapping[str, Any]],
     predicate: Callable[[Mapping[str, Any]], bool],
-    rank_gate_keys: set[tuple[str, str, str]],
+    rank_gate_keys: set[tuple[str, str]],
 ) -> dict[str, Any]:
     setup_rows = [row for row in rows if predicate(row)]
-    overlap = [row for row in setup_rows if _key(row) in rank_gate_keys]
+    overlap = [row for row in setup_rows if _rank_gate_key(row) in rank_gate_keys]
     return {
         "run_label": run_label,
         "setup_name": setup_name,
@@ -313,7 +313,7 @@ def _recommendation(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _rank_gate_keys(base_dir: Path) -> set[tuple[str, str, str]]:
+def _rank_gate_keys(base_dir: Path) -> set[tuple[str, str]]:
     path = (
         base_dir
         / "research_labels"
@@ -321,7 +321,7 @@ def _rank_gate_keys(base_dir: Path) -> set[tuple[str, str, str]]:
         / "rank_gate_net_diagnostics"
         / "selected_row_diagnostics.csv"
     )
-    return {_key(row) for row in _read_csv(path)} if path.exists() else set()
+    return {_rank_gate_key(row) for row in _read_csv(path)} if path.exists() else set()
 
 
 def _output_files(output_dir: Path) -> dict[str, str]:
@@ -368,6 +368,13 @@ def _key(row: Mapping[str, Any]) -> tuple[str, str, str]:
         str(row.get("fold_index", "")),
     )
 
+
+
+def _rank_gate_key(row: Mapping[str, Any]) -> tuple[str, str]:
+    return (
+        str(row.get("symbol", "")),
+        str(row.get("interval_begin", "")),
+    )
 
 def _range_pct(row: Mapping[str, Any]) -> float:
     close = _float(row.get("close_price"))
