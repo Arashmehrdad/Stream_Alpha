@@ -719,3 +719,26 @@ Result:
 This is labeled `FILTER_SIM_ONLY`, `TAIL_RISK_FILTER_TEST`, `NOT_BACKTEST`,
 `NOT_PNL`, `NO_PROFIT_CLAIM`, and does not change runtime, registry,
 promotion, policy simulation, trading/backtest, or model-retrain behavior.
+
+M20 decision memo:
+
+```powershell
+python .\scripts\write_m20_decision_memo.py --base-run-dir .\artifacts\training\m20\20260505T212518Z
+```
+
+This writes `research_labels/vol_scaled/m20_decision_memo/` with a compact
+evidence table and next-fork list. Current adjudication:
+
+- Decision: `PAUSE_RANK_GATE_AS_STANDALONE_PATH`.
+- Statuses: `RESEARCH_SIGNAL_CONFIRMED`, `ECONOMICS_NOT_STABLE`,
+  `NO_STABLE_TAIL_FILTER`, `NOT_RUNTIME_READY`, `NOT_PROMOTABLE`.
+- Positive signal is not buried: fee-exceedance logistic ranking remains
+  confirmed as research signal.
+- Blocking fact: sparse rank-gate economics are unstable and no stable tail
+  filter was found.
+- Next forks: richer strategy-family modules using the gate as optional filter,
+  AutoGluon member prediction export, different horizon/label, or package M20
+  as infrastructure-positive but profitability-negative research.
+
+The memo is `RESEARCH_ONLY_DECISION_MEMO`, not a runtime change, registry write,
+promotion, backtest, model retrain, long run, or profit claim.

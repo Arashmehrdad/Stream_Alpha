@@ -4825,3 +4825,57 @@ against naive baselines.
   - This is an exploratory test-split sweep, not final held-out optimization.
   - Sparse selection remains.
   - No runtime, registry, promotion, policy simulation, trading/backtest, model retrain, or profit-claim workflow is allowed.
+
+### M20 decision memo / evidence adjudication
+
+- Scope:
+  - Create a final research-only adjudication memo for the M20 rank-gate path.
+  - Preserve the confirmed fee-exceedance logistic signal while deciding whether to continue, pivot, or stop the standalone rank-gate path.
+  - Use existing evidence packet, rank-gate economics, net diagnostics, tail analysis, tail filter, model/member audit, and selector-design outputs only.
+  - Do not run exports, long training, model retraining, policy simulation, trading/backtest, registry writes, promotion, or profit-claim workflows.
+- Changed files:
+  - `app/training/m20_decision_memo.py`
+  - `scripts/write_m20_decision_memo.py`
+  - `tests/test_training_m20_decision_memo.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real command run:
+  - `python scripts/write_m20_decision_memo.py --base-run-dir artifacts/training/m20/20260505T212518Z`
+- Real output directory:
+  - `artifacts/training/m20/20260505T212518Z/research_labels/vol_scaled/m20_decision_memo`
+- Real output files:
+  - `manifest.json`
+  - `decision_memo.md`
+  - `decision_memo.json`
+  - `evidence_table.csv`
+  - `next_forks.csv`
+- Decision:
+  - `PAUSE_RANK_GATE_AS_STANDALONE_PATH`.
+- Decision statuses:
+  - `RESEARCH_SIGNAL_CONFIRMED`
+  - `ECONOMICS_NOT_STABLE`
+  - `NO_STABLE_TAIL_FILTER`
+  - `NOT_RUNTIME_READY`
+  - `NOT_PROMOTABLE`
+- Adjudication:
+  - Fee-exceedance logistic ranking is confirmed as a research signal.
+  - Sparse rank-gate economics are not stable.
+  - No stable tail-risk filter was found.
+  - Do not bury the positive signal, but do not continue the standalone rank-gate path toward runtime.
+- Recommended forks:
+  - Pause rank-gate path.
+  - Try richer strategy-family modules using the gate as an optional filter.
+  - Export AutoGluon member predictions.
+  - Try a different horizon or label.
+  - Package M20 as research-negative for profitability but infrastructure-positive.
+- Honesty flags:
+  - `RESEARCH_ONLY_DECISION_MEMO`
+  - `NO_RUNTIME_EFFECT`
+  - `NO_REGISTRY_WRITE`
+  - `NO_PROMOTION_EFFECT`
+  - `NOT_BACKTEST`
+  - `NO_PROFIT_CLAIM`
+- Blockers:
+  - No runtime, registry, promotion, policy simulation, trading/backtest, model retrain, long-run, or profit-claim workflow is allowed.
+  - Current M20 rank-gate path is not runtime-ready and not promotable.
