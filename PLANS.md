@@ -4777,3 +4777,51 @@ against naive baselines.
   - Sparse 0.25% selection remains.
   - Tail/condition concentration must be reviewed before any future research policy or strategy step.
   - No runtime, registry, promotion, policy simulation, trading/backtest, model retrain, or profit-claim workflow is allowed.
+
+### M20 rank-gate tail-risk filter simulation
+
+- Scope:
+  - Add research-only tail-risk filter simulation for locked `CONDITION_THEN_TOP_0.25`.
+  - Test high-range/high-volatility exclusions, unstable concentration exclusions, negative symbol/time bucket exclusions, selected-row probability cutoffs, and simple combo filters.
+  - Label the sweep as exploratory test-split filtering, not final optimization.
+  - Do not run exports, long training, model retraining, policy simulation, trading/backtest, registry writes, promotion, or profit-claim workflows.
+- Changed files:
+  - `app/training/m20_rank_gate_tail_filter.py`
+  - `scripts/simulate_m20_rank_gate_tail_filter.py`
+  - `tests/test_training_m20_rank_gate_tail_filter.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real command run:
+  - `python scripts/simulate_m20_rank_gate_tail_filter.py --base-run-dir artifacts/training/m20/20260505T212518Z`
+- Real output directory:
+  - `artifacts/training/m20/20260505T212518Z/research_labels/vol_scaled/rank_gate_tail_filter`
+- Real output files:
+  - `manifest.json`
+  - `report.json`
+  - `report.md`
+  - `filter_metrics.csv`
+  - `stability.csv`
+  - `tail_comparison.csv`
+  - `recommendation.json`
+- Result:
+  - Filters evaluated: `10`.
+  - Recommendation: `NO_STABLE_TAIL_FILTER_FOUND`.
+  - Strict high-volatility and negative symbol/time bucket exclusions collapse at least one window to `0` selected rows.
+  - The best non-empty exploratory filters still have negative net proxy in at least one window.
+- Honesty flags:
+  - `RESEARCH_ONLY`
+  - `FILTER_SIM_ONLY`
+  - `NOT_BACKTEST`
+  - `NOT_PNL`
+  - `NO_RUNTIME`
+  - `NO_REGISTRY`
+  - `NO_PROMOTION`
+  - `NO_PROFIT_CLAIM`
+  - `SPARSE_SELECTION`
+  - `TAIL_RISK_FILTER_TEST`
+- Blockers:
+  - No stable tail-risk filter was found.
+  - This is an exploratory test-split sweep, not final held-out optimization.
+  - Sparse selection remains.
+  - No runtime, registry, promotion, policy simulation, trading/backtest, model retrain, or profit-claim workflow is allowed.

@@ -694,3 +694,28 @@ The recommendation is
 `TAIL_DIAGNOSTIC_ONLY`, `NOT_PNL`, `NO_PROFIT_CLAIM`, and still has no runtime,
 registry, promotion, policy simulation, trading/backtest, or model-retrain
 effect.
+
+Rank-gate tail-risk filter simulation:
+
+```powershell
+python .\scripts\simulate_m20_rank_gate_tail_filter.py --base-run-dir .\artifacts\training\m20\20260505T212518Z
+```
+
+This writes `research_labels/vol_scaled/rank_gate_tail_filter/` and tests
+exploratory filters on the locked `CONDITION_THEN_TOP_0.25` selected rows:
+exclude high range, exclude high volatility, exclude unstable concentration
+slices, exclude negative symbol/time buckets, selected-row probability cutoffs,
+and simple combos.
+
+Result:
+
+- Filters evaluated: `10`.
+- Recommendation: `NO_STABLE_TAIL_FILTER_FOUND`.
+- Strict high-volatility and negative-bucket exclusions collapse at least one
+  window to `0` selected rows.
+- The best non-empty exploratory filters still have negative net proxy in at
+  least one window.
+
+This is labeled `FILTER_SIM_ONLY`, `TAIL_RISK_FILTER_TEST`, `NOT_BACKTEST`,
+`NOT_PNL`, `NO_PROFIT_CLAIM`, and does not change runtime, registry,
+promotion, policy simulation, trading/backtest, or model-retrain behavior.
