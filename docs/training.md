@@ -863,3 +863,11 @@ Current decision: STOP_CURRENT_FILTER_CHAIN_AND_PLAN_SPECIALIST_EXPORT.
 Recommended next action: PLAN_ROW_LEVEL_SPECIALIST_PREDICTION_EXPORT.
 The adjudication preserves the confirmed rank-gate signal but records unstable economics, volatility combo instability, weak implementable abstention, and non-implementable oracle HOLD rules. Current filter-chain work is paused; the next useful research move is planning row-level predictions for existing specialist candidates.
 Existing artifacts only. Decision/tracking only. No runtime, registry, promotion, paper/live execution, trading/backtest, model-retrain, long-run, PnL, or profitability status change.
+
+<!-- M20_SPECIALIST_PREDICTION_EXPORT_PLAN -->
+## Research-Only M20 Specialist Prediction Export Plan
+Command: python .\scripts\plan_m20_specialist_prediction_export.py --base-run-dir .\artifacts\training\m20\20260505T212518Z --fitted-models-dir .\artifacts\training\m20\20260405T023104Z\fitted_models --previous-run-dir .\artifacts\training\m20\20260427T112021Z
+Outputs: manifest.json, specialist_prediction_export_plan.json, specialist_prediction_export_plan.md, candidate_export_targets.csv, required_prediction_schema.json, manual_export_commands.md, post_export_analysis_commands.md, blockers.csv.
+Current recommendation: ADD_LIGHTWEIGHT_PREDICTION_EXPORT_HOOK_FIRST.
+The plan identifies 14 NHITS/PatchTST row-level prediction targets. Existing 20260427 OOF specialist rows may be sanitized for conditional analysis, while fitted-model candidates still need a clean per-specialist export path. Blockers: LONG_RUNS_MANUAL_ONLY, PER_SPECIALIST_EXPORT_HOOK_NOT_CONFIRMED, and AUTOGLUON_MEMBER_PREDICTIONS_MISSING.
+Planning only. Codex must not launch long prediction exports. No export, score-only rerun, runtime, registry, promotion, paper/live execution, trading/backtest, model-retrain, long-run, PnL, or profitability status change.

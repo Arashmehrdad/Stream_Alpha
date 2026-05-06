@@ -5326,3 +5326,56 @@ against naive baselines.
   - Current filter-chain work does not provide stable implementable economics.
   - Row-level specialist predictions are still needed before conditional specialist claims.
   - No runtime selector, strategy-family model, backtest, registry artifact, promotion, trading behavior, or profit evidence exists.
+
+<!-- M20_SPECIALIST_PREDICTION_EXPORT_PLAN -->
+### M20 specialist prediction export plan
+
+- Scope:
+  - Add a research-only, manual-only plan for row-level specialist prediction export.
+  - Use existing M20 audit/adjudication artifacts only.
+  - Identify NHITS/PatchTST candidates that need row-level predictions before conditional specialist claims.
+  - Preserve AutoGluon member prediction export as blocked while member metadata/predictions are missing.
+  - Do not run exports, score-only reruns, training, backtests, policy simulations, runtime code, registry writes, promotion, long runs, or profit-claim workflows.
+- Changed files:
+  - `app/training/m20_specialist_prediction_export_plan.py`
+  - `scripts/plan_m20_specialist_prediction_export.py`
+  - `tests/test_training_m20_specialist_prediction_export_plan.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real command run:
+  - `python scripts/plan_m20_specialist_prediction_export.py --base-run-dir artifacts/training/m20/20260505T212518Z --fitted-models-dir artifacts/training/m20/20260405T023104Z/fitted_models --previous-run-dir artifacts/training/m20/20260427T112021Z`
+- Real output directory:
+  - `artifacts/training/m20/20260505T212518Z/research_labels/vol_scaled/specialist_prediction_export_plan`
+- Real output files:
+  - `manifest.json`
+  - `specialist_prediction_export_plan.json`
+  - `specialist_prediction_export_plan.md`
+  - `candidate_export_targets.csv`
+  - `required_prediction_schema.json`
+  - `manual_export_commands.md`
+  - `post_export_analysis_commands.md`
+  - `blockers.csv`
+- Result:
+  - Recommendation: `ADD_LIGHTWEIGHT_PREDICTION_EXPORT_HOOK_FIRST`.
+  - Target count: `14`.
+  - Targets include `neuralforecast_nhits` and `neuralforecast_patchtst` fitted-model candidates plus existing `20260427T112021Z` OOF candidates for sanitation/conditional analysis.
+  - Required schema records safe keys, candidate/model metadata, prediction source, optional `y_true`, and probability/score columns.
+- Honesty flags:
+  - `RESEARCH_ONLY_SPECIALIST_PREDICTION_EXPORT_PLAN`
+  - `EXISTING_ARTIFACTS_ONLY`
+  - `MANUAL_LONG_RUN_ONLY`
+  - `NO_EXPORT_EXECUTED`
+  - `NO_SCORE_ONLY_RERUN_EXECUTED`
+  - `NO_MODEL_RETRAIN`
+  - `NO_RUNTIME_EFFECT`
+  - `NO_REGISTRY_WRITE`
+  - `NO_PROMOTION_EFFECT`
+  - `NOT_BACKTEST`
+  - `NO_PROFIT_CLAIM`
+  - `NOT_PROMOTABLE`
+- Blockers:
+  - `LONG_RUNS_MANUAL_ONLY`.
+  - `PER_SPECIALIST_EXPORT_HOOK_NOT_CONFIRMED`.
+  - `AUTOGLUON_MEMBER_PREDICTIONS_MISSING`.
+  - No runtime selector, strategy-family model, backtest, registry artifact, promotion, trading behavior, or profit evidence exists.
