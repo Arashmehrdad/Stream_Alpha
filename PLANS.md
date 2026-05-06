@@ -4924,3 +4924,47 @@ against naive baselines.
 - Blockers:
   - Scaffold is design-only.
   - No strategy-family model, runtime selector, backtest, registry artifact, promotion, trading behavior, or profit evidence exists.
+
+### M20 momentum_breakout research diagnostic
+
+- Scope:
+  - Add research-only setup diagnostics for the `momentum_breakout` strategy family.
+  - Evaluate setup frequency, fee-exceedance positive rate, lift versus base, rank-gate overlap, symbol/time slices, and original/prior/prev-prev stability.
+  - Keep rank gate as overlap context only.
+  - Do not implement execution logic, runtime routing, registry writes, promotion, trading/backtest, model retraining, long runs, or profit claims.
+- Changed files:
+  - `app/training/m20_momentum_breakout_research.py`
+  - `scripts/analyze_m20_momentum_breakout.py`
+  - `tests/test_training_m20_momentum_breakout_research.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real command run:
+  - `python scripts/analyze_m20_momentum_breakout.py --base-run-dir artifacts/training/m20/20260505T212518Z`
+- Real output directory:
+  - `artifacts/training/m20/20260505T212518Z/research_labels/vol_scaled/momentum_breakout_research`
+- Real output files:
+  - `manifest.json`
+  - `report.json`
+  - `report.md`
+  - `setup_metrics.csv`
+  - `by_run.csv`
+  - `by_symbol.csv`
+  - `by_time.csv`
+  - `rank_gate_overlap.csv`
+  - `recommendation.json`
+- Result:
+  - Recommendation: `KEEP_MOMENTUM_BREAKOUT_AS_RESEARCH_DIAGNOSTIC_CANDIDATE`.
+  - Stable setup candidates: `range_high`, `realized_vol_high`, `volume_high`.
+  - Best setup by run: `realized_vol_high` in original, prior-year, and prev-prev-year windows.
+- Honesty flags:
+  - `RESEARCH_ONLY`
+  - `DIAGNOSTIC_ONLY`
+  - `NOT_BACKTEST`
+  - `NO_RUNTIME`
+  - `NO_REGISTRY`
+  - `NO_PROMOTION`
+  - `NO_PROFIT_CLAIM`
+- Blockers:
+  - This is setup/label-lift diagnostics only.
+  - No strategy-family model, runtime selector, backtest, registry artifact, promotion, trading behavior, or profit evidence exists.

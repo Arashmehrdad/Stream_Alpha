@@ -761,3 +761,25 @@ The rank gate is recorded as `OPTIONAL_FILTER_ONLY`; it does not decide
 LONG/SHORT or execute anything. The scaffold records required signals, feature
 requirements, and next experiments, but it does not add runtime, registry,
 promotion, trading/backtest, model-retrain, long-run, or profit-claim behavior.
+
+M20 momentum_breakout research diagnostic:
+
+```powershell
+python .\scripts\analyze_m20_momentum_breakout.py --base-run-dir .\artifacts\training\m20\20260505T212518Z
+```
+
+This writes `research_labels/vol_scaled/momentum_breakout_research/` and checks
+setup frequency, fee-exceedance positive rate, lift versus base, rank-gate
+overlap, symbol/time slices, and original/prior/prev-prev stability. Current
+diagnostic candidates:
+
+- `realized_vol_high`: lift `1.531055` original, `1.500163` prior-year,
+  `1.758930` prev-prev-year.
+- `range_high`: lift `1.469422` original, `1.464049` prior-year, `1.682872`
+  prev-prev-year.
+- `volume_high`: lift `1.394658` original, `1.377996` prior-year, `1.670476`
+  prev-prev-year.
+
+This remains `RESEARCH_ONLY`, `DIAGNOSTIC_ONLY`, `NOT_BACKTEST`, and has no
+runtime, registry, promotion, trading/backtest, model-retrain, long-run, or
+profit-claim effect.
