@@ -4879,3 +4879,48 @@ against naive baselines.
 - Blockers:
   - No runtime, registry, promotion, policy simulation, trading/backtest, model retrain, long-run, or profit-claim workflow is allowed.
   - Current M20 rank-gate path is not runtime-ready and not promotable.
+
+### M20 strategy-family research scaffold
+
+- Scope:
+  - Create a research-only scaffold for richer M20 strategy-family modules after the decision memo paused the rank-gate as a standalone path.
+  - Define families for `momentum_breakout`, `range_mean_reversion`, `volatility_expansion`, and `abstention_hold`.
+  - Treat the rank gate as an optional filter input only.
+  - Do not implement execution logic, runtime routing, registry writes, promotion, trading/backtest, model retraining, long runs, or profit claims.
+- Changed files:
+  - `app/training/m20_strategy_family_scaffold.py`
+  - `scripts/design_m20_strategy_families.py`
+  - `tests/test_training_m20_strategy_family_scaffold.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real command run:
+  - `python scripts/design_m20_strategy_families.py --base-run-dir artifacts/training/m20/20260505T212518Z`
+- Real output directory:
+  - `artifacts/training/m20/20260505T212518Z/research_labels/vol_scaled/strategy_family_scaffold`
+- Real output files:
+  - `manifest.json`
+  - `report.json`
+  - `report.md`
+  - `strategy_families.csv`
+  - `required_signals.csv`
+  - `feature_requirements.csv`
+  - `next_experiments.csv`
+- Result:
+  - Scaffold status: `RESEARCH_ONLY_DESIGN_READY`.
+  - Family count: `4`.
+  - Rank gate usage: `OPTIONAL_FILTER_ONLY`.
+  - Feature requirements available in training frame: `15`.
+- Honesty flags:
+  - `RESEARCH_ONLY_STRATEGY_FAMILY_SCAFFOLD`
+  - `DESIGN_ONLY`
+  - `NO_RUNTIME_EFFECT`
+  - `NO_REGISTRY_WRITE`
+  - `NO_PROMOTION_EFFECT`
+  - `NOT_BACKTEST`
+  - `NO_TRADING_LOGIC`
+  - `NO_PROFIT_CLAIM`
+  - `RANK_GATE_OPTIONAL_FILTER_ONLY`
+- Blockers:
+  - Scaffold is design-only.
+  - No strategy-family model, runtime selector, backtest, registry artifact, promotion, trading behavior, or profit evidence exists.

@@ -742,3 +742,22 @@ evidence table and next-fork list. Current adjudication:
 
 The memo is `RESEARCH_ONLY_DECISION_MEMO`, not a runtime change, registry write,
 promotion, backtest, model retrain, long run, or profit claim.
+
+M20 strategy-family scaffold:
+
+```powershell
+python .\scripts\design_m20_strategy_families.py --base-run-dir .\artifacts\training\m20\20260505T212518Z
+```
+
+This writes `research_labels/vol_scaled/strategy_family_scaffold/` as design-only
+research scaffolding. Families:
+
+- `momentum_breakout`
+- `range_mean_reversion`
+- `volatility_expansion`
+- `abstention_hold`
+
+The rank gate is recorded as `OPTIONAL_FILTER_ONLY`; it does not decide
+LONG/SHORT or execute anything. The scaffold records required signals, feature
+requirements, and next experiments, but it does not add runtime, registry,
+promotion, trading/backtest, model-retrain, long-run, or profit-claim behavior.
