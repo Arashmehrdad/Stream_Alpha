@@ -598,3 +598,24 @@ Missing-slice adjudication from existing artifacts only:
 This means the missing slices should not be counted as model failures for the
 locked `CONDITION_THEN_TOP_0.25` research gate. They also should not be treated
 as resolved for broad conditional analysis or runtime use.
+
+Rank-gate evidence packet:
+
+- Path: `artifacts/training/m20/20260505T212518Z/research_labels/vol_scaled/rank_gate_evidence_packet/`
+- Evidence status: `RESEARCH_CONFIRMED_RANK_GATE`
+- Runtime status: `NOT_RUNTIME_READY`
+- Promotion status: `NOT_PROMOTABLE`
+- Original locked test coverage/precision/lift: `0.002498` / `0.347458` /
+  `1.841966`
+- Prior-year confirmation coverage/precision/lift: `0.002496` / `0.512821` /
+  `2.185905`
+- Prev-prev-year confirmation coverage/precision/lift: `0.002497` /
+  `0.522876` / `2.262976`
+- Disable-gap exposure in locked selected-row evidence: `0`
+- Blockers: sparse rank-gate coverage, calendar-slice non-overlap, disable gaps
+  unconfirmed for general conditional analysis, no profitability evidence, and
+  not runtime-ready.
+
+The packet is documentation/research evidence only and does not authorize
+runtime selector behavior, registry writes, promotion, policy simulation,
+trading/backtest, model retraining, or profit claims.
