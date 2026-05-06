@@ -5023,3 +5023,51 @@ against naive baselines.
 - Rank-gate evidence is overlap diagnostics only.
 - No runtime routing, registry writes, promotion, trading/backtest, model retraining, long runs, or profit claims.
 - Command: python scripts/analyze_m20_range_mean_reversion.py --base-run-dir artifacts/training/m20/20260505T212518Z
+
+<!-- M20_VOLATILITY_EXPANSION_RESEARCH -->
+### M20 volatility_expansion research diagnostic
+
+- Scope:
+  - Add research-only setup diagnostics for the `volatility_expansion` strategy family.
+  - Evaluate setup frequency, fee-exceedance positive rate, lift versus base, net proxy if present, rank-gate overlap, symbol/time slices, and original/prior/prev-prev stability.
+  - Use existing training-frame market features and fee-exceedance labels only.
+  - Keep rank gate as overlap context only.
+  - Do not implement execution logic, runtime routing, registry writes, promotion, trading/backtest, model retraining, long runs, or profit claims.
+- Changed files:
+  - `app/training/m20_volatility_expansion_research.py`
+  - `scripts/analyze_m20_volatility_expansion.py`
+  - `tests/test_training_m20_volatility_expansion_research.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real command run:
+  - `python scripts/analyze_m20_volatility_expansion.py --base-run-dir artifacts/training/m20/20260505T212518Z`
+- Real output directory:
+  - `artifacts/training/m20/20260505T212518Z/research_labels/vol_scaled/volatility_expansion_research`
+- Real output files:
+  - `manifest.json`
+  - `report.json`
+  - `report.md`
+  - `setup_metrics.csv`
+  - `by_run.csv`
+  - `by_symbol.csv`
+  - `by_time.csv`
+  - `rank_gate_overlap.csv`
+  - `recommendation.json`
+- Result:
+  - Recommendation: `KEEP_VOLATILITY_EXPANSION_AS_RESEARCH_DIAGNOSTIC_CANDIDATE`.
+  - Strongest stable setup: `vol_plus_range_high`, with lift `1.610740` original, `1.602734` prior-year, and `1.892837` prev-prev-year.
+  - Stable setup candidates: `abs_log_return_high`, `range_high`, `range_plus_volume_high`, `realized_vol_high`, `shock_continuation`, `shock_reversal`, `vol_plus_range_high`, `vol_plus_volume_high`, and `volume_high`.
+  - `macd_expansion` did not clear stable lift and remains weak for this family diagnostic.
+- Honesty flags:
+  - `RESEARCH_ONLY`
+  - `DIAGNOSTIC_ONLY`
+  - `NOT_BACKTEST`
+  - `NOT_PNL`
+  - `NO_RUNTIME`
+  - `NO_REGISTRY`
+  - `NO_PROMOTION`
+  - `NO_PROFIT_CLAIM`
+- Blockers:
+  - This is setup/label-lift diagnostics only.
+  - No strategy-family model, runtime selector, backtest, registry artifact, promotion, trading behavior, or profit evidence exists.

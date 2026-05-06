@@ -1036,3 +1036,8 @@ The gate+momentum combo diagnostic is available at `artifacts/training/m20/20260
 M20 range_mean_reversion research diagnostic:
 Command: python .\scripts\analyze_m20_range_mean_reversion.py --base-run-dir .\artifacts\training\m20\20260505T212518Z
 Writes research_labels/vol_scaled/range_mean_reversion_research/. Research-only diagnostic: no runtime, registry, promotion, trading/backtest, model-retrain, long-run, or profit-claim behavior is added.
+
+<!-- M20_VOLATILITY_EXPANSION_RESEARCH -->
+M20 volatility_expansion research diagnostic:
+Command: python .\scripts\analyze_m20_volatility_expansion.py --base-run-dir .\artifacts\training\m20\20260505T212518Z
+Writes research_labels/vol_scaled/volatility_expansion_research/. The result keeps volatility-expansion as a research diagnostic candidate, with the strongest stable setup `vol_plus_range_high` at minimum lift `1.602734` across the original/prior/prev-prev windows. This is fee-label/setup diagnostics only: no runtime, registry, promotion, trading/backtest, model-retrain, long-run, PnL, or profit-claim behavior is added.
