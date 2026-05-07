@@ -885,3 +885,10 @@ Command: python .\scripts\analyze_m20_specialist_conditional_usefulness.py --bas
 Outputs: manifest.json, report.json, report.md, model_metrics.csv, by_slice.csv, topk_metrics.csv, comparison.csv, recommendation.json.
 Result: 472,234 joined fee-label rows from existing OOF artifacts only after 72 horizon/unlabeled rows were skipped. Best candidate: neuralforecast_patchtst with top-5% lift 1.743825, PR-AUC 0.138238, ROC-AUC 0.476149, and 15 conditional research slices. NHITS top-5% lift is 1.356309 with 2 conditional research slices. Recommendation: RUN_SPECIALIST_CONFIRMATION_EXPORT.
 Research-only. No score-only rerun, model retrain, runtime, registry, promotion, paper/live execution, trading/backtest, PnL, or profitability status change.
+
+<!-- M20_SPECIALIST_CONFIRMATION_PLAN -->
+## Research-Only M20 Specialist Confirmation Plan
+Command: python .\scripts\plan_m20_specialist_confirmation.py --base-run-dir .\artifacts\training\m20\20260505T212518Z --previous-run-dir .\artifacts\training\m20\20260427T112021Z --fitted-models-dir .\artifacts\training\m20\20260405T023104Z\fitted_models
+Outputs: manifest.json, specialist_confirmation_plan.json, specialist_confirmation_plan.md, target_slices.csv, required_export_schema.json, manual_commands.md, post_export_analysis_commands.md, blockers.csv.
+Result: primary candidate neuralforecast_patchtst, secondary candidate neuralforecast_nhits, 17 target slices for confirmation, and recommendation ADD_SPECIALIST_CONFIRMATION_EXPORT_HOOK_FIRST. Blockers: LONG_RUNS_MANUAL_ONLY, PER_SPECIALIST_EXPORT_HOOK_NOT_CONFIRMED, PATCHTST_CONFIRMATION_RUN_NOT_AVAILABLE, and AUTOGLUON_MEMBER_PREDICTIONS_MISSING.
+Planning only. Codex must not launch long prediction exports. No export, score-only rerun, model retrain, runtime, registry, promotion, paper/live execution, trading/backtest, PnL, or profitability status change.

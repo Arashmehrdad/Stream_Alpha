@@ -5486,3 +5486,58 @@ against naive baselines.
   - Fitted-model/new-window specialist exports still need a clean per-specialist export hook.
   - AutoGluon member predictions remain missing.
   - No runtime selector, strategy-family model, backtest, registry artifact, promotion, trading behavior, or profit evidence exists.
+
+<!-- M20_SPECIALIST_CONFIRMATION_PLAN -->
+### M20 specialist confirmation plan
+
+- Scope:
+  - Add a research-only, manual-only confirmation plan for PatchTST/NHITS specialist row-level prediction export.
+  - Use existing specialist conditional usefulness artifacts only.
+  - Preserve PatchTST as the primary confirmation candidate and NHITS as secondary/watchlist.
+  - Write target slices, required export schema, manual commands, post-export analysis commands, and blockers.
+  - Do not run score-only, exports from fitted models, training, backtests, policy simulations, runtime code, registry writes, promotion, long runs, or profit-claim workflows.
+- Changed files:
+  - `app/training/m20_specialist_confirmation_plan.py`
+  - `scripts/plan_m20_specialist_confirmation.py`
+  - `tests/test_training_m20_specialist_confirmation_plan.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real command run:
+  - `python scripts/plan_m20_specialist_confirmation.py --base-run-dir artifacts/training/m20/20260505T212518Z --previous-run-dir artifacts/training/m20/20260427T112021Z --fitted-models-dir artifacts/training/m20/20260405T023104Z/fitted_models`
+- Real output directory:
+  - `artifacts/training/m20/20260505T212518Z/research_labels/vol_scaled/specialist_confirmation_plan`
+- Real output files:
+  - `manifest.json`
+  - `specialist_confirmation_plan.json`
+  - `specialist_confirmation_plan.md`
+  - `target_slices.csv`
+  - `required_export_schema.json`
+  - `manual_commands.md`
+  - `post_export_analysis_commands.md`
+  - `blockers.csv`
+- Result:
+  - Recommendation: `ADD_SPECIALIST_CONFIRMATION_EXPORT_HOOK_FIRST`.
+  - Primary candidate: `neuralforecast_patchtst`.
+  - Secondary candidate: `neuralforecast_nhits`.
+  - Target slices: `17`.
+  - Strongest target slice: `neuralforecast_patchtst` `symbol=BTC/USD`, top-5% lift `2.340610`.
+- Honesty flags:
+  - `RESEARCH_ONLY_SPECIALIST_CONFIRMATION_PLAN`
+  - `EXISTING_ARTIFACTS_ONLY`
+  - `MANUAL_LONG_RUN_ONLY`
+  - `NO_EXPORT_EXECUTED`
+  - `NO_SCORE_ONLY_RERUN_EXECUTED`
+  - `NO_MODEL_RETRAIN`
+  - `NO_RUNTIME_EFFECT`
+  - `NO_REGISTRY_WRITE`
+  - `NO_PROMOTION_EFFECT`
+  - `NOT_BACKTEST`
+  - `NO_PROFIT_CLAIM`
+  - `NOT_PROMOTABLE`
+- Blockers:
+  - `LONG_RUNS_MANUAL_ONLY`.
+  - `PER_SPECIALIST_EXPORT_HOOK_NOT_CONFIRMED`.
+  - `PATCHTST_CONFIRMATION_RUN_NOT_AVAILABLE`.
+  - `AUTOGLUON_MEMBER_PREDICTIONS_MISSING`.
+  - No runtime selector, strategy-family model, backtest, registry artifact, promotion, trading behavior, or profit evidence exists.
