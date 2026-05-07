@@ -86,6 +86,10 @@ from app.training.splits import minimum_required_unique_timestamps
 
 _REGIME_CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "regime.m8.json"
 _REQUIRED_PROMOTION_BASELINES = ("persistence_3", "dummy_most_frequent")
+_SPECIALIST_EXPORT_ONLY_MODEL_NAMES = (
+    "neuralforecast_nhits",
+    "neuralforecast_patchtst",
+)
 _AUTHORITATIVE_MODEL_BUILDERS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "autogluon_tabular": build_autogluon_tabular_classifier,
     "chronos2_generalist": build_chronos2_classifier,
@@ -649,6 +653,21 @@ def run_training(
     )
 
     model_factories = _build_model_factories(config)
+    if export_specialist_predictions_only:
+        model_factories = {
+            model_name: factory
+            for model_name, factory in model_factories.items()
+            if model_name in _SPECIALIST_EXPORT_ONLY_MODEL_NAMES
+        }
+        if not model_factories:
+            raise ValueError(
+                "Specialist export-only mode requires at least one configured "
+                "specialist model: neuralforecast_nhits or neuralforecast_patchtst"
+            )
+        print(
+            "[training] specialist export-only mode: restricted to "
+            "neuralforecast_nhits and neuralforecast_patchtst"
+        )
     progress_recorder = _TrainingProgressRecorder(artifact_dir)
     progress_recorder.record(
         stage="setup",
@@ -674,6 +693,12 @@ def run_training(
             stage="score_only_recent_window",
             message="score-only evaluation limited to recent fold test rows",
             **score_only_recent_selection.to_metadata(),
+        )
+    if export_specialist_predictions_only:
+        progress_recorder.record(
+            stage="specialist_export_only",
+            message="specialist export-only mode restricted to NHITS/PatchTST",
+            model_count=len(model_factories),
         )
     training_frame_export_rows: list[dict[str, Any]] = []
     training_frame_skipped_folds: list[dict[str, Any]] = []
@@ -1084,6 +1109,11 @@ def run_training(
                 ),
                 exported_row_count=specialist_export.get("exported_row_count", 0),
             )
+            print(
+                "[training] specialist export-only complete — returning early "
+                "after sanitized export"
+            )
+            return artifact_dir
 
         aggregate_summary = _build_aggregate_summary(
             all_prediction_rows=all_prediction_rows,
