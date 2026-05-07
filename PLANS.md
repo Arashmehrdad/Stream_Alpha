@@ -5430,3 +5430,59 @@ against naive baselines.
   - Fitted-model candidates still need a clean per-specialist export hook before new-window prediction export.
   - AutoGluon member predictions remain missing.
   - No runtime selector, strategy-family model, backtest, registry artifact, promotion, trading behavior, or profit evidence exists.
+
+<!-- M20_SPECIALIST_CONDITIONAL_USEFULNESS -->
+### M20 specialist conditional usefulness
+
+- Scope:
+  - Add a research-only conditional usefulness analysis for sanitized specialist OOF predictions.
+  - Use existing `20260427T112021Z` OOF predictions and volatility-scaled fee-exceedance labels only.
+  - Join labels by model/symbol/interval when available, with a safe symbol/interval fallback for row-level fee labels.
+  - Compare NHITS and PatchTST globally, by top-k ranking, and by symbol/month/quarter/regime slices.
+  - Do not run score-only, exports from fitted models, training, backtests, policy simulations, runtime code, registry writes, promotion, long runs, or profit-claim workflows.
+- Changed files:
+  - `app/training/m20_specialist_conditional_usefulness.py`
+  - `scripts/analyze_m20_specialist_conditional_usefulness.py`
+  - `tests/test_training_m20_specialist_conditional_usefulness.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real command run:
+  - `python scripts/analyze_m20_specialist_conditional_usefulness.py --base-run-dir artifacts/training/m20/20260505T212518Z --previous-run-dir artifacts/training/m20/20260427T112021Z`
+- Real output directory:
+  - `artifacts/training/m20/20260505T212518Z/research_labels/vol_scaled/specialist_conditional_usefulness`
+- Real output files:
+  - `manifest.json`
+  - `report.json`
+  - `report.md`
+  - `model_metrics.csv`
+  - `by_slice.csv`
+  - `topk_metrics.csv`
+  - `comparison.csv`
+  - `recommendation.json`
+- Result:
+  - Joined fee-label rows: `472234`.
+  - Skipped unlabeled/horizon rows: `72`.
+  - `neuralforecast_patchtst`: top-5% precision `0.206607`, top-5% lift `1.743825`, PR-AUC `0.138238`, ROC-AUC `0.476149`, conditional research slices `15`.
+  - `neuralforecast_nhits`: top-5% precision `0.160695`, top-5% lift `1.356309`, PR-AUC `0.125877`, ROC-AUC `0.485307`, conditional research slices `2`.
+  - Best candidate: `neuralforecast_patchtst`.
+  - Recommendation: `RUN_SPECIALIST_CONFIRMATION_EXPORT`.
+- Honesty flags:
+  - `RESEARCH_ONLY_SPECIALIST_CONDITIONAL_USEFULNESS`
+  - `EXISTING_OOF_ONLY`
+  - `NOT_RUNTIME_COMPARABLE`
+  - `NOT_PROMOTABLE`
+  - `NO_SCORE_ONLY_RERUN_EXECUTED`
+  - `NO_MODEL_RETRAIN`
+  - `NO_REGISTRY_WRITE`
+  - `NO_RUNTIME_EFFECT`
+  - `NO_PROMOTION_EFFECT`
+  - `NOT_BACKTEST`
+  - `NO_PROFIT_CLAIM`
+  - `SPECIALIST_CONDITIONAL_ANALYSIS_ONLY`
+- Blockers:
+  - PatchTST specialist signal is OOF-only and needs confirmation export on another window before specialist claims.
+  - ROC-AUC is below 0.5 despite top-k lift, so this is rank/slice evidence only and not a global model-quality claim.
+  - Fitted-model/new-window specialist exports still need a clean per-specialist export hook.
+  - AutoGluon member predictions remain missing.
+  - No runtime selector, strategy-family model, backtest, registry artifact, promotion, trading behavior, or profit evidence exists.

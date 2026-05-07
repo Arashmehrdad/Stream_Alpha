@@ -878,3 +878,10 @@ Command: python .\scripts\export_m20_existing_specialist_predictions.py --base-r
 Outputs: manifest.json, report.json, report.md, schema_audit.csv, predictions_neuralforecast_nhits_oof.csv, predictions_neuralforecast_patchtst_oof.csv.
 Result: 472,306 sanitized specialist prediction rows from existing OOF artifacts only: 236,153 NHITS rows and 236,153 PatchTST rows. Future/net proxy fields are quarantined from prediction files.
 Research-only. No score-only rerun, model retrain, runtime, registry, promotion, paper/live execution, trading/backtest, PnL, or profitability status change.
+
+<!-- M20_SPECIALIST_CONDITIONAL_USEFULNESS -->
+## Research-Only M20 Specialist Conditional Usefulness
+Command: python .\scripts\analyze_m20_specialist_conditional_usefulness.py --base-run-dir .\artifacts\training\m20\20260505T212518Z --previous-run-dir .\artifacts\training\m20\20260427T112021Z
+Outputs: manifest.json, report.json, report.md, model_metrics.csv, by_slice.csv, topk_metrics.csv, comparison.csv, recommendation.json.
+Result: 472,234 joined fee-label rows from existing OOF artifacts only after 72 horizon/unlabeled rows were skipped. Best candidate: neuralforecast_patchtst with top-5% lift 1.743825, PR-AUC 0.138238, ROC-AUC 0.476149, and 15 conditional research slices. NHITS top-5% lift is 1.356309 with 2 conditional research slices. Recommendation: RUN_SPECIALIST_CONFIRMATION_EXPORT.
+Research-only. No score-only rerun, model retrain, runtime, registry, promotion, paper/live execution, trading/backtest, PnL, or profitability status change.

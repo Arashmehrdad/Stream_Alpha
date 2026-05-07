@@ -1076,3 +1076,8 @@ Writes research_labels/vol_scaled/specialist_prediction_export_plan/. Current re
 M20 existing specialist prediction export:
 Command: python .\scripts\export_m20_existing_specialist_predictions.py --base-run-dir .\artifacts\training\m20\20260505T212518Z --previous-run-dir .\artifacts\training\m20\20260427T112021Z
 Writes research_labels/vol_scaled/specialist_predictions/. It sanitizes existing OOF rows only: 236,153 `neuralforecast_nhits` rows and 236,153 `neuralforecast_patchtst` rows. Future/net proxy columns are quarantined from prediction outputs. No score-only rerun, model retrain, runtime, registry, promotion, trading/backtest, PnL, or profit-claim behavior is added.
+
+<!-- M20_SPECIALIST_CONDITIONAL_USEFULNESS -->
+M20 specialist conditional usefulness:
+Command: python .\scripts\analyze_m20_specialist_conditional_usefulness.py --base-run-dir .\artifacts\training\m20\20260505T212518Z --previous-run-dir .\artifacts\training\m20\20260427T112021Z
+Writes research_labels/vol_scaled/specialist_conditional_usefulness/. Existing OOF rows only: 472,234 joined fee-label rows after skipping 72 horizon/unlabeled rows. Best candidate is `neuralforecast_patchtst` with top-5% lift `1.743825`, PR-AUC `0.138238`, ROC-AUC `0.476149`, and 15 conditional research slices; `neuralforecast_nhits` has top-5% lift `1.356309` and 2 slices. Recommendation is `RUN_SPECIALIST_CONFIRMATION_EXPORT`. No score-only rerun, model retrain, runtime, registry, promotion, trading/backtest, PnL, or profit-claim behavior is added.
