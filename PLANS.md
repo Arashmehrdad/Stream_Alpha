@@ -5379,3 +5379,54 @@ against naive baselines.
   - `PER_SPECIALIST_EXPORT_HOOK_NOT_CONFIRMED`.
   - `AUTOGLUON_MEMBER_PREDICTIONS_MISSING`.
   - No runtime selector, strategy-family model, backtest, registry artifact, promotion, trading behavior, or profit evidence exists.
+
+<!-- M20_SPECIALIST_PREDICTION_EXPORT -->
+### M20 existing specialist prediction export
+
+- Scope:
+  - Add a research-only sanitizer/exporter for existing M20 specialist OOF predictions.
+  - Use `artifacts/training/m20/20260427T112021Z/oof_predictions.csv` only.
+  - Export per-specialist NHITS/PatchTST prediction files with safe keys, model metadata, prediction source, `y_true`, `y_pred`, `prob_up`, and confidence.
+  - Quarantine future/net proxy fields from prediction outputs.
+  - Do not run score-only, exports from fitted models, training, backtests, policy simulations, runtime code, registry writes, promotion, long runs, or profit-claim workflows.
+- Changed files:
+  - `app/training/m20_specialist_prediction_export.py`
+  - `scripts/export_m20_existing_specialist_predictions.py`
+  - `tests/test_training_m20_specialist_prediction_export.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real command run:
+  - `python scripts/export_m20_existing_specialist_predictions.py --base-run-dir artifacts/training/m20/20260505T212518Z --previous-run-dir artifacts/training/m20/20260427T112021Z`
+- Real output directory:
+  - `artifacts/training/m20/20260505T212518Z/research_labels/vol_scaled/specialist_predictions`
+- Real output files:
+  - `manifest.json`
+  - `report.json`
+  - `report.md`
+  - `schema_audit.csv`
+  - `predictions_neuralforecast_nhits_oof.csv`
+  - `predictions_neuralforecast_patchtst_oof.csv`
+- Result:
+  - Source OOF row count: `944612`.
+  - Exported specialist row count: `472306`.
+  - `neuralforecast_nhits`: `236153` rows.
+  - `neuralforecast_patchtst`: `236153` rows.
+  - Quarantined columns: `future_return_3`, `long_only_gross_value_proxy`, `long_only_net_value_proxy`.
+- Honesty flags:
+  - `RESEARCH_ONLY_SPECIALIST_PREDICTION_EXPORT`
+  - `EXISTING_OOF_ONLY`
+  - `NO_SCORE_ONLY_RERUN_EXECUTED`
+  - `NO_MODEL_RETRAIN`
+  - `NO_RUNTIME_EFFECT`
+  - `NO_REGISTRY_WRITE`
+  - `NO_PROMOTION_EFFECT`
+  - `NOT_BACKTEST`
+  - `NO_PROFIT_CLAIM`
+  - `NOT_PROMOTABLE`
+  - `LEAKAGE_COLUMNS_QUARANTINED`
+- Blockers:
+  - Sanitized OOF prediction rows still need specialist conditional usefulness analysis.
+  - Fitted-model candidates still need a clean per-specialist export hook before new-window prediction export.
+  - AutoGluon member predictions remain missing.
+  - No runtime selector, strategy-family model, backtest, registry artifact, promotion, trading behavior, or profit evidence exists.

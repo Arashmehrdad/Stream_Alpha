@@ -1071,3 +1071,8 @@ Writes research_labels/vol_scaled/m20_research_path_adjudication/. Current decis
 M20 specialist prediction export plan:
 Command: python .\scripts\plan_m20_specialist_prediction_export.py --base-run-dir .\artifacts\training\m20\20260505T212518Z --fitted-models-dir .\artifacts\training\m20\20260405T023104Z\fitted_models --previous-run-dir .\artifacts\training\m20\20260427T112021Z
 Writes research_labels/vol_scaled/specialist_prediction_export_plan/. Current recommendation is `ADD_LIGHTWEIGHT_PREDICTION_EXPORT_HOOK_FIRST`. It identifies 14 NHITS/PatchTST row-level prediction targets, including existing 20260427 OOF candidates to sanitize/analyze and fitted-model candidates that still need export. Blockers remain `LONG_RUNS_MANUAL_ONLY`, `PER_SPECIALIST_EXPORT_HOOK_NOT_CONFIRMED`, and `AUTOGLUON_MEMBER_PREDICTIONS_MISSING`. No export, score-only rerun, runtime, registry, promotion, trading/backtest, model-retrain, PnL, or profit-claim behavior is added.
+
+<!-- M20_SPECIALIST_PREDICTION_EXPORT -->
+M20 existing specialist prediction export:
+Command: python .\scripts\export_m20_existing_specialist_predictions.py --base-run-dir .\artifacts\training\m20\20260505T212518Z --previous-run-dir .\artifacts\training\m20\20260427T112021Z
+Writes research_labels/vol_scaled/specialist_predictions/. It sanitizes existing OOF rows only: 236,153 `neuralforecast_nhits` rows and 236,153 `neuralforecast_patchtst` rows. Future/net proxy columns are quarantined from prediction outputs. No score-only rerun, model retrain, runtime, registry, promotion, trading/backtest, PnL, or profit-claim behavior is added.

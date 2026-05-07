@@ -871,3 +871,10 @@ Outputs: manifest.json, specialist_prediction_export_plan.json, specialist_predi
 Current recommendation: ADD_LIGHTWEIGHT_PREDICTION_EXPORT_HOOK_FIRST.
 The plan identifies 14 NHITS/PatchTST row-level prediction targets. Existing 20260427 OOF specialist rows may be sanitized for conditional analysis, while fitted-model candidates still need a clean per-specialist export path. Blockers: LONG_RUNS_MANUAL_ONLY, PER_SPECIALIST_EXPORT_HOOK_NOT_CONFIRMED, and AUTOGLUON_MEMBER_PREDICTIONS_MISSING.
 Planning only. Codex must not launch long prediction exports. No export, score-only rerun, runtime, registry, promotion, paper/live execution, trading/backtest, model-retrain, long-run, PnL, or profitability status change.
+
+<!-- M20_SPECIALIST_PREDICTION_EXPORT -->
+## Research-Only M20 Existing Specialist Prediction Export
+Command: python .\scripts\export_m20_existing_specialist_predictions.py --base-run-dir .\artifacts\training\m20\20260505T212518Z --previous-run-dir .\artifacts\training\m20\20260427T112021Z
+Outputs: manifest.json, report.json, report.md, schema_audit.csv, predictions_neuralforecast_nhits_oof.csv, predictions_neuralforecast_patchtst_oof.csv.
+Result: 472,306 sanitized specialist prediction rows from existing OOF artifacts only: 236,153 NHITS rows and 236,153 PatchTST rows. Future/net proxy fields are quarantined from prediction files.
+Research-only. No score-only rerun, model retrain, runtime, registry, promotion, paper/live execution, trading/backtest, PnL, or profitability status change.
