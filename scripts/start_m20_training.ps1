@@ -1,8 +1,11 @@
 param(
     [string]$ConfigPath = ".\configs\training.m20.json",
     [switch]$RequireGpu,
+    [string]$ScoreOnly,
+    [string]$ParquetDir,
     [switch]$ExportTrainingFrame,
     [switch]$ExportTrainingFrameOnly,
+    [switch]$ExportSpecialistPredictionsOnly,
     [string]$ConfirmationWindowStart,
     [string]$ConfirmationWindowEnd,
     [string]$ConfirmationTag,
@@ -43,11 +46,20 @@ Import-StreamAlphaEnvFile ".env"
 
 $config = Get-Content -Path $resolvedConfigPath -Raw | ConvertFrom-Json
 $trainingArgs = @("-m", "app.training", "--config", $resolvedConfigPath)
+if (-not [string]::IsNullOrWhiteSpace($ScoreOnly)) {
+    $trainingArgs += @("--score-only", $ScoreOnly)
+}
+if (-not [string]::IsNullOrWhiteSpace($ParquetDir)) {
+    $trainingArgs += @("--parquet-dir", $ParquetDir)
+}
 if ($ExportTrainingFrame) {
     $trainingArgs += "--export-training-frame"
 }
 if ($ExportTrainingFrameOnly) {
     $trainingArgs += "--export-training-frame-only"
+}
+if ($ExportSpecialistPredictionsOnly) {
+    $trainingArgs += "--export-specialist-predictions-only"
 }
 if (-not [string]::IsNullOrWhiteSpace($ConfirmationWindowStart)) {
     $trainingArgs += @("--confirmation-window-start", $ConfirmationWindowStart)
@@ -113,6 +125,9 @@ if ($DryRun) {
     Write-Host "allocator hint: $allocatorHint"
     Write-Host "export training frame: $($ExportTrainingFrame.IsPresent)"
     Write-Host "export training frame only: $($ExportTrainingFrameOnly.IsPresent)"
+    Write-Host "export specialist predictions only: $($ExportSpecialistPredictionsOnly.IsPresent)"
+    Write-Host "score-only fitted models dir: $ScoreOnly"
+    Write-Host "parquet dir: $ParquetDir"
     Write-Host "confirmation run: manual-only"
     Write-Host "confirmation window start: $ConfirmationWindowStart"
     Write-Host "confirmation window end: $ConfirmationWindowEnd"
@@ -166,8 +181,11 @@ Write-Host "models: $modelLabels"
 Write-Host "specialist dataset mode: $datasetModesLabel"
 Write-Host "specialist memory profile: $memoryProfilesLabel"
 Write-Host "allocator hint: $allocatorHint"
-Write-Host "export training frame: $($ExportTrainingFrame.IsPresent)"
-Write-Host "export training frame only: $($ExportTrainingFrameOnly.IsPresent)"
+    Write-Host "export training frame: $($ExportTrainingFrame.IsPresent)"
+    Write-Host "export training frame only: $($ExportTrainingFrameOnly.IsPresent)"
+    Write-Host "export specialist predictions only: $($ExportSpecialistPredictionsOnly.IsPresent)"
+    Write-Host "score-only fitted models dir: $ScoreOnly"
+    Write-Host "parquet dir: $ParquetDir"
 if ($ExportTrainingFrameOnly) {
     Write-Host "model scoring: skipped by export-only mode"
 }

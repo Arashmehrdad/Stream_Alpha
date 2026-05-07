@@ -6,9 +6,13 @@ import csv
 import json
 from pathlib import Path
 
+import pytest
+
 from app.training.m20_specialist_prediction_export import (
+    export_m20_specialist_prediction_records,
     export_existing_m20_specialist_predictions,
 )
+from app.training.service import run_training
 
 # pylint: disable=missing-function-docstring
 
@@ -133,3 +137,55 @@ def test_export_is_research_only_and_deterministic(tmp_path: Path) -> None:
     assert first["output_files"] == second["output_files"]
     assert "NO_RUNTIME_EFFECT" in manifest["honesty_flags"]
     assert manifest["promotion_status"] == "NOT_PROMOTABLE"
+
+
+def test_export_score_only_records_writes_confirmation_files(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    rows = [
+        {
+            "model_name": "neuralforecast_patchtst",
+            "fold_index": 4,
+            "row_id": "BTC/USD|2025-01-01T00:00:00Z",
+            "symbol": "BTC/USD",
+            "interval_begin": "2025-01-01T00:00:00Z",
+            "as_of_time": "2025-01-01T00:05:00Z",
+            "y_true": 1,
+            "y_pred": 1,
+            "prob_up": 0.8,
+            "confidence": 0.6,
+            "regime_label": "RANGE",
+            "future_return_3": 0.1,
+            "long_only_net_value_proxy": 0.09,
+        }
+    ]
+
+    result = export_m20_specialist_prediction_records(
+        run_dir=run_dir,
+        prediction_rows=rows,
+        prediction_source="score_only_confirmation",
+        confirmation_window={
+            "candidate_run_id": "confirm_run",
+            "confirmation_window_start": "2024-01-01T00:00:00Z",
+            "confirmation_window_end": "2025-01-01T00:00:00Z",
+            "confirmation_tag": "confirm",
+        },
+    )
+    prediction_path = Path(
+        result["output_files"][
+            "predictions_neuralforecast_patchtst_score_only_confirmation_csv"
+        ]
+    )
+    exported_rows = _read_csv(prediction_path)
+
+    assert result["exported_row_count"] == 1
+    assert exported_rows[0]["candidate_id"] == "confirm_run:neuralforecast_patchtst"
+    assert exported_rows[0]["confirmation_tag"] == "confirm"
+    assert "future_return_3" not in exported_rows[0]
+
+
+def test_export_specialist_predictions_requires_score_only(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="requires --score-only"):
+        run_training(
+            tmp_path / "missing.json",
+            export_specialist_predictions_only=True,
+        )

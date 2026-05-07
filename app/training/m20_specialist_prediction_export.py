@@ -19,6 +19,9 @@ SAFE_OUTPUT_COLUMNS = (
     "model_name",
     "candidate_id",
     "prediction_source",
+    "confirmation_window_start",
+    "confirmation_window_end",
+    "confirmation_tag",
     "row_id",
     "as_of_time",
     "y_true",
@@ -118,6 +121,74 @@ def export_existing_m20_specialist_predictions(
     return make_json_safe(manifest)
 
 
+def export_m20_specialist_prediction_records(
+    *,
+    run_dir: Path,
+    prediction_rows: Sequence[Mapping[str, Any]],
+    prediction_source: str,
+    confirmation_window: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Export in-memory score-only specialist predictions as sanitized artifacts."""
+    resolved_run_dir = Path(run_dir).resolve()
+    output_dir = resolved_run_dir / "research_labels" / "vol_scaled" / OUTPUT_DIR_NAME
+    output_dir.mkdir(parents=True, exist_ok=True)
+    source_rows = [dict(row) for row in prediction_rows]
+    forbidden_columns = _forbidden_columns(list(source_rows[0]) if source_rows else [])
+    safe_rows_by_model = _sanitize_rows(
+        source_rows,
+        prediction_source=prediction_source,
+        confirmation_window=confirmation_window,
+    )
+    output_files = _output_files(output_dir)
+    per_model_outputs = _write_model_prediction_files(
+        output_dir,
+        safe_rows_by_model,
+        prediction_source=prediction_source,
+    )
+    audit_rows = _audit_rows(
+        source_columns=list(source_rows[0]) if source_rows else list(SAFE_OUTPUT_COLUMNS),
+        forbidden_columns=forbidden_columns,
+        safe_rows_by_model=safe_rows_by_model,
+    )
+    exported_row_count = sum(len(rows) for rows in safe_rows_by_model.values())
+    manifest = {
+        "run_dir": str(resolved_run_dir),
+        "output_dir": str(output_dir),
+        "prediction_source": prediction_source,
+        "source": "score_only_prediction_records",
+        "source_row_count": len(source_rows),
+        "exported_row_count": exported_row_count,
+        "specialist_models": list(SPECIALIST_MODELS),
+        "forbidden_columns_quarantined": forbidden_columns,
+        "confirmation_window": dict(confirmation_window or {}),
+        "honesty_flags": list(HONESTY_FLAGS),
+        "runtime_status": "NO_RUNTIME_EFFECT",
+        "promotion_status": "NOT_PROMOTABLE",
+        "output_files": output_files | per_model_outputs,
+    }
+    report = {
+        "summary": (
+            "Score-only NHITS/PatchTST rows were sanitized into research-only "
+            "per-specialist prediction files."
+        ),
+        "model_row_counts": {
+            model_name: len(model_rows)
+            for model_name, model_rows in sorted(safe_rows_by_model.items())
+        },
+        "forbidden_columns_quarantined": forbidden_columns,
+        "next_research_action": "RUN_SPECIALIST_CONDITIONAL_ANALYSIS_ON_CONFIRMATION_EXPORT",
+        "honesty_flags": list(HONESTY_FLAGS),
+    }
+    write_json_artifact(Path(output_files["manifest_json"]), manifest)
+    write_json_artifact(Path(output_files["report_json"]), report)
+    write_csv_artifact(Path(output_files["schema_audit_csv"]), audit_rows)
+    Path(output_files["report_md"]).write_text(
+        _markdown(report, manifest, per_model_outputs),
+        encoding="utf-8",
+    )
+    return make_json_safe(manifest)
+
+
 def _read_csv(path: Path) -> list[dict[str, str]]:
     if not path.exists():
         raise FileNotFoundError(f"Missing OOF predictions file: {path}")
@@ -138,6 +209,7 @@ def _sanitize_rows(
     rows: Sequence[Mapping[str, str]],
     *,
     prediction_source: str,
+    confirmation_window: Mapping[str, Any] | None = None,
 ) -> dict[str, list[dict[str, str]]]:
     by_model: dict[str, list[dict[str, str]]] = {
         model_name: [] for model_name in SPECIALIST_MODELS
@@ -151,8 +223,20 @@ def _sanitize_rows(
             for column in SAFE_OUTPUT_COLUMNS
             if column not in {"candidate_id", "prediction_source"}
         }
-        safe_row["candidate_id"] = f"20260427T112021Z:{model_name}"
+        candidate_prefix = str(
+            (confirmation_window or {}).get("candidate_run_id", "20260427T112021Z")
+        )
+        safe_row["candidate_id"] = f"{candidate_prefix}:{model_name}"
         safe_row["prediction_source"] = prediction_source
+        safe_row["confirmation_window_start"] = str(
+            (confirmation_window or {}).get("confirmation_window_start", "")
+        )
+        safe_row["confirmation_window_end"] = str(
+            (confirmation_window or {}).get("confirmation_window_end", "")
+        )
+        safe_row["confirmation_tag"] = str(
+            (confirmation_window or {}).get("confirmation_tag", "")
+        )
         by_model[model_name].append(
             {column: safe_row.get(column, "") for column in SAFE_OUTPUT_COLUMNS}
         )
@@ -162,13 +246,24 @@ def _sanitize_rows(
 def _write_model_prediction_files(
     output_dir: Path,
     rows_by_model: Mapping[str, Sequence[Mapping[str, str]]],
+    *,
+    prediction_source: str = "oof",
 ) -> dict[str, str]:
     output_files = {}
+    source_label = _safe_source_label(prediction_source)
     for model_name, rows in sorted(rows_by_model.items()):
-        path = output_dir / f"predictions_{model_name}_oof.csv"
+        path = output_dir / f"predictions_{model_name}_{source_label}.csv"
         _write_prediction_csv(path, [dict(row) for row in rows])
-        output_files[f"predictions_{model_name}_oof_csv"] = str(path)
+        output_files[f"predictions_{model_name}_{source_label}_csv"] = str(path)
     return output_files
+
+
+def _safe_source_label(prediction_source: str) -> str:
+    cleaned = "".join(
+        character if character.isalnum() or character in {"_", "-"} else "_"
+        for character in prediction_source.lower()
+    ).strip("_")
+    return cleaned or "predictions"
 
 
 def _write_prediction_csv(path: Path, rows: Sequence[Mapping[str, str]]) -> None:
@@ -259,4 +354,7 @@ def _markdown(
     return "\n".join(lines)
 
 
-__all__ = ["export_existing_m20_specialist_predictions"]
+__all__ = [
+    "export_existing_m20_specialist_predictions",
+    "export_m20_specialist_prediction_records",
+]

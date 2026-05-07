@@ -5541,3 +5541,48 @@ against naive baselines.
   - `PATCHTST_CONFIRMATION_RUN_NOT_AVAILABLE`.
   - `AUTOGLUON_MEMBER_PREDICTIONS_MISSING`.
   - No runtime selector, strategy-family model, backtest, registry artifact, promotion, trading behavior, or profit evidence exists.
+
+<!-- M20_SPECIALIST_CONFIRMATION_EXPORT_HOOK -->
+### M20 specialist confirmation export hook
+
+- Scope:
+  - Add a research-only `--export-specialist-predictions-only` training CLI flag.
+  - Require the flag to be used with `--score-only`.
+  - Export sanitized NHITS/PatchTST row-level prediction files from score-only prediction rows under `research_labels/vol_scaled/specialist_predictions/`.
+  - Add PowerShell dry-run support for `-ScoreOnly`, `-ParquetDir`, and `-ExportSpecialistPredictionsOnly`.
+  - Do not launch a long score-only confirmation run from Codex.
+  - Do not change runtime, registry, promotion, paper/live execution, trading/backtest, model-retrain, or profit-claim behavior.
+- Changed files:
+  - `app/training/__main__.py`
+  - `app/training/service.py`
+  - `app/training/m20_specialist_prediction_export.py`
+  - `scripts/start_m20_training.ps1`
+  - `tests/test_training_m20_specialist_prediction_export.py`
+  - `tests/test_training_confirmation_window_override.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Validation commands run:
+  - `python -m pytest tests/test_training_m20_specialist_prediction_export.py tests/test_training_confirmation_window_override.py -q`
+  - `python -m pylint app/training/main.py app/training/service.py app/training/m20_specialist_prediction_export.py tests/test_training_m20_specialist_prediction_export.py`
+  - `python -m py_compile app/training/main.py app/training/__main__.py app/training/service.py app/training/m20_specialist_prediction_export.py`
+  - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start_m20_training.ps1 -DryRun -ScoreOnly artifacts/training/m20/20260405T023104Z/fitted_models -ParquetDir exports/feature_ohlc_for_colab -ExportSpecialistPredictionsOnly -ConfirmationWindowStart 2024-04-02T11:30:00Z -ConfirmationWindowEnd 2025-04-02T11:30:00Z -ConfirmationTag confirm_prev_year`
+- Result:
+  - Dry-run prints the manual score-only command with `--export-specialist-predictions-only`.
+  - `--export-specialist-predictions-only` fails cleanly without `--score-only`.
+  - Score-only specialist export writes sanitized per-model prediction files and quarantines future/net proxy fields.
+- Honesty flags:
+  - `RESEARCH_ONLY_SPECIALIST_PREDICTION_EXPORT`
+  - `NO_SCORE_ONLY_RERUN_EXECUTED`
+  - `NO_MODEL_RETRAIN`
+  - `NO_RUNTIME_EFFECT`
+  - `NO_REGISTRY_WRITE`
+  - `NO_PROMOTION_EFFECT`
+  - `NOT_BACKTEST`
+  - `NO_PROFIT_CLAIM`
+  - `NOT_PROMOTABLE`
+- Blockers:
+  - `PATCHTST_CONFIRMATION_RUN_NOT_AVAILABLE` remains until Arash manually launches a comparable score-only confirmation run.
+  - `LONG_RUNS_MANUAL_ONLY` remains.
+  - AutoGluon member predictions remain missing.
+  - No runtime selector, strategy-family model, backtest, registry artifact, promotion, trading behavior, or profit evidence exists.

@@ -61,6 +61,9 @@ from app.training.m20_training_frame_export_hook import (
     finalize_m20_training_frame_export,
     maybe_export_m20_training_frame,
 )
+from app.training.m20_specialist_prediction_export import (
+    export_m20_specialist_prediction_records,
+)
 from app.training.neuralforecast import (
     build_neuralforecast_nhits_classifier,
     build_neuralforecast_patchtst_classifier,
@@ -474,6 +477,7 @@ def run_training(
     score_only_dir: Path | None = None,
     export_training_frame: bool | None = None,
     export_training_frame_only: bool = False,
+    export_specialist_predictions_only: bool = False,
     confirmation_window_start: str | None = None,
     confirmation_window_end: str | None = None,
     confirmation_tag: str | None = None,
@@ -493,6 +497,10 @@ def run_training(
     If *score_only_dir* is given, load pre-fitted estimators from that
     directory and run scoring only (skip fitting).
     """
+    if export_specialist_predictions_only and score_only_dir is None:
+        raise ValueError(
+            "--export-specialist-predictions-only requires --score-only"
+        )
     config = load_training_config(config_path)
     confirmation_override = build_confirmation_window_override(
         start=confirmation_window_start,
@@ -1053,6 +1061,29 @@ def run_training(
             artifact_dir / "oof_predictions.csv",
             [record.to_csv_row() for record in all_prediction_rows],
         )
+        if export_specialist_predictions_only:
+            specialist_export = export_m20_specialist_prediction_records(
+                run_dir=artifact_dir,
+                prediction_rows=[
+                    record.to_csv_row() for record in all_prediction_rows
+                ],
+                prediction_source="score_only_confirmation",
+                confirmation_window={
+                    **(confirmation_window_metadata or {}),
+                    "candidate_run_id": artifact_dir.name,
+                },
+            )
+            progress_recorder.record(
+                stage="specialist_prediction_export",
+                message="research-only specialist prediction export written",
+                export_dir=str(
+                    artifact_dir
+                    / "research_labels"
+                    / "vol_scaled"
+                    / "specialist_predictions"
+                ),
+                exported_row_count=specialist_export.get("exported_row_count", 0),
+            )
 
         aggregate_summary = _build_aggregate_summary(
             all_prediction_rows=all_prediction_rows,

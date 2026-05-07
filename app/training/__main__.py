@@ -57,6 +57,15 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--export-specialist-predictions-only",
+        action="store_true",
+        default=False,
+        help=(
+            "Research-only: during score-only runs, export sanitized row-level "
+            "NHITS/PatchTST prediction files for manual confirmation analysis"
+        ),
+    )
+    parser.add_argument(
         "--confirmation-window-start",
         default=None,
         help="Research-only confirmation window start timestamp, e.g. 2024-04-02T11:30:00Z",
@@ -88,6 +97,9 @@ def main() -> None:
                 or None
             ),
             export_training_frame_only=arguments.export_training_frame_only,
+            export_specialist_predictions_only=(
+                arguments.export_specialist_predictions_only
+            ),
             confirmation_window_start=arguments.confirmation_window_start,
             confirmation_window_end=arguments.confirmation_window_end,
             confirmation_tag=arguments.confirmation_tag,

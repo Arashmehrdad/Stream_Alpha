@@ -892,3 +892,9 @@ Command: python .\scripts\plan_m20_specialist_confirmation.py --base-run-dir .\a
 Outputs: manifest.json, specialist_confirmation_plan.json, specialist_confirmation_plan.md, target_slices.csv, required_export_schema.json, manual_commands.md, post_export_analysis_commands.md, blockers.csv.
 Result: primary candidate neuralforecast_patchtst, secondary candidate neuralforecast_nhits, 17 target slices for confirmation, and recommendation ADD_SPECIALIST_CONFIRMATION_EXPORT_HOOK_FIRST. Blockers: LONG_RUNS_MANUAL_ONLY, PER_SPECIALIST_EXPORT_HOOK_NOT_CONFIRMED, PATCHTST_CONFIRMATION_RUN_NOT_AVAILABLE, and AUTOGLUON_MEMBER_PREDICTIONS_MISSING.
 Planning only. Codex must not launch long prediction exports. No export, score-only rerun, model retrain, runtime, registry, promotion, paper/live execution, trading/backtest, PnL, or profitability status change.
+
+<!-- M20_SPECIALIST_CONFIRMATION_EXPORT_HOOK -->
+## Research-Only M20 Specialist Confirmation Export Hook
+The training CLI supports `--export-specialist-predictions-only` for `--score-only` runs. The PowerShell helper supports dry-run planning with `-ScoreOnly`, `-ParquetDir`, and `-ExportSpecialistPredictionsOnly`.
+Manual dry-run example: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start_m20_training.ps1 -DryRun -ScoreOnly artifacts/training/m20/20260405T023104Z/fitted_models -ParquetDir exports/feature_ohlc_for_colab -ExportSpecialistPredictionsOnly -ConfirmationWindowStart 2024-04-02T11:30:00Z -ConfirmationWindowEnd 2025-04-02T11:30:00Z -ConfirmationTag confirm_prev_year
+When Arash manually launches a score-only confirmation run, the hook writes sanitized NHITS/PatchTST row-level prediction files under research_labels/vol_scaled/specialist_predictions/. No long run was launched by Codex. No runtime, registry, promotion, paper/live execution, trading/backtest, model-retrain, PnL, or profitability status change.

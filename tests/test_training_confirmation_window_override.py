@@ -138,3 +138,38 @@ def test_powershell_dry_run_includes_confirmation_flags() -> None:
     assert "--confirmation-tag confirm_prev_year" in result.stdout
     assert "model scoring: skipped by export-only mode" in result.stdout
     assert "confirmation run: manual-only" in result.stdout
+
+
+def test_powershell_dry_run_includes_specialist_prediction_export_flag() -> None:
+    command = [
+        "powershell",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "scripts/start_m20_training.ps1",
+        "-DryRun",
+        "-ScoreOnly",
+        "artifacts/training/m20/20260405T023104Z/fitted_models",
+        "-ParquetDir",
+        "exports/feature_ohlc_for_colab",
+        "-ExportSpecialistPredictionsOnly",
+        "-ConfirmationWindowStart",
+        "2024-04-02T11:30:00Z",
+        "-ConfirmationWindowEnd",
+        "2025-04-02T11:30:00Z",
+        "-ConfirmationTag",
+        "confirm_prev_year",
+    ]
+    result = subprocess.run(
+        command,
+        cwd=Path(__file__).resolve().parents[1],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "--export-specialist-predictions-only" in result.stdout
+    assert "--score-only artifacts/training/m20/20260405T023104Z/fitted_models" in result.stdout
+    assert "--parquet-dir exports/feature_ohlc_for_colab" in result.stdout
+    assert "export specialist predictions only: True" in result.stdout
