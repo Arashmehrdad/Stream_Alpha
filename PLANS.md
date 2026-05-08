@@ -5625,3 +5625,12 @@ against naive baselines.
   - `SPECIALIST_CONDITIONAL_ANALYSIS_ONLY`
 - Blockers:
   - None for the requested repair/analysis flow.
+
+<!-- VALIDATION_WORKFLOW_PYLINT_FAIL_UNDER_10_RULE -->
+### Validation workflow pylint strictness rule
+
+- Policy:
+  - Future code changes must run the relevant validation workflow pylint slice(s) and keep each at `10.00/10` before committing.
+- Scope:
+  - Preserve `.github/workflows/validation.yml` strictness (`--fail-under=10`).
+  - Treat pylint slice regressions as blockers for commit readiness.

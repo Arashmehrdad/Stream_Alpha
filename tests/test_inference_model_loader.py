@@ -1,6 +1,6 @@
 """Tests for the M4 saved-model loader."""
 
-# pylint: disable=duplicate-code,too-few-public-methods
+# pylint: disable=duplicate-code,too-few-public-methods,missing-function-docstring,invalid-name,too-many-arguments,attribute-defined-outside-init,line-too-long
 
 from __future__ import annotations
 

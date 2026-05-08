@@ -1,5 +1,8 @@
 """Tests for truthful long-only M3/M7 training economics."""
 
+# Test module uses many local fixtures and monkeypatch stubs by design.
+# pylint: disable=missing-function-docstring,unused-argument,unnecessary-lambda
+
 from __future__ import annotations
 
 import json

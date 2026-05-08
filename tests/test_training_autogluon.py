@@ -1,5 +1,8 @@
 """Focused tests for the authoritative AutoGluon wrapper."""
 
+# Test stubs intentionally use private hooks and compact helper APIs.
+# pylint: disable=missing-function-docstring,too-few-public-methods,invalid-name,protected-access
+
 from __future__ import annotations
 
 import pickle

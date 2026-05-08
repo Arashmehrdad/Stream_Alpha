@@ -1,5 +1,8 @@
 """Focused tests for the NeuralForecast specialist wrappers."""
 
+# Test doubles intentionally mimic external runtime objects and signatures.
+# pylint: disable=missing-function-docstring,too-few-public-methods,too-many-arguments,no-member,unsubscriptable-object
+
 from __future__ import annotations
 
 import json
