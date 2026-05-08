@@ -5586,3 +5586,42 @@ against naive baselines.
   - `LONG_RUNS_MANUAL_ONLY` remains.
   - AutoGluon member predictions remain missing.
   - No runtime selector, strategy-family model, backtest, registry artifact, promotion, trading behavior, or profit evidence exists.
+
+<!-- M20_SPECIALIST_CONDITIONAL_USEFULNESS_SCORE_ONLY_CONFIRMATION_FIX -->
+### M20 specialist conditional usefulness score-only confirmation fix
+
+- Scope:
+  - Audit local session changes before edits.
+  - Repair only the broken local CLI/analysis path so score-only confirmation specialist exports can be analyzed.
+  - Keep all outputs research-only and not promotable.
+  - Do not run training, scoring, or long jobs.
+- Changed files:
+  - `app/training/m20_specialist_conditional_usefulness.py`
+  - `scripts/analyze_m20_specialist_conditional_usefulness.py`
+  - `tests/test_training_m20_specialist_conditional_usefulness.py`
+  - `PLANS.md`
+- Validation commands run:
+  - `python scripts/analyze_m20_specialist_conditional_usefulness.py -h`
+  - `python -m pytest tests/test_training_m20_specialist_prediction_export.py tests/test_training_m20_specialist_conditional_usefulness.py tests/test_training_confirmation_window_override.py -q`
+  - `python -m py_compile app/training/service.py app/training/m20_specialist_prediction_export.py app/training/m20_specialist_conditional_usefulness.py scripts/analyze_m20_specialist_conditional_usefulness.py`
+  - `git diff --check`
+- Result:
+  - `--prediction-source` now works with `oof` and `score_only_confirmation`, defaulting to `oof`.
+  - Analysis consumes `predictions_{model}_score_only_confirmation.csv` when requested.
+  - Manifest/report carry `prediction_source` and source-specific honesty flags.
+  - Requested light analysis command completed and wrote output artifacts.
+- Honesty flags:
+  - `RESEARCH_ONLY_SPECIALIST_CONDITIONAL_USEFULNESS`
+  - `SCORE_ONLY_CONFIRMATION_PREDICTIONS` (for score-only confirmation source)
+  - `NOT_RUNTIME_COMPARABLE`
+  - `NOT_PROMOTABLE`
+  - `MANUAL_CONFIRMATION_RUN_ONLY`
+  - `NO_MODEL_RETRAIN`
+  - `NO_REGISTRY_WRITE`
+  - `NO_RUNTIME_EFFECT`
+  - `NO_PROMOTION_EFFECT`
+  - `NOT_BACKTEST`
+  - `NO_PROFIT_CLAIM`
+  - `SPECIALIST_CONDITIONAL_ANALYSIS_ONLY`
+- Blockers:
+  - None for the requested repair/analysis flow.

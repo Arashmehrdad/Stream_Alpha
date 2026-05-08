@@ -13,7 +13,8 @@ from app.training.threshold_analysis import write_csv_artifact, write_json_artif
 OUTPUT_DIR_NAME = "specialist_conditional_usefulness"
 SPECIALIST_MODELS = ("neuralforecast_nhits", "neuralforecast_patchtst")
 TOP_K_FRACTIONS = (0.01, 0.02, 0.05, 0.10)
-HONESTY_FLAGS = (
+
+_HONESTY_FLAGS_OOF = (
     "RESEARCH_ONLY_SPECIALIST_CONDITIONAL_USEFULNESS",
     "EXISTING_OOF_ONLY",
     "NOT_RUNTIME_COMPARABLE",
@@ -28,14 +29,40 @@ HONESTY_FLAGS = (
     "SPECIALIST_CONDITIONAL_ANALYSIS_ONLY",
 )
 
+_HONESTY_FLAGS_SCORE_ONLY_CONFIRMATION = (
+    "RESEARCH_ONLY_SPECIALIST_CONDITIONAL_USEFULNESS",
+    "SCORE_ONLY_CONFIRMATION_PREDICTIONS",
+    "NOT_RUNTIME_COMPARABLE",
+    "NOT_PROMOTABLE",
+    "MANUAL_CONFIRMATION_RUN_ONLY",
+    "NO_MODEL_RETRAIN",
+    "NO_REGISTRY_WRITE",
+    "NO_RUNTIME_EFFECT",
+    "NO_PROMOTION_EFFECT",
+    "NOT_BACKTEST",
+    "NO_PROFIT_CLAIM",
+    "SPECIALIST_CONDITIONAL_ANALYSIS_ONLY",
+)
 
 def analyze_m20_specialist_conditional_usefulness(
     *,
     base_run_dir: Path,
     previous_run_dir: Path,
+    prediction_source: str = "oof",
 ) -> dict[str, Any]:
-    """Analyze sanitized NHITS/PatchTST OOF predictions against fee labels."""
+    """Analyze sanitized NHITS/PatchTST predictions against fee labels.
+
+    Args:
+        base_run_dir: Directory containing specialist_predictions export.
+        previous_run_dir: Directory containing fee_exceedance labels.
+        prediction_source: Either 'oof' or 'score_only_confirmation'.
+    """
     # pylint: disable=too-many-locals
+    if prediction_source not in ("oof", "score_only_confirmation"):
+        raise ValueError(
+            f"prediction_source must be 'oof' or 'score_only_confirmation', "
+            f"got {prediction_source}"
+        )
     base_dir = Path(base_run_dir).resolve()
     previous_dir = Path(previous_run_dir).resolve()
     specialist_dir = base_dir / "research_labels" / "vol_scaled" / "specialist_predictions"
@@ -50,8 +77,13 @@ def analyze_m20_specialist_conditional_usefulness(
     label_index, fallback_label_index = _label_indexes(labels)
     source_counts = {}
     joined_by_model = {}
+    prediction_suffix = (
+        "score_only_confirmation" if prediction_source == "score_only_confirmation" else "oof"
+    )
     for model_name in SPECIALIST_MODELS:
-        prediction_rows = _read_csv(specialist_dir / f"predictions_{model_name}_oof.csv")
+        prediction_rows = _read_csv(
+            specialist_dir / f"predictions_{model_name}_{prediction_suffix}.csv"
+        )
         source_counts[model_name] = len(prediction_rows)
         joined_by_model[model_name] = _joined_model_rows(
             prediction_rows,
@@ -72,13 +104,28 @@ def analyze_m20_specialist_conditional_usefulness(
         for model_name, rows in sorted(joined_by_model.items())
         for row in _slice_metrics(model_name, rows)
     ]
+    honesty_flags = (
+        _HONESTY_FLAGS_SCORE_ONLY_CONFIRMATION
+        if prediction_source == "score_only_confirmation"
+        else _HONESTY_FLAGS_OOF
+    )
     comparison = _comparison(model_metrics, topk_metrics, by_slice)
-    recommendation = _recommendation(comparison)
+    recommendation = _recommendation(comparison, honesty_flags=honesty_flags)
     output_files = _output_files(output_dir)
+    summary_text = (
+        "Sanitized NHITS/PatchTST score-only confirmation predictions were "
+        "conditionally analyzed against existing volatility-scaled fee-exceedance labels."
+        if prediction_source == "score_only_confirmation"
+        else (
+            "Sanitized NHITS/PatchTST OOF predictions were conditionally analyzed "
+            "against existing volatility-scaled fee-exceedance labels."
+        )
+    )
     manifest = {
         "base_run_dir": str(base_dir),
         "previous_run_dir": str(previous_dir),
         "specialist_prediction_dir": str(specialist_dir),
+        "prediction_source": prediction_source,
         "output_dir": str(output_dir),
         "models": list(SPECIALIST_MODELS),
         "joined_rows": sum(len(rows) for rows in joined_by_model.values()),
@@ -88,27 +135,25 @@ def analyze_m20_specialist_conditional_usefulness(
         },
         "skipped_unlabeled_rows": sum(source_counts.values())
         - sum(len(rows) for rows in joined_by_model.values()),
-        "honesty_flags": list(HONESTY_FLAGS),
+        "honesty_flags": list(honesty_flags),
         "runtime_status": "NO_RUNTIME_EFFECT",
         "promotion_status": "NOT_PROMOTABLE",
         "output_files": output_files,
     }
     report = {
-        "summary": (
-            "Sanitized NHITS/PatchTST OOF predictions were conditionally analyzed "
-            "against existing volatility-scaled fee-exceedance labels."
-        ),
+        "summary": summary_text,
         "recommendation": recommendation["recommendation"],
         "best_candidate": recommendation["best_candidate"],
+        "prediction_source": prediction_source,
         "joined_rows": manifest["joined_rows"],
-        "honesty_flags": list(HONESTY_FLAGS),
+        "honesty_flags": list(honesty_flags),
         "output_files": output_files,
     }
     write_json_artifact(Path(output_files["manifest_json"]), manifest)
     write_json_artifact(Path(output_files["report_json"]), report)
     write_json_artifact(Path(output_files["recommendation_json"]), recommendation)
     Path(output_files["report_md"]).write_text(
-        _markdown(report, model_metrics, comparison),
+        _markdown(report, model_metrics, comparison, prediction_source=prediction_source),
         encoding="utf-8",
     )
     write_csv_artifact(Path(output_files["model_metrics_csv"]), model_metrics)
@@ -305,7 +350,11 @@ def _comparison(
     return output
 
 
-def _recommendation(comparison: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+def _recommendation(
+    comparison: Sequence[Mapping[str, Any]],
+    *,
+    honesty_flags: Sequence[str],
+) -> dict[str, Any]:
     ranked = sorted(
         comparison,
         key=lambda row: (
@@ -326,7 +375,7 @@ def _recommendation(comparison: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "rationale": best.get("recommendation_basis", "no specialist comparison available"),
         "runtime_ready": False,
         "promotable": False,
-        "honesty_flags": list(HONESTY_FLAGS),
+        "honesty_flags": list(honesty_flags),
     }
 
 
@@ -468,6 +517,8 @@ def _markdown(
     report: Mapping[str, Any],
     model_metrics: Sequence[Mapping[str, Any]],
     comparison: Sequence[Mapping[str, Any]],
+    *,
+    prediction_source: str,
 ) -> str:
     lines = [
         "# M20 Specialist Conditional Usefulness",
@@ -475,7 +526,11 @@ def _markdown(
         f"- Recommendation: `{report['recommendation']}`",
         f"- Best candidate: `{report['best_candidate']}`",
         f"- Joined rows: {report['joined_rows']}",
-        "- Status: research-only; existing OOF only.",
+        (
+            "- Status: research-only; score-only confirmation predictions only."
+            if prediction_source == "score_only_confirmation"
+            else "- Status: research-only; existing OOF only."
+        ),
         "",
         "## Model Metrics",
     ]

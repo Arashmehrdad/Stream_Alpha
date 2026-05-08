@@ -26,7 +26,7 @@ jobs:
       # Repository-backed PostgreSQL checks remain part of local validation.
       - name: Run baseline pylint slice
         run: |
-          python -m pylint \
+          python -m pylint --fail-under=10 \
             app/continual_learning/schemas.py \
             app/continual_learning/service.py \
             app/inference/main.py \
@@ -71,6 +71,21 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements-runtime.txt
           python -m pip install "pytest>=8,<9" "pylint>=4,<5"
+
+      - name: Run targeted training pylint slice
+        run: |
+          python -m pylint --fail-under=10 \
+            app/training/main.py \
+            app/training/__main__.py \
+            app/training/service.py \
+            app/training/m20_specialist_prediction_export.py \
+            tests/test_training_service.py \
+            tests/test_training_specialist_verdicts.py \
+            tests/test_training_neuralforecast.py \
+            tests/test_training_autogluon.py \
+            tests/test_training_registry.py \
+            tests/test_training_compare.py \
+            tests/test_inference_model_loader.py
 
       - name: Run targeted training pytest slice
         run: |

@@ -25,11 +25,17 @@ def main() -> None:
     )
     parser.add_argument("--base-run-dir", required=True)
     parser.add_argument("--previous-run-dir", required=True)
+    parser.add_argument(
+        "--prediction-source",
+        choices=("oof", "score_only_confirmation"),
+        default="oof",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
     result = analyze_m20_specialist_conditional_usefulness(
         base_run_dir=Path(args.base_run_dir),
         previous_run_dir=Path(args.previous_run_dir),
+        prediction_source=args.prediction_source,
     )
     if args.json:
         print(json.dumps(make_json_safe(result), sort_keys=True))

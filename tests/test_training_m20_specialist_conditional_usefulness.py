@@ -66,9 +66,12 @@ def _label_rows(model_name: str) -> list[dict[str, object]]:
 def _write_sources(base: Path, previous: Path) -> None:
     specialist_dir = base / "research_labels" / "vol_scaled" / "specialist_predictions"
     for model_name in ("neuralforecast_nhits", "neuralforecast_patchtst"):
+        rows = _prediction_rows(model_name)
+        _write_csv(specialist_dir / f"predictions_{model_name}_oof.csv", rows)
         _write_csv(
-            specialist_dir / f"predictions_{model_name}_oof.csv",
-            _prediction_rows(model_name),
+            specialist_dir
+            / f"predictions_{model_name}_score_only_confirmation.csv",
+            rows,
         )
     labels = _label_rows("neuralforecast_nhits") + _label_rows("neuralforecast_patchtst")
     _write_csv(
@@ -132,3 +135,43 @@ def test_specialist_conditional_usefulness_is_research_only(tmp_path: Path) -> N
     assert "NO_RUNTIME_EFFECT" in manifest["honesty_flags"]
     assert manifest["promotion_status"] == "NOT_PROMOTABLE"
     assert manifest["skipped_unlabeled_rows"] == 0
+
+
+def test_specialist_conditional_usefulness_default_prediction_source_is_oof(
+    tmp_path: Path,
+) -> None:
+    base = tmp_path / "base"
+    previous = tmp_path / "previous"
+    _write_sources(base, previous)
+
+    result = analyze_m20_specialist_conditional_usefulness(
+        base_run_dir=base,
+        previous_run_dir=previous,
+    )
+    manifest = json.loads(
+        Path(result["output_files"]["manifest_json"]).read_text(encoding="utf-8")
+    )
+
+    assert manifest["prediction_source"] == "oof"
+    assert "EXISTING_OOF_ONLY" in manifest["honesty_flags"]
+
+
+def test_specialist_conditional_usefulness_score_only_confirmation_source(
+    tmp_path: Path,
+) -> None:
+    base = tmp_path / "base"
+    previous = tmp_path / "previous"
+    _write_sources(base, previous)
+
+    result = analyze_m20_specialist_conditional_usefulness(
+        base_run_dir=base,
+        previous_run_dir=previous,
+        prediction_source="score_only_confirmation",
+    )
+    manifest = json.loads(
+        Path(result["output_files"]["manifest_json"]).read_text(encoding="utf-8")
+    )
+
+    assert manifest["prediction_source"] == "score_only_confirmation"
+    assert "SCORE_ONLY_CONFIRMATION_PREDICTIONS" in manifest["honesty_flags"]
+    assert "EXISTING_OOF_ONLY" not in manifest["honesty_flags"]
