@@ -130,6 +130,34 @@ but still produce zero positive after-cost rows under the tested fee/slippage
 scenarios. This points the next recovery batch toward calibration/score mapping
 analysis or candidate rejection before new label generation.
 
+## Research-Only M20 Specialist Confirmation Adjudication
+
+To adjudicate specialist confirmation from existing saved artifacts only:
+
+```powershell
+python .\scripts\write_m20_specialist_confirmation_adjudication.py `
+  --confirmation-run-dir .\artifacts\training\m20\20260507T135017Z `
+  --original-run-dir .\artifacts\training\m20\20260505T212518Z
+```
+
+This helper reads existing `research_labels/vol_scaled/specialist_conditional_usefulness/`
+artifacts and writes deterministic research-only outputs under
+`research_labels/vol_scaled/specialist_confirmation_adjudication/`:
+
+- `manifest.json`
+- `specialist_confirmation_adjudication.json`
+- `specialist_confirmation_adjudication.md`
+- `candidate_decisions.csv`
+- `evidence_metrics.csv`
+- `next_actions.csv`
+
+The adjudication is explicitly conservative:
+
+- PatchTST can be retained as a selective rank/top-k/slice research candidate.
+- PatchTST is not treated as globally strong, runtime-ready, or promotable.
+- NHITS remains secondary/watchlist unless stronger confirmation artifacts appear.
+- No runtime inference, registry, promotion, paper/live execution, backtest logic, or profitability claim is changed.
+
 ## Research-Only M20 Trading-Aware Labels
 
 `app.training.research_labels` contains offline helpers for the next recovery

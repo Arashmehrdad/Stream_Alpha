@@ -5634,3 +5634,31 @@ against naive baselines.
 - Scope:
   - Preserve `.github/workflows/validation.yml` strictness (`--fail-under=10`).
   - Treat pylint slice regressions as blockers for commit readiness.
+
+<!-- M20_SPECIALIST_CONFIRMATION_ADJUDICATION -->
+### M20 specialist confirmation adjudication
+
+- Scope:
+  - Add a research-only adjudication writer for completed specialist confirmation artifacts.
+  - Read existing `specialist_conditional_usefulness` outputs from a confirmation run, with optional original-run context only.
+  - Emit deterministic adjudication outputs under `research_labels/vol_scaled/specialist_confirmation_adjudication/`.
+  - Preserve conservative interpretation: PatchTST selective candidate only; not globally strong, not runtime-ready, not promotable, no profit claim.
+- Changed files:
+  - `app/training/m20_specialist_confirmation_adjudication.py`
+  - `scripts/write_m20_specialist_confirmation_adjudication.py`
+  - `tests/test_training_m20_specialist_confirmation_adjudication.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Validation commands run:
+  - `python -m pytest tests/test_training_m20_specialist_confirmation_adjudication.py -q`
+  - `python -m py_compile app/training/m20_specialist_confirmation_adjudication.py scripts/write_m20_specialist_confirmation_adjudication.py`
+  - `python scripts/write_m20_specialist_confirmation_adjudication.py --confirmation-run-dir artifacts/training/m20/20260507T135017Z --original-run-dir artifacts/training/m20/20260505T212518Z`
+  - `git diff --check`
+  - `python -m pylint --fail-under=10 app/training/m20_specialist_confirmation_adjudication.py tests/test_training_m20_specialist_confirmation_adjudication.py`
+- Expected result:
+  - `neuralforecast_patchtst`: `CONFIRMED_SELECTIVE_RANK_SLICE_RESEARCH_CANDIDATE`
+  - `neuralforecast_nhits`: `SECONDARY_WATCHLIST_OR_WEAKER_CANDIDATE` unless stronger evidence exists
+  - `overall_status`: `RESEARCH_ONLY_NOT_PROMOTABLE`
+  - Required blockers include `ECONOMIC_POLICY_EVALUATION_REQUIRED`
+  - Next action: `DESIGN_PATCHTST_OPTIONAL_SPECIALIST_POLICY_EVALUATOR`

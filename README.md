@@ -1090,3 +1090,8 @@ Writes research_labels/vol_scaled/specialist_confirmation_plan/. Primary candida
 <!-- M20_SPECIALIST_CONFIRMATION_EXPORT_HOOK -->
 M20 specialist confirmation export hook:
 The training CLI now accepts research-only `--export-specialist-predictions-only` during `--score-only` runs, and `scripts/start_m20_training.ps1 -DryRun` supports `-ScoreOnly`, `-ParquetDir`, and `-ExportSpecialistPredictionsOnly`. The hook writes sanitized NHITS/PatchTST row-level prediction files under `research_labels/vol_scaled/specialist_predictions/` when Arash manually launches a score-only confirmation run. No long run was launched by Codex, and no runtime, registry, promotion, trading/backtest, model-retrain, PnL, or profit-claim behavior is added.
+
+<!-- M20_SPECIALIST_CONFIRMATION_ADJUDICATION -->
+M20 specialist confirmation adjudication:
+Command: python .\scripts\write_m20_specialist_confirmation_adjudication.py --confirmation-run-dir .\artifacts\training\m20\20260507T135017Z --original-run-dir .\artifacts\training\m20\20260505T212518Z
+Writes research_labels/vol_scaled/specialist_confirmation_adjudication/ from existing specialist conditional-usefulness artifacts only. The adjudication records PatchTST as `CONFIRMED_SELECTIVE_RANK_SLICE_RESEARCH_CANDIDATE` and NHITS as `SECONDARY_WATCHLIST_OR_WEAKER_CANDIDATE` unless stronger evidence exists. Overall status remains `RESEARCH_ONLY_NOT_PROMOTABLE` with `NO_RUNTIME_EFFECT`, `NOT_PROMOTABLE`, and `NO_PROFIT_CLAIM`. Next blocker is economic/policy evaluation, not another raw scoring run.
