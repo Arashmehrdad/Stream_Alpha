@@ -185,6 +185,34 @@ module. It does not change training, scoring, runtime inference, registry,
 promotion, paper/live execution, trading logic, backtests, or profitability
 claims.
 
+## Research-Only M20 Cost-Aware Specialist Policy Evaluator
+
+To evaluate generic specialist policy candidates from existing predictions,
+labels, and optional edge-evaluator artifacts only:
+
+```powershell
+python .\scripts\analyze_m20_cost_aware_specialist_policy.py `
+  --prediction-run-dir .\artifacts\training\m20\20260507T135017Z `
+  --label-source-run-dir .\artifacts\training\m20\20260506T054337Z `
+  --prediction-source score_only_confirmation
+```
+
+The evaluator discovers `predictions_{model}_{source}.csv` files unless
+`--models` is provided, joins by `symbol` and `interval_begin` with model-aware
+label support, and writes `cost_aware_specialist_policy_evaluator/`. Outputs
+include `manifest.json`, `cost_aware_policy_report.json`,
+`cost_aware_policy_report.md`, `policy_candidates.csv`,
+`model_policy_metrics.csv`, `topk_policy_metrics.csv`, optional
+`threshold_policy_metrics.csv`, `by_symbol.csv`, `by_time.csv`,
+`economics_availability.json`, `candidate_decisions.csv`, `next_actions.csv`,
+and `recommendation.json`.
+
+Economic proxy metrics are computed only from safe net/proxy outcome columns in
+label or evaluation artifacts. Binary fee-exceedance labels alone do not become
+net PnL. When safe economics are absent, the recommendation is
+`ADD_SAFE_NET_PROXY_OR_ECONOMIC_OUTCOME_ARTIFACTS`, and the next required action
+is `DESIGN_SAFE_ECONOMIC_OUTCOME_ARTIFACTS_FOR_SPECIALIST_POLICIES`.
+
 ## Research-Only M20 Trading-Aware Labels
 
 `app.training.research_labels` contains offline helpers for the next recovery

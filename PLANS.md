@@ -5716,3 +5716,41 @@ against naive baselines.
   - `app/training/m20_specialist_confirmation_adjudication.py`
   - `tests/test_training_m20_specialist_confirmation_adjudication.py`
   - `PLANS.md`
+
+<!-- M20_COST_AWARE_SPECIALIST_POLICY_EVALUATOR -->
+### M20 cost-aware specialist policy evaluator
+
+- Scope:
+  - Add a reusable cost-aware specialist policy evaluator for existing M20 prediction, label, and optional edge-evaluator artifacts.
+  - Discover `predictions_{model}_{source}.csv` files automatically, with optional `--models` filtering.
+  - Join predictions to labels by `symbol` and `interval_begin`, with model-aware label support when labels expose `model_name`.
+  - Evaluate top-k, threshold, edge-slice, symbol-conditioned, month, and quarter diagnostic policy candidates with identical logic across models.
+  - Compute economic proxy metrics only from safe net/proxy outcome columns in labels/evaluation artifacts.
+  - Emit `NET_PROXY_NOT_AVAILABLE` and `ECONOMIC_POLICY_EVALUATION_REQUIRED` when only binary fee-exceedance labels exist.
+  - Keep all outputs `RESEARCH_ONLY`, `NO_RUNTIME_EFFECT`, `NOT_RUNTIME_READY`, `NOT_PROMOTABLE`, `NO_PROFIT_CLAIM`, and `NOT_BACKTEST`.
+  - Do not change runtime inference, registry, promotion, paper/live execution, trading/backtest logic, training, scoring, score-only export, label generation, validation workflow, or profitability claims.
+- Changed files:
+  - `app/training/m20_cost_aware_specialist_policy_evaluator.py`
+  - `scripts/analyze_m20_cost_aware_specialist_policy.py`
+  - `tests/test_training_m20_cost_aware_specialist_policy_evaluator.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Targeted validation completed:
+  - `python -m pytest tests/test_training_m20_cost_aware_specialist_policy_evaluator.py -q` -> `9 passed`
+  - `python -m py_compile app/training/m20_cost_aware_specialist_policy_evaluator.py scripts/analyze_m20_cost_aware_specialist_policy.py` -> passed
+  - `python -m pylint --fail-under=10 app/training/m20_cost_aware_specialist_policy_evaluator.py tests/test_training_m20_cost_aware_specialist_policy_evaluator.py` -> `10.00/10`
+  - `python scripts/analyze_m20_cost_aware_specialist_policy.py --prediction-run-dir artifacts/training/m20/20260507T135017Z --label-source-run-dir artifacts/training/m20/20260506T054337Z --prediction-source score_only_confirmation` -> completed
+  - `git diff --check` -> passed with existing LF/CRLF working-copy warnings only
+- Real output directory:
+  - `artifacts/training/m20/20260507T135017Z/research_labels/vol_scaled/cost_aware_specialist_policy_evaluator`
+- Real result:
+  - Evaluated models: `neuralforecast_nhits`, `neuralforecast_patchtst`
+  - Evaluated policies: `55` total (`8` top-k, `20` threshold, `4` symbol edge-slice, `23` month/quarter diagnostics)
+  - Economics available: `no`
+  - Best policy candidate: `neuralforecast_patchtst:TOP_1_PERCENT`
+  - `neuralforecast_patchtst`: `SIGNAL_CONFIRMED_ECONOMICS_UNKNOWN`, best policy `TOP_1_PERCENT`, precision `0.3517925736`, lift `2.5970351855`
+  - `neuralforecast_nhits`: `SIGNAL_CONFIRMED_ECONOMICS_UNKNOWN`, best policy `EDGE_SLICE_MONTH_2025-02`, precision `0.2556203164`, lift `1.8870635869`
+  - Evidence blockers: `NET_PROXY_NOT_AVAILABLE`, `ECONOMIC_POLICY_EVALUATION_REQUIRED`, `NOT_BACKTEST`, `NOT_RUNTIME_READY`, `NOT_PROMOTABLE`, `NO_PROFIT_CLAIM`
+  - Recommendation: `ADD_SAFE_NET_PROXY_OR_ECONOMIC_OUTCOME_ARTIFACTS`
+  - Next required action: `DESIGN_SAFE_ECONOMIC_OUTCOME_ARTIFACTS_FOR_SPECIALIST_POLICIES`
