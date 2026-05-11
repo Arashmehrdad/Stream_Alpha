@@ -1110,3 +1110,8 @@ Writes `research_labels/vol_scaled/cost_aware_specialist_policy_evaluator/` from
 M20 economic outcome artifacts:
 Command: python .\scripts\build_m20_economic_outcomes.py --source-run-dir .\artifacts\training\m20\20260506T054337Z --prediction-run-dir .\artifacts\training\m20\20260507T135017Z
 Writes `research_labels/vol_scaled/economic_outcome_artifacts/` from safe evaluation/label/training-frame artifacts only. The builder keys rows by `symbol` and `interval_begin`, carries optional `fold_index`, and emits `future_return`, `gross_value_proxy`, `net_value_proxy`, fees, slippage, horizon, `long_only` direction, fee-exceedance label context, and triple-barrier label context when available. These artifacts are research/evaluation-only and do not change prediction exports, runtime, registry, promotion, trading, backtests, or profitability claims.
+
+<!-- M20_COST_AWARE_POLICY_ADJUDICATION -->
+M20 cost-aware policy adjudication:
+Command: python .\scripts\write_m20_cost_aware_policy_adjudication.py --prediction-run-dir .\artifacts\training\m20\20260507T135017Z
+Writes `research_labels/vol_scaled/cost_aware_policy_adjudication/` from existing cost-aware specialist policy outputs only. Current adjudication records PatchTST and NHITS as `SIGNAL_CONFIRMED_ECONOMICS_NEGATIVE`, pauses the NeuralForecast specialist policy path, and points next work to `MOVE_TO_GENERIC_STRATEGY_CONDITIONED_CANDIDATE_FACTORY`. No runtime, registry, promotion, training, scoring, backtest, trading, or profit claim behavior is changed.

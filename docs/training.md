@@ -254,6 +254,24 @@ The evaluator joins predictions, labels, and economic outcomes by `symbol`,
 joined. Positive research metrics are not runtime readiness, promotion,
 backtest, or profit evidence.
 
+## Research-Only M20 Cost-Aware Policy Adjudication
+
+To freeze the current specialist policy interpretation from existing outputs
+only:
+
+```powershell
+python .\scripts\write_m20_cost_aware_policy_adjudication.py `
+  --prediction-run-dir .\artifacts\training\m20\20260507T135017Z
+```
+
+The adjudication reads `cost_aware_specialist_policy_evaluator/` plus optional
+specialist edge and confirmation context. It does not recompute predictions,
+labels, or economic outcomes. Current evidence keeps NeuralForecast specialist
+policies research-only: statistical lift exists, but safe net-proxy economics
+are negative. The required next action is
+`MOVE_TO_GENERIC_STRATEGY_CONDITIONED_CANDIDATE_FACTORY`, not a PatchTST-only or
+NHITS-only rerun.
+
 ## Research-Only M20 Trading-Aware Labels
 
 `app.training.research_labels` contains offline helpers for the next recovery

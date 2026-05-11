@@ -5824,3 +5824,36 @@ against naive baselines.
   - Evidence blockers: `NOT_BACKTEST`, `NOT_RUNTIME_READY`, `NOT_PROMOTABLE`, `NO_PROFIT_CLAIM`
   - Recommendation: `REJECT_OR_WATCHLIST_SPECIALIST_POLICY`
   - Next required action: `REJECT_OR_WATCHLIST_SPECIALIST_POLICY`
+
+<!-- M20_COST_AWARE_POLICY_ADJUDICATION -->
+### M20 cost-aware policy adjudication
+
+- Scope:
+  - Add a research-only adjudication artifact from existing cost-aware specialist policy outputs.
+  - Read cost-aware policy report, recommendation, candidate decisions, model policy metrics, top-k metrics, and economics availability.
+  - Include optional specialist edge and confirmation adjudication context when present.
+  - Freeze the honest interpretation that current NeuralForecast specialist policies have statistical signal but negative safe net-proxy economics.
+  - Point next work to `MOVE_TO_GENERIC_STRATEGY_CONDITIONED_CANDIDATE_FACTORY`, not a PatchTST-only or NHITS-only rerun.
+  - Preserve `RESEARCH_ONLY`, `NO_RUNTIME_EFFECT`, `NOT_BACKTEST`, `NOT_RUNTIME_READY`, `NOT_PROMOTABLE`, and `NO_PROFIT_CLAIM`.
+  - Do not change runtime inference, registry, promotion, paper/live execution, trading/backtest logic, model training, score-only export logic, label generation, validation workflow, or profitability claims.
+- Changed files:
+  - `app/training/m20_cost_aware_policy_adjudication.py`
+  - `scripts/write_m20_cost_aware_policy_adjudication.py`
+  - `tests/test_training_m20_cost_aware_policy_adjudication.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Targeted validation before real artifact run:
+  - `python -m pytest tests/test_training_m20_cost_aware_policy_adjudication.py -q` -> `6 passed`
+  - `python -m py_compile app/training/m20_cost_aware_policy_adjudication.py scripts/write_m20_cost_aware_policy_adjudication.py` -> passed
+  - `python -m pylint --fail-under=10 app/training/m20_cost_aware_policy_adjudication.py tests/test_training_m20_cost_aware_policy_adjudication.py` -> `10.00/10`
+  - `python scripts/write_m20_cost_aware_policy_adjudication.py --prediction-run-dir artifacts/training/m20/20260507T135017Z` -> completed
+  - `git diff --check` -> passed with existing LF/CRLF working-copy warnings only
+- Real output directory:
+  - `artifacts/training/m20/20260507T135017Z/research_labels/vol_scaled/cost_aware_policy_adjudication`
+- Real result:
+  - `neuralforecast_patchtst`: `SIGNAL_CONFIRMED_ECONOMICS_NEGATIVE`; best policy `EDGE_SLICE_MONTH_2024-11`; best lift `2.4626727489`; mean net proxy `-0.0011849531`; cumulative net proxy `-1.5274045997`
+  - `neuralforecast_nhits`: `SIGNAL_CONFIRMED_ECONOMICS_NEGATIVE`; best policy `EDGE_SLICE_MONTH_2025-02`; best lift `1.8870635869`; mean net proxy `-0.0014492146`; cumulative net proxy `-1.7405067497`
+  - Overall decision: `PAUSE_NEURALFORECAST_SPECIALIST_POLICY_PATH`
+  - Recommendation: `WATCHLIST_NEURALFORECAST_SPECIALISTS_DO_NOT_PROMOTE`
+  - Next required action: `MOVE_TO_GENERIC_STRATEGY_CONDITIONED_CANDIDATE_FACTORY`
