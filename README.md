@@ -1080,12 +1080,12 @@ Writes research_labels/vol_scaled/specialist_predictions/. It sanitizes existing
 <!-- M20_SPECIALIST_CONDITIONAL_USEFULNESS -->
 M20 specialist conditional usefulness:
 Command: python .\scripts\analyze_m20_specialist_conditional_usefulness.py --base-run-dir .\artifacts\training\m20\20260505T212518Z --previous-run-dir .\artifacts\training\m20\20260427T112021Z
-Writes research_labels/vol_scaled/specialist_conditional_usefulness/. Existing OOF rows only: 472,234 joined fee-label rows after skipping 72 horizon/unlabeled rows. Best candidate is `neuralforecast_patchtst` with top-5% lift `1.743825`, PR-AUC `0.138238`, ROC-AUC `0.476149`, and 15 conditional research slices; `neuralforecast_nhits` has top-5% lift `1.356309` and 2 slices. Recommendation is `RUN_SPECIALIST_CONFIRMATION_EXPORT`. No score-only rerun, model retrain, runtime, registry, promotion, trading/backtest, PnL, or profit-claim behavior is added.
+Writes research_labels/vol_scaled/specialist_conditional_usefulness/. Existing OOF rows only: 472,234 joined fee-label rows after skipping 72 horizon/unlabeled rows. Best candidate is `neuralforecast_patchtst` with top-5% lift `1.743825`, PR-AUC `0.138238`, ROC-AUC `0.476149`, and 15 conditional research slices; `neuralforecast_nhits` has top-5% lift `1.356309` and 2 slices. The original `RUN_SPECIALIST_CONFIRMATION_EXPORT` recommendation is now superseded by score-only confirmation, safe economic evaluation, cost-aware adjudication, and the generic strategy candidate factory. No score-only rerun, model retrain, runtime, registry, promotion, trading/backtest, PnL, or profit-claim behavior is added.
 
 <!-- M20_SPECIALIST_CONFIRMATION_PLAN -->
 M20 specialist confirmation plan:
 Command: python .\scripts\plan_m20_specialist_confirmation.py --base-run-dir .\artifacts\training\m20\20260505T212518Z --previous-run-dir .\artifacts\training\m20\20260427T112021Z --fitted-models-dir .\artifacts\training\m20\20260405T023104Z\fitted_models
-Writes research_labels/vol_scaled/specialist_confirmation_plan/. Primary candidate is `neuralforecast_patchtst`, secondary is `neuralforecast_nhits`, and 17 target slices are listed for manual confirmation. Current recommendation is `ADD_SPECIALIST_CONFIRMATION_EXPORT_HOOK_FIRST`; blockers remain `LONG_RUNS_MANUAL_ONLY`, `PER_SPECIALIST_EXPORT_HOOK_NOT_CONFIRMED`, `PATCHTST_CONFIRMATION_RUN_NOT_AVAILABLE`, and `AUTOGLUON_MEMBER_PREDICTIONS_MISSING`. No export, score-only rerun, model retrain, runtime, registry, promotion, trading/backtest, PnL, or profit-claim behavior is added.
+Writes research_labels/vol_scaled/specialist_confirmation_plan/. Primary candidate is `neuralforecast_patchtst`, secondary is `neuralforecast_nhits`, and 17 target slices are listed for manual confirmation. The original `ADD_SPECIALIST_CONFIRMATION_EXPORT_HOOK_FIRST` recommendation is historical; the confirmation/export/economic-adjudication path has since completed and the current next step is generic strategy candidate refinement. No export, score-only rerun, model retrain, runtime, registry, promotion, trading/backtest, PnL, or profit-claim behavior is added.
 
 <!-- M20_SPECIALIST_CONFIRMATION_EXPORT_HOOK -->
 M20 specialist confirmation export hook:
@@ -1120,3 +1120,28 @@ Writes `research_labels/vol_scaled/cost_aware_policy_adjudication/` from existin
 M20 strategy-conditioned candidate factory:
 Command: python .\scripts\build_m20_strategy_candidates.py --source-run-dir .\artifacts\training\m20\20260506T054337Z
 Writes `research_labels/vol_scaled/strategy_candidate_factory/` from existing training-frame, label, and safe economic-outcome artifacts only. The reusable factory evaluates MACD, RSI, range, volatility, return/reversal, and volume setup families with identical candidate-event logic, joins safe labels/economics by `symbol`, `interval_begin`, and optional `fold_index`, and keeps every output `RESEARCH_ONLY`, `NO_RUNTIME_EFFECT`, `NOT_BACKTEST`, `NOT_RUNTIME_READY`, `NOT_PROMOTABLE`, and `NO_PROFIT_CLAIM`. It does not change runtime, registry, promotion, training, scoring, prediction exports, backtests, trading, or profit claims.
+
+<!-- M20_STRATEGY_CANDIDATE_REFINEMENT -->
+M20 strategy candidate refinement:
+Command: python .\scripts\analyze_m20_strategy_candidate_refinement.py --source-run-dir .\artifacts\training\m20\20260506T054337Z
+Writes `research_labels/vol_scaled/strategy_candidate_refinement/` from existing strategy candidate and training-frame artifacts only. The analyzer applies one generic refinement pass across symbol, month, quarter, volatility, range, and volume slices, with sample-size and tail-loss diagnostics. Current result keeps all strategy candidates research-only and recommends `REFINE_STRATEGY_CANDIDATE_DEFINITIONS`; no runtime, registry, promotion, training, scoring, prediction export, backtest, trading, or profit claim behavior is changed.
+
+<!-- M20_STRATEGY_SLICE_POLICY_EVALUATOR -->
+M20 strategy slice policy evaluator:
+Command: python .\scripts\analyze_m20_strategy_slice_policy.py --source-run-dir .\artifacts\training\m20\20260506T054337Z
+Writes `research_labels/vol_scaled/strategy_slice_policy_evaluator/` from existing strategy refinement artifacts only. The evaluator scores generic symbol, time, regime, and volume slice policies without building one-off strategy tools. Current result: 438 policy candidates, 434 economics-negative and 4 low-sample, recommendation `REFINE_STRATEGY_CANDIDATE_DEFINITIONS`. Outputs remain research-only with no runtime, registry, promotion, training, scoring, prediction export, backtest, trading, or profit-claim behavior.
+
+<!-- M20_STRATEGY_MODEL_FACTORY_PLAN -->
+M20 strategy-conditioned model factory plan:
+Command: python .\scripts\plan_m20_strategy_model_factory.py --source-run-dir .\artifacts\training\m20\20260506T054337Z
+Writes `research_labels/vol_scaled/strategy_model_factory_plan/` as a design-only contract for a future reusable model factory. AutoGluon or any future model family is treated as a tournament/model factory, not a final universal model. Current blockers are `NO_APPROVED_STRATEGY_POLICY_CANDIDATE` and `MODEL_FACTORY_EXECUTION_NOT_APPROVED`; no training, scoring, runtime, registry, promotion, backtest, trading, or profit-claim behavior is changed.
+
+<!-- M20_RESEARCH_CANDIDATE_COMPARATOR -->
+M20 research candidate comparator:
+Command: python .\scripts\compare_m20_research_candidates.py --source-run-dir .\artifacts\training\m20\20260506T054337Z --prediction-run-dir .\artifacts\training\m20\20260507T135017Z
+Writes `research_labels/vol_scaled/research_candidate_comparator/` from existing generic strategy and NeuralForecast specialist adjudication artifacts only. It compares model, strategy, policy, and model-factory candidate inputs under one research-only evidence contract. Current result: 470 candidates, no positive proxy research candidate, recommendation `PAUSE_CURRENT_M20_CANDIDATE_PATHS`, next action `REFINE_STRATEGY_CANDIDATE_DEFINITIONS`.
+
+<!-- M20_RESEARCH_DASHBOARD -->
+M20 research dashboard:
+Command: python .\scripts\write_m20_research_dashboard.py --source-run-dir .\artifacts\training\m20\20260506T054337Z --prediction-run-dir .\artifacts\training\m20\20260507T135017Z
+Writes `research_labels/vol_scaled/m20_research_dashboard/` as a static handoff artifact from existing evidence only. Current decision: `PAUSE_CURRENT_M20_RESEARCH_PATHS`; recommendation `PAUSE_CURRENT_M20_RESEARCH_PATHS_AND_REFINE_STRATEGY_DEFINITIONS`; blockers `NO_POSITIVE_PROXY_RESEARCH_CANDIDATE` and `NO_RUNTIME_OR_PROMOTION_DECISION`. No runtime, registry, promotion, training, scoring, backtest, trading, or profit-claim behavior is changed.

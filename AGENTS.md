@@ -37,7 +37,10 @@ Wrong:
 
 - Build a PatchTST-only evaluator.
 - Build an NHITS-only evaluator.
-- Build separate one-off evaluators for MACD, breakout, range, volatility, etc.
+- Build a MACD-only, RSI-only, breakout-only, or other one-family evaluator.
+- Build separate one-off evaluators for range, volatility, volume, labels, slices, policies, or artifacts.
+
+Only make model-specific code when repairing a truly model-specific export or format issue.
 
 Correct:
 
@@ -53,10 +56,10 @@ Required research flags where applicable:
 
 - RESEARCH_ONLY
 - NO_RUNTIME_EFFECT
+- NOT_BACKTEST
 - NOT_RUNTIME_READY
 - NOT_PROMOTABLE
 - NO_PROFIT_CLAIM
-- NOT_BACKTEST
 
 Do not claim profitability from:
 
@@ -104,6 +107,7 @@ Do not change:
 - score-only export logic
 - label generation
 - validation workflow
+- profit-claim behavior
 - secrets or account configuration
 
 Do not run:

@@ -5890,3 +5890,173 @@ against naive baselines.
   - Candidate decisions: `15` `STRATEGY_CANDIDATE_ECONOMICS_NEGATIVE`
   - Recommendation: `WATCHLIST_OR_REFINE_STRATEGY_CANDIDATE_DEFINITIONS`
   - Next required action: `REFINE_STRATEGY_CANDIDATE_DEFINITIONS`
+
+<!-- M20_GENERIC_PIPELINE_BATCH_A_LANGUAGE_AUDIT -->
+### M20 generic pipeline Batch A - evidence language audit
+
+- Scope:
+  - Audit current M20 docs for stale next-action language that still presented specialist confirmation/export as the active path.
+  - Keep historical specialist artifacts documented, but mark old `RUN_SPECIALIST_CONFIRMATION_EXPORT` and `ADD_SPECIALIST_CONFIRMATION_EXPORT_HOOK_FIRST` recommendations as superseded.
+  - Align current narrative with the completed safe economic adjudication and generic strategy candidate factory.
+  - Preserve the current next direction: generic strategy candidate refinement, not PatchTST/NHITS/manual one-off reruns.
+  - No code, runtime, registry, promotion, scoring, training, trading/backtest, generated artifact, or profit-claim behavior changed.
+- Changed files:
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Targeted validation:
+  - `rg` stale recommendation/status terms across current M20 docs/code -> found historical references; current docs now label active stale recommendations as superseded.
+  - `git diff --check` -> passed with LF/CRLF working-copy warnings only.
+- Expected decision:
+  - Proceed to Batch B: generic strategy candidate refinement analyzer.
+
+<!-- M20_STRATEGY_CANDIDATE_REFINEMENT -->
+### M20 generic pipeline Batch B - strategy candidate refinement
+
+- Scope:
+  - Add a reusable refinement analyzer over `strategy_candidate_factory/` outputs.
+  - Evaluate symbol, month, quarter, volatility-bucket, range-bucket, and volume-bucket slices with one generic path.
+  - Emit refined candidate metrics, slice diagnostics, tail-loss diagnostics, sample-size diagnostics, candidate decisions, next actions, report, manifest, and recommendation artifacts.
+  - Preserve `RESEARCH_ONLY`, `NO_RUNTIME_EFFECT`, `NOT_BACKTEST`, `NOT_RUNTIME_READY`, `NOT_PROMOTABLE`, and `NO_PROFIT_CLAIM`.
+  - Do not change runtime inference, registry, promotion, paper/live execution, trading/backtest logic, model training, scoring, prediction exports, label generation, validation workflow, or profitability claims.
+- Changed files:
+  - `app/training/m20_strategy_candidate_refinement.py`
+  - `scripts/analyze_m20_strategy_candidate_refinement.py`
+  - `tests/test_training_m20_strategy_candidate_refinement.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Targeted validation before real artifact run:
+  - `python -m pytest tests/test_training_m20_strategy_candidate_refinement.py -q` -> `6 passed`
+  - `python -m py_compile app/training/m20_strategy_candidate_refinement.py scripts/analyze_m20_strategy_candidate_refinement.py` -> passed
+  - `python -m pylint --fail-under=10 app/training/m20_strategy_candidate_refinement.py tests/test_training_m20_strategy_candidate_refinement.py` -> `10.00/10`
+  - `python scripts/analyze_m20_strategy_candidate_refinement.py --source-run-dir artifacts/training/m20/20260506T054337Z` -> completed
+- Real output directory:
+  - `artifacts/training/m20/20260506T054337Z/research_labels/vol_scaled/strategy_candidate_refinement`
+- Real result:
+  - Candidate count: `15`
+  - Slice count: `438`
+  - Candidate decisions: `15` `REFINE_OR_WATCHLIST_NEGATIVE_ECONOMICS`
+  - Best observed slice remained negative at the default sample gate: `volatility_state:realized_vol_high` on `quarter=2025Q2`, mean net proxy `-0.0003306143`
+  - Recommendation: `REFINE_STRATEGY_CANDIDATE_DEFINITIONS`
+  - Next required action: `REFINE_STRATEGY_CANDIDATE_DEFINITIONS`
+
+<!-- M20_STRATEGY_SLICE_POLICY_EVALUATOR -->
+### M20 generic pipeline Batch C - strategy slice policy evaluator
+
+- Scope:
+  - Add a reusable policy evaluator over `strategy_candidate_refinement/` outputs.
+  - Convert refined symbol, month, quarter, volatility, range, and volume slices into generic policy candidates.
+  - Emit policy candidates, policy metrics, by-symbol/time diagnostics, tail risk, candidate decisions, next actions, report, manifest, and recommendation artifacts.
+  - Preserve `RESEARCH_ONLY`, `NO_RUNTIME_EFFECT`, `NOT_BACKTEST`, `NOT_RUNTIME_READY`, `NOT_PROMOTABLE`, and `NO_PROFIT_CLAIM`.
+  - Do not change runtime inference, registry, promotion, paper/live execution, trading/backtest logic, model training, scoring, prediction exports, label generation, validation workflow, or profitability claims.
+- Changed files:
+  - `app/training/m20_strategy_slice_policy_evaluator.py`
+  - `scripts/analyze_m20_strategy_slice_policy.py`
+  - `tests/test_training_m20_strategy_slice_policy_evaluator.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Targeted validation before real artifact run:
+  - `python -m pytest tests/test_training_m20_strategy_slice_policy_evaluator.py -q` -> `6 passed`
+  - `python -m py_compile app/training/m20_strategy_slice_policy_evaluator.py scripts/analyze_m20_strategy_slice_policy.py` -> passed
+  - `python -m pylint --fail-under=10 app/training/m20_strategy_slice_policy_evaluator.py tests/test_training_m20_strategy_slice_policy_evaluator.py` -> `10.00/10`
+  - `python scripts/analyze_m20_strategy_slice_policy.py --source-run-dir artifacts/training/m20/20260506T054337Z` -> completed
+- Real output directory:
+  - `artifacts/training/m20/20260506T054337Z/research_labels/vol_scaled/strategy_slice_policy_evaluator`
+- Real result:
+  - Policy count: `438`
+  - Candidate decisions: `434` `SLICE_POLICY_ECONOMICS_NEGATIVE`, `4` `SLICE_POLICY_LOW_SAMPLE`
+  - Best observed policy remained negative: `volatility_state:realized_vol_high:quarter=2025Q2`, mean net proxy `-0.0003306143`
+  - Recommendation: `REFINE_STRATEGY_CANDIDATE_DEFINITIONS`
+  - Next required action: `REFINE_STRATEGY_CANDIDATE_DEFINITIONS`
+
+<!-- M20_STRATEGY_MODEL_FACTORY_PLAN -->
+### M20 generic pipeline Batch D - strategy-conditioned model factory plan
+
+- Scope:
+  - Add a design-only artifact for a reusable M20 strategy-conditioned model factory.
+  - Treat AutoGluon and future model families as tournament/model factories, not final universal models.
+  - Define candidate inputs, required artifacts, forbidden leakage inputs, output contract, manual command policy, blockers, next actions, report, manifest, and recommendation artifacts.
+  - Preserve `RESEARCH_ONLY`, `DESIGN_ONLY`, `NO_TRAINING_EXECUTED`, `NO_SCORING_EXECUTED`, `NO_RUNTIME_EFFECT`, `NOT_BACKTEST`, `NOT_RUNTIME_READY`, `NOT_PROMOTABLE`, and `NO_PROFIT_CLAIM`.
+  - Do not change runtime inference, registry, promotion, paper/live execution, trading/backtest logic, model training, scoring, prediction exports, label generation, validation workflow, or profitability claims.
+- Changed files:
+  - `app/training/m20_strategy_model_factory_plan.py`
+  - `scripts/plan_m20_strategy_model_factory.py`
+  - `tests/test_training_m20_strategy_model_factory_plan.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Targeted validation before real artifact run:
+  - `python -m pytest tests/test_training_m20_strategy_model_factory_plan.py -q` -> `6 passed`
+  - `python -m py_compile app/training/m20_strategy_model_factory_plan.py scripts/plan_m20_strategy_model_factory.py` -> passed
+  - `python -m pylint --fail-under=10 app/training/m20_strategy_model_factory_plan.py tests/test_training_m20_strategy_model_factory_plan.py` -> `10.00/10`
+  - `python scripts/plan_m20_strategy_model_factory.py --source-run-dir artifacts/training/m20/20260506T054337Z` -> completed
+- Real output directory:
+  - `artifacts/training/m20/20260506T054337Z/research_labels/vol_scaled/strategy_model_factory_plan`
+- Real result:
+  - Candidate inputs: `15`
+  - Candidate statuses: `15` `BLOCKED_PENDING_STRATEGY_REFINEMENT`
+  - Execution blockers: `NO_APPROVED_STRATEGY_POLICY_CANDIDATE`, `MODEL_FACTORY_EXECUTION_NOT_APPROVED`
+  - Recommendation: `DESIGN_REUSABLE_STRATEGY_CONDITIONED_MODEL_FACTORY_CONTRACT`
+  - Next required action: `REFINE_STRATEGY_CANDIDATES_BEFORE_MODEL_FACTORY_EXECUTION`
+
+<!-- M20_RESEARCH_CANDIDATE_COMPARATOR -->
+### M20 generic pipeline Batch E - research candidate comparator
+
+- Scope:
+  - Add a reusable comparator over current known generic M20 candidate artifacts.
+  - Compare strategy candidates, strategy slice policies, model-factory candidate inputs, and NeuralForecast specialist policy adjudication rows under one evidence contract.
+  - Emit candidate scorecard, economics comparison, stability comparison, candidate decisions, next actions, report, manifest, and recommendation artifacts.
+  - Preserve `RESEARCH_ONLY`, `EXISTING_ARTIFACTS_ONLY`, `NO_RUNTIME_EFFECT`, `NOT_BACKTEST`, `NOT_RUNTIME_READY`, `NOT_PROMOTABLE`, and `NO_PROFIT_CLAIM`.
+  - Do not change runtime inference, registry, promotion, paper/live execution, trading/backtest logic, model training, scoring, prediction exports, label generation, validation workflow, or profitability claims.
+- Changed files:
+  - `app/training/m20_research_candidate_comparator.py`
+  - `scripts/compare_m20_research_candidates.py`
+  - `tests/test_training_m20_research_candidate_comparator.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Targeted validation before real artifact run:
+  - `python -m pytest tests/test_training_m20_research_candidate_comparator.py -q` -> `5 passed`
+  - `python -m py_compile app/training/m20_research_candidate_comparator.py scripts/compare_m20_research_candidates.py` -> passed
+  - `python -m pylint --fail-under=10 app/training/m20_research_candidate_comparator.py tests/test_training_m20_research_candidate_comparator.py` -> `10.00/10`
+  - `python scripts/compare_m20_research_candidates.py --source-run-dir artifacts/training/m20/20260506T054337Z --prediction-run-dir artifacts/training/m20/20260507T135017Z` -> completed
+- Real output directory:
+  - `artifacts/training/m20/20260506T054337Z/research_labels/vol_scaled/research_candidate_comparator`
+- Real result:
+  - Candidate count: `470`
+  - Candidate decisions: `451` `ECONOMICS_NEGATIVE_RESEARCH_ONLY`, `15` `BLOCKED_RESEARCH_ONLY`, `4` `WATCHLIST_LOW_SAMPLE_RESEARCH_ONLY`
+  - Evidence blockers: `NO_POSITIVE_PROXY_RESEARCH_CANDIDATE`, `NO_RUNTIME_OR_PROMOTION_DECISION`
+  - Recommendation: `PAUSE_CURRENT_M20_CANDIDATE_PATHS`
+  - Next required action: `REFINE_STRATEGY_CANDIDATE_DEFINITIONS`
+
+<!-- M20_RESEARCH_DASHBOARD -->
+### M20 generic pipeline Batch F - research dashboard
+
+- Scope:
+  - Add a static M20 research dashboard from existing evidence artifacts only.
+  - Roll up safe economic outcomes, strategy candidate factory, refinement, slice policy evaluator, model-factory plan, research comparator, and NeuralForecast cost-aware adjudication.
+  - Emit dashboard JSON/Markdown, evidence index, decision timeline, open blockers, next actions, recommendation, and manifest artifacts.
+  - Preserve `RESEARCH_ONLY`, `EXISTING_ARTIFACTS_ONLY`, `NO_RUNTIME_EFFECT`, `NOT_BACKTEST`, `NOT_RUNTIME_READY`, `NOT_PROMOTABLE`, and `NO_PROFIT_CLAIM`.
+  - Do not change runtime inference, registry, promotion, paper/live execution, trading/backtest logic, model training, scoring, prediction exports, label generation, validation workflow, or profitability claims.
+- Changed files:
+  - `app/training/m20_research_dashboard.py`
+  - `scripts/write_m20_research_dashboard.py`
+  - `tests/test_training_m20_research_dashboard.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Targeted validation before real artifact run:
+  - `python -m pytest tests/test_training_m20_research_dashboard.py -q` -> `4 passed`
+  - `python -m py_compile app/training/m20_research_dashboard.py scripts/write_m20_research_dashboard.py` -> passed
+  - `python -m pylint --fail-under=10 app/training/m20_research_dashboard.py tests/test_training_m20_research_dashboard.py` -> `10.00/10`
+  - `python scripts/write_m20_research_dashboard.py --source-run-dir artifacts/training/m20/20260506T054337Z --prediction-run-dir artifacts/training/m20/20260507T135017Z` -> completed
+- Real output directory:
+  - `artifacts/training/m20/20260506T054337Z/research_labels/vol_scaled/m20_research_dashboard`
+- Real result:
+  - Overall decision: `PAUSE_CURRENT_M20_RESEARCH_PATHS`
+  - Evidence count: `7`
+  - Open blockers: `NO_POSITIVE_PROXY_RESEARCH_CANDIDATE`, `NO_RUNTIME_OR_PROMOTION_DECISION`
+  - Recommendation: `PAUSE_CURRENT_M20_RESEARCH_PATHS_AND_REFINE_STRATEGY_DEFINITIONS`
+  - Next required action: `REFINE_STRATEGY_CANDIDATE_DEFINITIONS`
