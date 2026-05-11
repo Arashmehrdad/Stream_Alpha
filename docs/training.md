@@ -1082,3 +1082,17 @@ Writes `research_labels/vol_scaled/research_candidate_comparator/` from existing
 Command: python .\scripts\write_m20_research_dashboard.py --source-run-dir .\artifacts\training\m20\20260506T054337Z --prediction-run-dir .\artifacts\training\m20\20260507T135017Z
 
 Writes `research_labels/vol_scaled/m20_research_dashboard/` from existing evidence artifacts only. The dashboard emits a static JSON/Markdown rollup, evidence index, decision timeline, open blockers, next actions, and recommendation. Current result: overall decision `PAUSE_CURRENT_M20_RESEARCH_PATHS`, recommendation `PAUSE_CURRENT_M20_RESEARCH_PATHS_AND_REFINE_STRATEGY_DEFINITIONS`, blockers `NO_POSITIVE_PROXY_RESEARCH_CANDIDATE` and `NO_RUNTIME_OR_PROMOTION_DECISION`.
+
+<!-- M20_STRATEGY_CANDIDATE_REDESIGN_PLAN -->
+## Research-Only M20 Strategy Candidate Redesign Plan
+
+Command: python .\scripts\plan_m20_strategy_candidate_redesign.py --source-run-dir .\artifacts\training\m20\20260506T054337Z --prediction-run-dir .\artifacts\training\m20\20260507T135017Z
+
+Writes `research_labels/vol_scaled/strategy_candidate_redesign_plan/` from existing evidence and feature-schema artifacts only. The planner emits available/missing feature family audits, v2 candidate definition specs, a downstream candidate contract, blocked definitions, next actions, and recommendation. Current result: 8 candidate definitions, 6 ready for a future v2 factory, 2 blocked by missing `regime_label` and `adx_14`; recommendation `BUILD_GENERIC_V2_STRATEGY_CANDIDATES`.
+
+<!-- M20_STRATEGY_CANDIDATE_V2_FACTORY -->
+## Research-Only M20 Strategy Candidate V2 Factory
+
+Command: python .\scripts\build_m20_strategy_candidates_v2.py --source-run-dir .\artifacts\training\m20\20260506T054337Z
+
+Writes `research_labels/vol_scaled/strategy_candidate_v2_factory/` from redesign-plan definitions and safe training-frame features only. The factory generates ready v2 candidate rows, carries blocked definitions forward, joins labels and economic outcomes only after setup selection, and emits candidate metrics, symbol/time diagnostics, decisions, next actions, and recommendation artifacts. Current result: 8 definitions processed, 6 ready candidates generated 237,794 rows, 2 definitions blocked by missing `regime_label` and `adx_14`, all ready candidates economics-negative, recommendation `REFINE_OR_ADD_SAFE_FEATURES_FOR_V2_CANDIDATES`.

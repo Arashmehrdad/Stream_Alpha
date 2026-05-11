@@ -6060,3 +6060,68 @@ against naive baselines.
   - Open blockers: `NO_POSITIVE_PROXY_RESEARCH_CANDIDATE`, `NO_RUNTIME_OR_PROMOTION_DECISION`
   - Recommendation: `PAUSE_CURRENT_M20_RESEARCH_PATHS_AND_REFINE_STRATEGY_DEFINITIONS`
   - Next required action: `REFINE_STRATEGY_CANDIDATE_DEFINITIONS`
+
+<!-- M20_STRATEGY_CANDIDATE_REDESIGN_PLAN -->
+### M20 generic pipeline Batch G - strategy candidate redesign plan
+
+- Scope:
+  - Add a design-only v2 strategy candidate redesign planner from existing evidence and safe feature-schema artifacts.
+  - Identify available feature families, missing feature families, current failure modes, v2 candidate definition specs, blocked definitions, and downstream candidate contract.
+  - Propose generic multi-condition, volatility-adjusted, range/volatility/volume composite, lower-turnover, abstention/HOLD, and tail-risk-aware definitions.
+  - Block regime-conditioned and trend-strength definitions until explicit safe features exist.
+  - Preserve `RESEARCH_ONLY`, `EXISTING_ARTIFACTS_ONLY`, `DESIGN_ONLY`, `NO_CANDIDATE_EVALUATION`, `NO_RUNTIME_EFFECT`, `NOT_BACKTEST`, `NOT_RUNTIME_READY`, `NOT_PROMOTABLE`, and `NO_PROFIT_CLAIM`.
+  - Do not change runtime inference, registry, promotion, paper/live execution, trading/backtest logic, model training, scoring, prediction exports, label generation, validation workflow, or profitability claims.
+- Changed files:
+  - `app/training/m20_strategy_candidate_redesign_plan.py`
+  - `scripts/plan_m20_strategy_candidate_redesign.py`
+  - `tests/test_training_m20_strategy_candidate_redesign_plan.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Targeted validation before real artifact run:
+  - `python -m pytest tests/test_training_m20_strategy_candidate_redesign_plan.py -q` -> `6 passed`
+  - `python -m py_compile app/training/m20_strategy_candidate_redesign_plan.py scripts/plan_m20_strategy_candidate_redesign.py` -> passed
+  - `python -m pylint --fail-under=10 app/training/m20_strategy_candidate_redesign_plan.py tests/test_training_m20_strategy_candidate_redesign_plan.py` -> `10.00/10`
+  - `python scripts/plan_m20_strategy_candidate_redesign.py --source-run-dir artifacts/training/m20/20260506T054337Z --prediction-run-dir artifacts/training/m20/20260507T135017Z` -> completed
+- Real output directory:
+  - `artifacts/training/m20/20260506T054337Z/research_labels/vol_scaled/strategy_candidate_redesign_plan`
+- Real result:
+  - Candidate definitions: `8`
+  - Ready definitions: `6`
+  - Blocked definitions: `2` (`regime_conditioned_momentum`, `trend_strength_filtered_momentum`)
+  - Missing feature blockers: `regime_label`, `adx_14`
+  - Recommendation: `BUILD_GENERIC_V2_STRATEGY_CANDIDATES`
+  - Next required action: `BUILD_GENERIC_V2_STRATEGY_CANDIDATE_FACTORY`
+
+<!-- M20_STRATEGY_CANDIDATE_V2_FACTORY -->
+### M20 generic pipeline Batch H - strategy candidate v2 factory
+
+- Scope:
+  - Add a separate generic v2 strategy candidate factory that consumes `strategy_candidate_redesign_plan/candidate_definition_specs.csv`.
+  - Generate rows only for ready definitions from safe training-frame features, then join labels/economic outcomes after setup selection.
+  - Carry missing-feature definitions forward without inventing regime or trend-strength signals.
+  - Preserve `RESEARCH_ONLY`, `NO_RUNTIME_EFFECT`, `NOT_BACKTEST`, `NOT_RUNTIME_READY`, `NOT_PROMOTABLE`, and `NO_PROFIT_CLAIM`.
+  - Do not change runtime inference, registry, promotion, paper/live execution, trading/backtest logic, model training, scoring, prediction exports, label generation, validation workflow, or profitability claims.
+- Changed files:
+  - `app/training/m20_strategy_candidate_v2_factory.py`
+  - `scripts/build_m20_strategy_candidates_v2.py`
+  - `tests/test_training_m20_strategy_candidate_v2_factory.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Validation:
+  - `python -m pytest tests/test_training_m20_strategy_candidate_v2_factory.py -q` -> `7 passed`
+  - `python -m py_compile app/training/m20_strategy_candidate_v2_factory.py scripts/build_m20_strategy_candidates_v2.py` -> passed
+  - `python -m pylint --fail-under=10 app/training/m20_strategy_candidate_v2_factory.py tests/test_training_m20_strategy_candidate_v2_factory.py` -> `10.00/10`
+  - `python scripts/build_m20_strategy_candidates_v2.py --source-run-dir artifacts/training/m20/20260506T054337Z` -> completed
+- Real output directory:
+  - `artifacts/training/m20/20260506T054337Z/research_labels/vol_scaled/strategy_candidate_v2_factory`
+- Real result:
+  - Candidate definitions processed: `8`
+  - Ready candidates generated: `6`
+  - Candidate rows written: `237794`
+  - Blocked definitions: `2` (`regime_conditioned_momentum`, `trend_strength_filtered_momentum`)
+  - Missing feature blockers: `regime_label`, `adx_14`
+  - Candidate decisions: `6` `V2_STRATEGY_CANDIDATE_ECONOMICS_NEGATIVE`, `2` `V2_STRATEGY_CANDIDATE_BLOCKED_MISSING_FEATURES`
+  - Recommendation: `REFINE_OR_ADD_SAFE_FEATURES_FOR_V2_CANDIDATES`
+  - Next required action: `REFINE_OR_ADD_SAFE_FEATURES_FOR_V2_CANDIDATES`

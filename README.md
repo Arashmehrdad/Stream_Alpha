@@ -1145,3 +1145,13 @@ Writes `research_labels/vol_scaled/research_candidate_comparator/` from existing
 M20 research dashboard:
 Command: python .\scripts\write_m20_research_dashboard.py --source-run-dir .\artifacts\training\m20\20260506T054337Z --prediction-run-dir .\artifacts\training\m20\20260507T135017Z
 Writes `research_labels/vol_scaled/m20_research_dashboard/` as a static handoff artifact from existing evidence only. Current decision: `PAUSE_CURRENT_M20_RESEARCH_PATHS`; recommendation `PAUSE_CURRENT_M20_RESEARCH_PATHS_AND_REFINE_STRATEGY_DEFINITIONS`; blockers `NO_POSITIVE_PROXY_RESEARCH_CANDIDATE` and `NO_RUNTIME_OR_PROMOTION_DECISION`. No runtime, registry, promotion, training, scoring, backtest, trading, or profit-claim behavior is changed.
+
+<!-- M20_STRATEGY_CANDIDATE_REDESIGN_PLAN -->
+M20 strategy candidate redesign plan:
+Command: python .\scripts\plan_m20_strategy_candidate_redesign.py --source-run-dir .\artifacts\training\m20\20260506T054337Z --prediction-run-dir .\artifacts\training\m20\20260507T135017Z
+Writes `research_labels/vol_scaled/strategy_candidate_redesign_plan/` as a design-only v2 candidate-definition artifact. It proposes multi-condition, volatility-adjusted, range/volatility/volume composite, lower-turnover, abstention/HOLD, and tail-risk-aware definitions from existing safe features, while blocking regime-conditioned and trend-strength definitions until `regime_label` and `adx_14`-style features exist. It does not evaluate candidates, train, score, change runtime behavior, or claim profit.
+
+<!-- M20_STRATEGY_CANDIDATE_V2_FACTORY -->
+M20 strategy candidate v2 factory:
+Command: python .\scripts\build_m20_strategy_candidates_v2.py --source-run-dir .\artifacts\training\m20\20260506T054337Z
+Writes `research_labels/vol_scaled/strategy_candidate_v2_factory/` from the redesign plan and safe training-frame features only. Current result: 8 definitions processed, 6 ready definitions generated 237,794 candidate rows, 2 definitions remain blocked by missing `regime_label` and `adx_14`, and all ready candidates are economics-negative under the current safe net-proxy artifact. Recommendation: `REFINE_OR_ADD_SAFE_FEATURES_FOR_V2_CANDIDATES`. No runtime, registry, promotion, training, scoring, prediction export, backtest, trading, or profit-claim behavior is changed.
