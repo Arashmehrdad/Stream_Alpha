@@ -30,6 +30,7 @@ def main() -> None:
     parser.add_argument("--prediction-source", required=True)
     parser.add_argument("--models")
     parser.add_argument("--edge-evaluator-dir")
+    parser.add_argument("--economic-outcome-dir")
     parser.add_argument("--label-file", default=DEFAULT_LABEL_FILE)
     parser.add_argument("--output-name", default=DEFAULT_OUTPUT_NAME)
     parser.add_argument("--json", action="store_true")
@@ -48,6 +49,11 @@ def main() -> None:
             edge_evaluator_dir=(
                 Path(args.edge_evaluator_dir)
                 if args.edge_evaluator_dir is not None
+                else None
+            ),
+            economic_outcome_dir=(
+                Path(args.economic_outcome_dir)
+                if args.economic_outcome_dir is not None
                 else None
             ),
             label_file=args.label_file,

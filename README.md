@@ -1104,7 +1104,7 @@ Writes `research_labels/vol_scaled/specialist_edge_evaluator/` from existing pre
 <!-- M20_COST_AWARE_SPECIALIST_POLICY_EVALUATOR -->
 M20 cost-aware specialist policy evaluator:
 Command: python .\scripts\analyze_m20_cost_aware_specialist_policy.py --prediction-run-dir .\artifacts\training\m20\20260507T135017Z --label-source-run-dir .\artifacts\training\m20\20260506T054337Z --prediction-source score_only_confirmation
-Writes `research_labels/vol_scaled/cost_aware_specialist_policy_evaluator/` from existing artifacts only. The reusable evaluator applies identical top-k, threshold, edge-slice, symbol, month, and quarter diagnostic policy logic across discovered/requested models. It computes economic proxy metrics only when labels/evaluation artifacts contain safe net/proxy outcome columns; current score-only confirmation labels do not, so the artifact emits `NET_PROXY_NOT_AVAILABLE`, `ECONOMIC_POLICY_EVALUATION_REQUIRED`, `NOT_BACKTEST`, `NOT_RUNTIME_READY`, `NOT_PROMOTABLE`, and `NO_PROFIT_CLAIM` instead of inventing profitability.
+Writes `research_labels/vol_scaled/cost_aware_specialist_policy_evaluator/` from existing artifacts only. The reusable evaluator applies identical top-k, threshold, edge-slice, symbol, month, and quarter diagnostic policy logic across discovered/requested models. It now supports `--economic-outcome-dir` and defaults to the label-source run's `economic_outcome_artifacts/`; economic metrics are computed only from safe economic outcome or label/evaluation artifacts. Outputs remain research-only with `NO_RUNTIME_EFFECT`, `NOT_RUNTIME_READY`, `NOT_PROMOTABLE`, `NO_PROFIT_CLAIM`, and `NOT_BACKTEST`.
 
 <!-- M20_ECONOMIC_OUTCOME_ARTIFACTS -->
 M20 economic outcome artifacts:

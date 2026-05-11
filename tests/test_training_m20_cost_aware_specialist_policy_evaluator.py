@@ -81,6 +81,24 @@ def _write_sources(base: Path, labels: Path, *, with_net_proxy: bool = False) ->
     )
 
 
+def _write_economic_outcomes(base: Path) -> Path:
+    outcome_dir = base / "research_labels" / "vol_scaled" / "economic_outcome_artifacts"
+    rows = []
+    for index in range(100):
+        label = index < 5
+        rows.append(
+            {
+                "symbol": "BTC/USD" if index < 50 else "ETH/USD",
+                "interval_begin": f"2025-01-{(index // 24) + 1:02d}T{index % 24:02d}:00:00Z",
+                "fold_index": "",
+                "gross_value_proxy": 0.11 if label else -0.01,
+                "net_value_proxy": 0.10 if label else -0.02,
+            }
+        )
+    _write_csv(outcome_dir / "economic_outcomes.csv", rows)
+    return outcome_dir
+
+
 def test_evaluator_supports_multiple_models_in_one_run(tmp_path: Path) -> None:
     prediction_run = tmp_path / "prediction"
     label_run = tmp_path / "labels"
@@ -171,6 +189,22 @@ def test_missing_net_proxy_emits_blockers(tmp_path: Path) -> None:
     assert "ECONOMIC_POLICY_EVALUATION_REQUIRED" in economics["evidence_blockers"]
 
 
+def test_missing_economic_outcome_dir_keeps_blocker_behavior(tmp_path: Path) -> None:
+    prediction_run = tmp_path / "prediction"
+    label_run = tmp_path / "labels"
+    _write_sources(prediction_run, label_run)
+
+    result = analyze_m20_cost_aware_specialist_policy(
+        prediction_run_dir=prediction_run,
+        label_source_run_dir=label_run,
+        prediction_source="score_only_confirmation",
+        economic_outcome_dir=tmp_path / "missing_outcomes",
+    )
+
+    assert result["economics_available"] is False
+    assert result["recommendation"] == "ADD_SAFE_NET_PROXY_OR_ECONOMIC_OUTCOME_ARTIFACTS"
+
+
 def test_binary_label_only_does_not_claim_profit(tmp_path: Path) -> None:
     prediction_run = tmp_path / "prediction"
     label_run = tmp_path / "labels"
@@ -204,6 +238,52 @@ def test_safe_net_proxy_computes_economic_metrics(tmp_path: Path) -> None:
     assert float(top5["mean_net_proxy"]) == pytest.approx(0.1)
     assert float(top5["cumulative_net_proxy"]) == pytest.approx(0.5)
     assert float(top5["max_drawdown_proxy"]) == pytest.approx(0.0)
+
+
+def test_economic_outcome_dir_is_accepted_and_joined(tmp_path: Path) -> None:
+    prediction_run = tmp_path / "prediction"
+    label_run = tmp_path / "labels"
+    _write_sources(prediction_run, label_run)
+    outcome_dir = _write_economic_outcomes(label_run)
+
+    result = analyze_m20_cost_aware_specialist_policy(
+        prediction_run_dir=prediction_run,
+        label_source_run_dir=label_run,
+        prediction_source="score_only_confirmation",
+        economic_outcome_dir=outcome_dir,
+        models=["model_strong"],
+    )
+    economics = json.loads(
+        Path(result["output_files"]["economics_availability_json"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    topk = _read_csv(Path(result["output_files"]["topk_policy_metrics_csv"]))
+    top5 = next(row for row in topk if row["policy_name"] == "TOP_5_PERCENT")
+
+    assert economics["economics_available"] is True
+    assert economics["safe_source"] == "economic_outcome_artifacts"
+    assert float(top5["mean_net_proxy"]) == pytest.approx(0.1)
+    assert float(top5["mean_gross_proxy"]) == pytest.approx(0.11)
+    assert float(top5["best_5_net_proxy"]) == pytest.approx(0.1)
+    assert float(top5["worst_5_net_proxy"]) == pytest.approx(0.1)
+
+
+def test_default_economic_outcome_dir_is_discovered(tmp_path: Path) -> None:
+    prediction_run = tmp_path / "prediction"
+    label_run = tmp_path / "labels"
+    _write_sources(prediction_run, label_run)
+    _write_economic_outcomes(label_run)
+
+    result = analyze_m20_cost_aware_specialist_policy(
+        prediction_run_dir=prediction_run,
+        label_source_run_dir=label_run,
+        prediction_source="score_only_confirmation",
+        models=["model_strong"],
+    )
+
+    assert result["economics_available"] is True
+    assert result["recommendation"] == "PLAN_STRICT_OUT_OF_SAMPLE_POLICY_CONFIRMATION"
 
 
 def test_strong_signal_without_economics_is_unknown_not_promotable(tmp_path: Path) -> None:

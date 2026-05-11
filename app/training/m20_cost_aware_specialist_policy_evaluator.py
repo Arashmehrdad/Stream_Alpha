@@ -26,6 +26,7 @@ SAFE_NET_COLUMNS = (
     "safe_net_value_proxy",
     "net_proxy",
 )
+ECONOMIC_OUTCOME_FILE = "economic_outcomes.csv"
 NO_NET_PROXY = "NET_PROXY_NOT_AVAILABLE"
 ECONOMIC_REQUIRED = "ECONOMIC_POLICY_EVALUATION_REQUIRED"
 NEXT_ACTION_NO_ECONOMICS = "DESIGN_SAFE_ECONOMIC_OUTCOME_ARTIFACTS_FOR_SPECIALIST_POLICIES"
@@ -58,11 +59,12 @@ def analyze_m20_cost_aware_specialist_policy(
     prediction_source: str,
     models: Sequence[str] | None = None,
     edge_evaluator_dir: Path | None = None,
+    economic_outcome_dir: Path | None = None,
     label_file: str = DEFAULT_LABEL_FILE,
     output_name: str = DEFAULT_OUTPUT_NAME,
 ) -> dict[str, Any]:
     """Evaluate generic specialist policies from existing artifacts."""
-    # pylint: disable=too-many-arguments,too-many-locals
+    # pylint: disable=too-many-arguments,too-many-locals,too-many-statements
     prediction_dir = Path(prediction_run_dir).resolve()
     label_run_dir = Path(label_source_run_dir).resolve()
     specialist_dir = prediction_dir / "research_labels" / "vol_scaled" / "specialist_predictions"
@@ -71,6 +73,11 @@ def analyze_m20_cost_aware_specialist_policy(
         Path(edge_evaluator_dir).resolve()
         if edge_evaluator_dir is not None
         else prediction_dir / "research_labels" / "vol_scaled" / DEFAULT_EDGE_EVALUATOR_NAME
+    )
+    outcome_dir = (
+        Path(economic_outcome_dir).resolve()
+        if economic_outcome_dir is not None
+        else label_run_dir / "research_labels" / "vol_scaled" / "economic_outcome_artifacts"
     )
     label_path = label_run_dir / label_file
 
@@ -84,8 +91,9 @@ def analyze_m20_cost_aware_specialist_policy(
 
     labels = _read_csv(label_path, "Missing label file")
     safe_net_column = _safe_net_column(labels)
-    economics_available = safe_net_column is not None
     label_index, fallback_label_index = _label_indexes(labels)
+    outcome_index, outcome_fallback_index = _economic_outcome_indexes(outcome_dir)
+    economics_available = safe_net_column is not None or bool(outcome_index)
     edge_slices = _load_edge_slices(edge_dir)
 
     joined_by_model = {}
@@ -98,8 +106,11 @@ def analyze_m20_cost_aware_specialist_policy(
             predictions=predictions,
             label_index=label_index,
             fallback_label_index=fallback_label_index,
+            outcome_index=outcome_index,
+            outcome_fallback_index=outcome_fallback_index,
             safe_net_column=safe_net_column,
         )
+    economics_available = _joined_economics_available(joined_by_model)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     topk_policy_metrics = [
@@ -142,8 +153,10 @@ def analyze_m20_cost_aware_specialist_policy(
     economics_availability = {
         "economics_available": economics_available,
         "safe_net_column": safe_net_column or "",
+        "economic_outcome_dir": str(outcome_dir),
+        "economic_outcomes_present": bool(outcome_index),
         "evidence_blockers": evidence_blockers,
-        "safe_source": "label_or_evaluation_artifact" if economics_available else "",
+        "safe_source": _safe_source(economics_available, outcome_index, safe_net_column),
     }
 
     manifest = {
@@ -152,6 +165,8 @@ def analyze_m20_cost_aware_specialist_policy(
         "specialist_prediction_dir": str(specialist_dir),
         "edge_evaluator_dir": str(edge_dir),
         "edge_evaluator_present": edge_dir.exists(),
+        "economic_outcome_dir": str(outcome_dir),
+        "economic_outcomes_present": bool(outcome_index),
         "label_file": str(label_path),
         "prediction_source": prediction_source,
         "models": list(selected_models),
@@ -301,8 +316,11 @@ def _join_rows(
     predictions: Sequence[Mapping[str, str]],
     label_index: Mapping[tuple[str, str, str], Mapping[str, str]],
     fallback_label_index: Mapping[tuple[str, str], Mapping[str, str]],
+    outcome_index: Mapping[tuple[str, str, str], Mapping[str, str]],
+    outcome_fallback_index: Mapping[tuple[str, str], Mapping[str, str]],
     safe_net_column: str | None,
 ) -> list[dict[str, Any]]:
+    # pylint: disable=too-many-arguments,too-many-locals
     joined = []
     for row in predictions:
         symbol = str(row.get("symbol", ""))
@@ -313,6 +331,10 @@ def _join_rows(
             label = fallback_label_index.get((symbol, interval_begin))
         if label is None:
             continue
+        fold_index = str(row.get("fold_index", label.get("fold_index", "")))
+        outcome = outcome_index.get((fold_index, symbol, interval_begin))
+        if outcome is None:
+            outcome = outcome_fallback_index.get((symbol, interval_begin))
         probability = _first_float(row, ("prob_up", "probability", "score"))
         joined.append(
             {
@@ -324,10 +346,12 @@ def _join_rows(
                 "target": _to_int(label.get("label", label.get("y_true", "0"))),
                 "month": interval_begin[:7],
                 "quarter": _quarter(interval_begin),
-                "net_proxy": (
-                    _to_float(label.get(safe_net_column))
-                    if safe_net_column is not None
-                    else None
+                "net_proxy": _joined_float(outcome, label, safe_net_column, "net_value_proxy"),
+                "gross_proxy": _joined_float(
+                    outcome,
+                    label,
+                    safe_net_column,
+                    "gross_value_proxy",
                 ),
             }
         )
@@ -473,8 +497,12 @@ def _policy_metric(
 
 def _economic_metrics(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     net_values = [float(row["net_proxy"]) for row in rows if row.get("net_proxy") is not None]
+    gross_values = [
+        float(row["gross_proxy"]) for row in rows if row.get("gross_proxy") is not None
+    ]
     if not net_values:
         return _empty_economics()
+    worst_tail, best_tail = _tail_means(net_values, 5)
     return {
         "economics_status": "NET_PROXY_AVAILABLE",
         "mean_net_proxy": _mean(net_values),
@@ -482,8 +510,9 @@ def _economic_metrics(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "max_drawdown_proxy": _max_drawdown(net_values),
         "expectancy_proxy": _mean(net_values),
         "win_rate_proxy": sum(1 for value in net_values if value > 0.0) / len(net_values),
-        "best_tail_net_proxy": max(net_values),
-        "worst_tail_net_proxy": min(net_values),
+        "mean_gross_proxy": _mean(gross_values),
+        "best_5_net_proxy": best_tail,
+        "worst_5_net_proxy": worst_tail,
     }
 
 
@@ -495,8 +524,9 @@ def _empty_economics() -> dict[str, Any]:
         "max_drawdown_proxy": "",
         "expectancy_proxy": "",
         "win_rate_proxy": "",
-        "best_tail_net_proxy": "",
-        "worst_tail_net_proxy": "",
+        "mean_gross_proxy": "",
+        "best_5_net_proxy": "",
+        "worst_5_net_proxy": "",
     }
 
 
@@ -510,8 +540,14 @@ def _classify_policy(
     if selected_count == 0:
         classification = "INSUFFICIENT_EVIDENCE"
     elif economics_available and economics.get("mean_net_proxy") not in ("", None):
-        if float(economics["mean_net_proxy"]) > 0.0 and lift >= 1.1:
+        mean_net = float(economics["mean_net_proxy"])
+        win_rate = float(economics["win_rate_proxy"])
+        if mean_net > 0.0 and lift >= 1.1 and win_rate >= 0.5:
             classification = "ECONOMICALLY_PROMISING_RESEARCH_CANDIDATE"
+        elif lift >= 1.1 and mean_net > 0.0:
+            classification = "SIGNAL_CONFIRMED_ECONOMICS_MIXED"
+        elif lift >= 1.1 and mean_net <= 0.0:
+            classification = "SIGNAL_CONFIRMED_ECONOMICS_NEGATIVE"
         elif lift >= 1.1:
             classification = "WATCHLIST_CONDITIONAL_POLICY"
     elif lift >= 1.5:
@@ -585,9 +621,16 @@ def _recommendation(
     ):
         recommendation = "PLAN_STRICT_OUT_OF_SAMPLE_POLICY_CONFIRMATION"
         next_action = "PLAN_STRICT_OUT_OF_SAMPLE_POLICY_CONFIRMATION"
-    else:
+    elif any(
+        row["candidate_decision"]
+        in ("SIGNAL_CONFIRMED_ECONOMICS_MIXED", "WATCHLIST_CONDITIONAL_POLICY")
+        for row in candidate_decisions
+    ):
         recommendation = "REFINE_OR_PAUSE_COST_AWARE_SPECIALIST_POLICY"
         next_action = "REFINE_OR_PAUSE_COST_AWARE_SPECIALIST_POLICY"
+    else:
+        recommendation = "REJECT_OR_WATCHLIST_SPECIALIST_POLICY"
+        next_action = "REJECT_OR_WATCHLIST_SPECIALIST_POLICY"
     return {
         "recommendation": recommendation,
         "next_required_action": next_action,
@@ -661,8 +704,10 @@ def _best_row(rows: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
 def _classification_rank(classification: str) -> int:
     ranks = {
         "ECONOMICALLY_PROMISING_RESEARCH_CANDIDATE": 5,
-        "SIGNAL_CONFIRMED_ECONOMICS_UNKNOWN": 4,
+        "SIGNAL_CONFIRMED_ECONOMICS_MIXED": 4,
+        "SIGNAL_CONFIRMED_ECONOMICS_UNKNOWN": 3,
         "WATCHLIST_CONDITIONAL_POLICY": 3,
+        "SIGNAL_CONFIRMED_ECONOMICS_NEGATIVE": 2,
         "WEAK_OR_UNSTABLE_POLICY": 2,
         "INSUFFICIENT_EVIDENCE": 1,
     }
@@ -682,6 +727,62 @@ def _load_edge_slices(edge_dir: Path) -> dict[str, tuple[dict[str, str], ...]]:
                 continue
             slices.setdefault(str(row.get("model_name", "")), []).append(row)
     return {model_name: tuple(rows) for model_name, rows in slices.items()}
+
+
+def _economic_outcome_indexes(
+    outcome_dir: Path,
+) -> tuple[
+    dict[tuple[str, str, str], Mapping[str, str]],
+    dict[tuple[str, str], Mapping[str, str]],
+]:
+    path = outcome_dir / ECONOMIC_OUTCOME_FILE
+    if not path.exists():
+        return {}, {}
+    fold_index = {}
+    fallback_index = {}
+    for row in _read_csv(path, "Missing economic outcome file"):
+        symbol = str(row.get("symbol", ""))
+        interval_begin = str(row.get("interval_begin", ""))
+        fold_index[(str(row.get("fold_index", "")), symbol, interval_begin)] = row
+        fallback_index[(symbol, interval_begin)] = row
+    return fold_index, fallback_index
+
+
+def _joined_float(
+    outcome: Mapping[str, str] | None,
+    label: Mapping[str, str],
+    safe_net_column: str | None,
+    outcome_column: str,
+) -> float | None:
+    if outcome is not None and outcome.get(outcome_column) not in ("", None):
+        return _to_float(outcome.get(outcome_column))
+    if outcome_column == "net_value_proxy" and safe_net_column is not None:
+        return _to_float(label.get(safe_net_column))
+    return None
+
+
+def _safe_source(
+    economics_available: bool,
+    outcome_index: Mapping[tuple[str, str, str], Mapping[str, str]],
+    safe_net_column: str | None,
+) -> str:
+    if not economics_available:
+        return ""
+    if outcome_index:
+        return "economic_outcome_artifacts"
+    if safe_net_column is not None:
+        return "label_or_evaluation_artifact"
+    return ""
+
+
+def _joined_economics_available(
+    joined_by_model: Mapping[str, Sequence[Mapping[str, Any]]],
+) -> bool:
+    return any(
+        row.get("net_proxy") is not None
+        for rows in joined_by_model.values()
+        for row in rows
+    )
 
 
 def _topk_selection(
@@ -709,6 +810,14 @@ def _max_drawdown(values: Sequence[float]) -> float:
         peak = max(peak, cumulative)
         max_drawdown = min(max_drawdown, cumulative - peak)
     return max_drawdown
+
+
+def _tail_means(values: Sequence[float], count: int) -> tuple[float, float]:
+    if not values:
+        return 0.0, 0.0
+    sorted_values = sorted(values)
+    tail_count = min(count, len(sorted_values))
+    return _mean(sorted_values[:tail_count]), _mean(sorted_values[-tail_count:])
 
 
 def _group_by(

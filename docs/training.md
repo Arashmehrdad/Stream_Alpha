@@ -237,6 +237,23 @@ Outputs include `manifest.json`, `economic_outcome_report.json`,
 stay out of prediction exports, runtime inference, registry, promotion,
 trading, and backtests.
 
+After building economic outcome artifacts, re-run the generic policy evaluator
+with the safe economic source:
+
+```powershell
+python .\scripts\analyze_m20_cost_aware_specialist_policy.py `
+  --prediction-run-dir .\artifacts\training\m20\20260507T135017Z `
+  --label-source-run-dir .\artifacts\training\m20\20260506T054337Z `
+  --prediction-source score_only_confirmation `
+  --economic-outcome-dir .\artifacts\training\m20\20260506T054337Z\research_labels\vol_scaled\economic_outcome_artifacts
+```
+
+The evaluator joins predictions, labels, and economic outcomes by `symbol`,
+`interval_begin`, and `fold_index` when available. It removes
+`NET_PROXY_NOT_AVAILABLE` only when safe economic outcome rows are actually
+joined. Positive research metrics are not runtime readiness, promotion,
+backtest, or profit evidence.
+
 ## Research-Only M20 Trading-Aware Labels
 
 `app.training.research_labels` contains offline helpers for the next recovery
