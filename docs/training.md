@@ -1096,3 +1096,10 @@ Writes `research_labels/vol_scaled/strategy_candidate_redesign_plan/` from exist
 Command: python .\scripts\build_m20_strategy_candidates_v2.py --source-run-dir .\artifacts\training\m20\20260506T054337Z
 
 Writes `research_labels/vol_scaled/strategy_candidate_v2_factory/` from redesign-plan definitions and safe training-frame features only. The factory generates ready v2 candidate rows, carries blocked definitions forward, joins labels and economic outcomes only after setup selection, and emits candidate metrics, symbol/time diagnostics, decisions, next actions, and recommendation artifacts. Current result: 8 definitions processed, 6 ready candidates generated 237,794 rows, 2 definitions blocked by missing `regime_label` and `adx_14`, all ready candidates economics-negative, recommendation `REFINE_OR_ADD_SAFE_FEATURES_FOR_V2_CANDIDATES`.
+
+<!-- M20_SAFE_FEATURE_AVAILABILITY -->
+## Research-Only M20 Safe Feature Availability Audit
+
+Command: python .\scripts\audit_m20_safe_feature_availability.py --source-run-dir .\artifacts\training\m20\20260506T054337Z --regime-thresholds-path .\artifacts\regime\m8\20260320T165813Z\thresholds.json
+
+Writes `research_labels/vol_scaled/safe_feature_availability/` from existing feature-frame metadata and M8 threshold artifacts only. The audit records feature sources, leakage-risk checks, blocked features, and recommendation artifacts without computing or appending new features. Current result: `regime_label` is safe-computable from fixed M8 thresholds and existing `realized_vol_12`, `momentum_3`, `macd_line_12_26`; `adx_14` is safe-computable later from causal per-symbol OHLC history; recommendation `BUILD_M20_RESEARCH_FEATURE_ENRICHMENT_ARTIFACT`.

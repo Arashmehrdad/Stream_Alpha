@@ -6125,3 +6125,35 @@ against naive baselines.
   - Candidate decisions: `6` `V2_STRATEGY_CANDIDATE_ECONOMICS_NEGATIVE`, `2` `V2_STRATEGY_CANDIDATE_BLOCKED_MISSING_FEATURES`
   - Recommendation: `REFINE_OR_ADD_SAFE_FEATURES_FOR_V2_CANDIDATES`
   - Next required action: `REFINE_OR_ADD_SAFE_FEATURES_FOR_V2_CANDIDATES`
+
+<!-- M20_SAFE_FEATURE_AVAILABILITY -->
+### M20 generic pipeline Batch I - safe feature availability audit
+
+- Scope:
+  - Add an artifact-backed audit for blocked v2 features `regime_label` and `adx_14`.
+  - Inspect existing M20 training-frame feature schema, sample rows, and the M8 thresholds artifact.
+  - Record feature source, causal window, leakage-risk, runtime-effect, and blocker status without computing or appending new features.
+  - Preserve `RESEARCH_ONLY`, `NO_FEATURE_ENGINEERING_PERFORMED`, `NO_RUNTIME_EFFECT`, `NOT_BACKTEST`, `NOT_RUNTIME_READY`, `NOT_PROMOTABLE`, and `NO_PROFIT_CLAIM`.
+  - Do not change runtime inference, registry, promotion, paper/live execution, trading/backtest logic, model training, scoring, prediction exports, label generation, validation workflow, or profitability claims.
+- Changed files:
+  - `app/training/m20_safe_feature_availability.py`
+  - `scripts/audit_m20_safe_feature_availability.py`
+  - `tests/test_training_m20_safe_feature_availability.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Validation:
+  - `python -m pytest tests/test_training_m20_safe_feature_availability.py -q` -> `6 passed`
+  - `python -m py_compile app/training/m20_safe_feature_availability.py scripts/audit_m20_safe_feature_availability.py` -> passed
+  - `python -m pylint --fail-under=10 app/training/m20_safe_feature_availability.py tests/test_training_m20_safe_feature_availability.py` -> `10.00/10`
+  - `python scripts/audit_m20_safe_feature_availability.py --source-run-dir artifacts/training/m20/20260506T054337Z --regime-thresholds-path artifacts/regime/m8/20260320T165813Z/thresholds.json` -> completed
+- Real output directory:
+  - `artifacts/training/m20/20260506T054337Z/research_labels/vol_scaled/safe_feature_availability`
+- Real result:
+  - Audited features: `regime_label`, `adx_14`
+  - Safe-computable features: `2`
+  - Blocked features: `0`
+  - `regime_label`: fixed M8 threshold classification from `realized_vol_12`, `momentum_3`, `macd_line_12_26`
+  - `adx_14`: future research-only causal per-symbol OHLC rolling feature from `high_price`, `low_price`, `close_price`
+  - Recommendation: `BUILD_M20_RESEARCH_FEATURE_ENRICHMENT_ARTIFACT`
+  - Next required action: `BUILD_M20_RESEARCH_FEATURE_ENRICHMENT_ARTIFACT`

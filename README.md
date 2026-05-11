@@ -1155,3 +1155,8 @@ Writes `research_labels/vol_scaled/strategy_candidate_redesign_plan/` as a desig
 M20 strategy candidate v2 factory:
 Command: python .\scripts\build_m20_strategy_candidates_v2.py --source-run-dir .\artifacts\training\m20\20260506T054337Z
 Writes `research_labels/vol_scaled/strategy_candidate_v2_factory/` from the redesign plan and safe training-frame features only. Current result: 8 definitions processed, 6 ready definitions generated 237,794 candidate rows, 2 definitions remain blocked by missing `regime_label` and `adx_14`, and all ready candidates are economics-negative under the current safe net-proxy artifact. Recommendation: `REFINE_OR_ADD_SAFE_FEATURES_FOR_V2_CANDIDATES`. No runtime, registry, promotion, training, scoring, prediction export, backtest, trading, or profit-claim behavior is changed.
+
+<!-- M20_SAFE_FEATURE_AVAILABILITY -->
+M20 safe feature availability audit:
+Command: python .\scripts\audit_m20_safe_feature_availability.py --source-run-dir .\artifacts\training\m20\20260506T054337Z --regime-thresholds-path .\artifacts\regime\m8\20260320T165813Z\thresholds.json
+Writes `research_labels/vol_scaled/safe_feature_availability/` from existing M20 feature-frame and M8 threshold artifacts only. Current result: `regime_label` and `adx_14` are not already in the M20 frame, but both are marked safe-computable for a future research-only enrichment artifact; no feature engineering, runtime, registry, promotion, training, scoring, backtest, trading, or profit-claim behavior is changed.
