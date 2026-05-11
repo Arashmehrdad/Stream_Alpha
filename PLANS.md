@@ -5661,4 +5661,58 @@ against naive baselines.
   - `neuralforecast_nhits`: `SECONDARY_WATCHLIST_OR_WEAKER_CANDIDATE` unless stronger evidence exists
   - `overall_status`: `RESEARCH_ONLY_NOT_PROMOTABLE`
   - Required blockers include `ECONOMIC_POLICY_EVALUATION_REQUIRED`
-  - Next action: `DESIGN_PATCHTST_OPTIONAL_SPECIALIST_POLICY_EVALUATOR`
+  - Next action: `DESIGN_COST_AWARE_SPECIALIST_POLICY_EVALUATOR`
+
+<!-- M20_SPECIALIST_EDGE_EVALUATOR -->
+### M20 generic specialist edge evaluator
+
+- Scope:
+  - Add a reusable research-only specialist edge evaluator for existing M20 prediction and label artifacts.
+  - Discover `predictions_{model}_{source}.csv` files automatically, with optional `--models` filtering.
+  - Join predictions to labels by `symbol` and `interval_begin`, with model-aware label support when labels expose `model_name`.
+  - Evaluate all discovered/requested models with identical top-k, threshold, symbol, month, and quarter logic.
+  - Preserve statuses `RESEARCH_ONLY`, `NO_RUNTIME_EFFECT`, `NOT_RUNTIME_READY`, `NOT_PROMOTABLE`, and `NO_PROFIT_CLAIM`.
+  - Generalize the stale confirmation adjudication next action away from PatchTST-only policy work.
+  - Do not change runtime inference, registry, promotion, paper/live execution, trading/backtest logic, training, scoring, score-only export, label generation, or profitability claims.
+- Changed files:
+  - `app/training/m20_specialist_edge_evaluator.py`
+  - `scripts/analyze_m20_specialist_edge.py`
+  - `tests/test_training_m20_specialist_edge_evaluator.py`
+  - `app/training/m20_specialist_confirmation_adjudication.py`
+  - `tests/test_training_m20_specialist_confirmation_adjudication.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Targeted validation completed:
+  - `python -m pytest tests/test_training_m20_specialist_edge_evaluator.py tests/test_training_m20_specialist_confirmation_adjudication.py -q` -> `11 passed`
+  - `python -m py_compile app/training/m20_specialist_edge_evaluator.py scripts/analyze_m20_specialist_edge.py app/training/m20_specialist_confirmation_adjudication.py` -> passed
+  - `python -m pylint --fail-under=10 app/training/m20_specialist_edge_evaluator.py tests/test_training_m20_specialist_edge_evaluator.py` -> `10.00/10`
+  - `python scripts/analyze_m20_specialist_edge.py --prediction-run-dir artifacts/training/m20/20260507T135017Z --label-source-run-dir artifacts/training/m20/20260506T054337Z --prediction-source score_only_confirmation` -> completed
+  - `git diff --check` -> passed with existing LF/CRLF working-copy warnings only
+- Real output directory:
+  - `artifacts/training/m20/20260507T135017Z/research_labels/vol_scaled/specialist_edge_evaluator`
+- Real result:
+  - Evaluated models: `neuralforecast_nhits`, `neuralforecast_patchtst`
+  - Joined rows: `624970`
+  - Best candidate: `neuralforecast_patchtst`
+  - `neuralforecast_patchtst`: `CONFIRMED_SELECTIVE_EDGE_RESEARCH_CANDIDATE`, top-5% precision `0.2668330773`, top-5% lift `1.9698394520`, PR-AUC `0.1645954481`, ROC-AUC `0.4890033256`, enable slices `17`, net proxy `NET_PROXY_NOT_AVAILABLE`
+  - `neuralforecast_nhits`: `WATCHLIST_CONDITIONAL_SIGNAL`, top-5% precision `0.1609703021`, top-5% lift `1.1883296287`, PR-AUC `0.1375560011`, ROC-AUC `0.4835002977`, enable slices `10`, net proxy `NET_PROXY_NOT_AVAILABLE`
+  - Evidence blockers: `NET_PROXY_NOT_AVAILABLE`, `ECONOMIC_POLICY_EVALUATION_REQUIRED`, `NOT_BACKTEST`, `NOT_RUNTIME_READY`, `NOT_PROMOTABLE`, `NO_PROFIT_CLAIM`
+  - Recommendation: `DESIGN_COST_AWARE_SPECIALIST_POLICY_EVALUATOR`
+  - Status remains `RESEARCH_ONLY`, `NO_RUNTIME_EFFECT`, `NOT_RUNTIME_READY`, `NOT_PROMOTABLE`, and `NO_PROFIT_CLAIM`
+
+<!-- M20_SPECIALIST_EDGE_EVALUATOR_SEMANTIC_FIX -->
+### M20 specialist edge evaluator semantic blocker fix
+
+- Scope:
+  - Clarify that implementation can be complete while research evidence remains blocked by unavailable economics.
+  - Add explicit evidence blockers to evaluator report/recommendation/next-action artifacts when net proxy is unavailable.
+  - Replace stale next action `EVALUATE_SPECIALIST_EDGE_WITH_GENERIC_POLICY_TOOL` with `DESIGN_COST_AWARE_SPECIALIST_POLICY_EVALUATOR`.
+  - Preserve PatchTST/NHITS candidate decisions and validation behavior.
+  - Do not change runtime, registry, promotion, paper/live execution, trading, backtest, training, scoring, labels, or workflow.
+- Changed files:
+  - `app/training/m20_specialist_edge_evaluator.py`
+  - `tests/test_training_m20_specialist_edge_evaluator.py`
+  - `app/training/m20_specialist_confirmation_adjudication.py`
+  - `tests/test_training_m20_specialist_confirmation_adjudication.py`
+  - `PLANS.md`

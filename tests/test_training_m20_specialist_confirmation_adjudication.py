@@ -258,6 +258,9 @@ def test_patchtst_becomes_confirmed_selective_research_candidate(tmp_path: Path)
     assert result["runtime_status"] == "NO_RUNTIME_EFFECT"
     assert result["promotion_status"] == "NOT_PROMOTABLE"
     assert result["profitability_status"] == "NO_PROFIT_CLAIM"
+    assert result["required_next_action"] == (
+        "DESIGN_COST_AWARE_SPECIALIST_POLICY_EVALUATOR"
+    )
 
 
 def test_nhits_remains_secondary_watchlist_candidate(tmp_path: Path) -> None:

@@ -1095,3 +1095,8 @@ The training CLI now accepts research-only `--export-specialist-predictions-only
 M20 specialist confirmation adjudication:
 Command: python .\scripts\write_m20_specialist_confirmation_adjudication.py --confirmation-run-dir .\artifacts\training\m20\20260507T135017Z --original-run-dir .\artifacts\training\m20\20260505T212518Z
 Writes research_labels/vol_scaled/specialist_confirmation_adjudication/ from existing specialist conditional-usefulness artifacts only. The adjudication records PatchTST as `CONFIRMED_SELECTIVE_RANK_SLICE_RESEARCH_CANDIDATE` and NHITS as `SECONDARY_WATCHLIST_OR_WEAKER_CANDIDATE` unless stronger evidence exists. Overall status remains `RESEARCH_ONLY_NOT_PROMOTABLE` with `NO_RUNTIME_EFFECT`, `NOT_PROMOTABLE`, and `NO_PROFIT_CLAIM`. Next blocker is economic/policy evaluation, not another raw scoring run.
+
+<!-- M20_SPECIALIST_EDGE_EVALUATOR -->
+M20 generic specialist edge evaluator:
+Command: python .\scripts\analyze_m20_specialist_edge.py --prediction-run-dir .\artifacts\training\m20\20260507T135017Z --label-source-run-dir .\artifacts\training\m20\20260506T054337Z --prediction-source score_only_confirmation
+Writes `research_labels/vol_scaled/specialist_edge_evaluator/` from existing prediction and label artifacts only. The tool discovers `predictions_{model}_{source}.csv` files unless `--models` is supplied, joins by `symbol` and `interval_begin` with model-aware label support, evaluates top-k fractions and probability thresholds, and emits model, top-k, threshold, symbol, time, decision, next-action, report, manifest, and recommendation artifacts. It is generic across models and keeps status `RESEARCH_ONLY`, `NO_RUNTIME_EFFECT`, `NOT_RUNTIME_READY`, `NOT_PROMOTABLE`, and `NO_PROFIT_CLAIM`.

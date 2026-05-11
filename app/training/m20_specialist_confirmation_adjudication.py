@@ -37,7 +37,7 @@ BLOCKERS = (
     "NOT_RUNTIME_READY",
     "NOT_PROMOTABLE",
 )
-NEXT_ACTION = "DESIGN_PATCHTST_OPTIONAL_SPECIALIST_POLICY_EVALUATOR"
+NEXT_ACTION = "DESIGN_COST_AWARE_SPECIALIST_POLICY_EVALUATOR"
 
 
 def write_m20_specialist_confirmation_adjudication(
@@ -275,8 +275,8 @@ def _next_actions() -> list[dict[str, str]]:
             "priority": "1",
             "action": NEXT_ACTION,
             "rationale": (
-                "Evaluate whether PatchTST rank/top-k/slice evidence improves economics "
-                "as an optional specialist policy signal."
+                "Design cost-aware specialist policy evaluation before any runtime "
+                "or promotion claim."
             ),
         },
         {

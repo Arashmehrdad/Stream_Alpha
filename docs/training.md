@@ -158,6 +158,33 @@ The adjudication is explicitly conservative:
 - NHITS remains secondary/watchlist unless stronger confirmation artifacts appear.
 - No runtime inference, registry, promotion, paper/live execution, backtest logic, or profitability claim is changed.
 
+## Research-Only M20 Generic Specialist Edge Evaluator
+
+To evaluate specialist edge across discovered or requested models from existing
+saved artifacts only:
+
+```powershell
+python .\scripts\analyze_m20_specialist_edge.py `
+  --prediction-run-dir .\artifacts\training\m20\20260507T135017Z `
+  --label-source-run-dir .\artifacts\training\m20\20260506T054337Z `
+  --prediction-source score_only_confirmation
+```
+
+The evaluator reads `research_labels/vol_scaled/specialist_predictions/`,
+discovers `predictions_{model}_{source}.csv` files unless `--models` is
+provided, joins predictions to labels by `symbol` and `interval_begin` with
+model-aware label support, and writes `specialist_edge_evaluator/`. Outputs
+include `manifest.json`, `specialist_edge_report.json`,
+`specialist_edge_report.md`, `model_edge_metrics.csv`,
+`topk_policy_metrics.csv`, optional `threshold_policy_metrics.csv`,
+`by_symbol.csv`, `by_time.csv`, `candidate_decisions.csv`,
+`next_actions.csv`, and `recommendation.json`.
+
+This is one reusable model-selection research tool, not a PatchTST-only policy
+module. It does not change training, scoring, runtime inference, registry,
+promotion, paper/live execution, trading logic, backtests, or profitability
+claims.
+
 ## Research-Only M20 Trading-Aware Labels
 
 `app.training.research_labels` contains offline helpers for the next recovery
