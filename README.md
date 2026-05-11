@@ -1115,3 +1115,8 @@ Writes `research_labels/vol_scaled/economic_outcome_artifacts/` from safe evalua
 M20 cost-aware policy adjudication:
 Command: python .\scripts\write_m20_cost_aware_policy_adjudication.py --prediction-run-dir .\artifacts\training\m20\20260507T135017Z
 Writes `research_labels/vol_scaled/cost_aware_policy_adjudication/` from existing cost-aware specialist policy outputs only. Current adjudication records PatchTST and NHITS as `SIGNAL_CONFIRMED_ECONOMICS_NEGATIVE`, pauses the NeuralForecast specialist policy path, and points next work to `MOVE_TO_GENERIC_STRATEGY_CONDITIONED_CANDIDATE_FACTORY`. No runtime, registry, promotion, training, scoring, backtest, trading, or profit claim behavior is changed.
+
+<!-- M20_STRATEGY_CANDIDATE_FACTORY -->
+M20 strategy-conditioned candidate factory:
+Command: python .\scripts\build_m20_strategy_candidates.py --source-run-dir .\artifacts\training\m20\20260506T054337Z
+Writes `research_labels/vol_scaled/strategy_candidate_factory/` from existing training-frame, label, and safe economic-outcome artifacts only. The reusable factory evaluates MACD, RSI, range, volatility, return/reversal, and volume setup families with identical candidate-event logic, joins safe labels/economics by `symbol`, `interval_begin`, and optional `fold_index`, and keeps every output `RESEARCH_ONLY`, `NO_RUNTIME_EFFECT`, `NOT_BACKTEST`, `NOT_RUNTIME_READY`, `NOT_PROMOTABLE`, and `NO_PROFIT_CLAIM`. It does not change runtime, registry, promotion, training, scoring, prediction exports, backtests, trading, or profit claims.

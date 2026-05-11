@@ -5857,3 +5857,36 @@ against naive baselines.
   - Overall decision: `PAUSE_NEURALFORECAST_SPECIALIST_POLICY_PATH`
   - Recommendation: `WATCHLIST_NEURALFORECAST_SPECIALISTS_DO_NOT_PROMOTE`
   - Next required action: `MOVE_TO_GENERIC_STRATEGY_CONDITIONED_CANDIDATE_FACTORY`
+
+<!-- M20_STRATEGY_CANDIDATE_FACTORY -->
+### M20 strategy-conditioned candidate factory
+
+- Scope:
+  - Add a reusable research-only factory for strategy-conditioned candidate events from existing M20 artifacts.
+  - Evaluate MACD, RSI, range, volatility, return/reversal, and volume setup families through one generic path.
+  - Join training-frame candidate events to fee labels and safe economic outcomes by `symbol`, `interval_begin`, and optional `fold_index`.
+  - Emit candidate rows, candidate metrics, by-symbol/time diagnostics, feature-family audit rows, candidate decisions, next actions, report, manifest, and recommendation artifacts.
+  - Preserve `RESEARCH_ONLY`, `NO_RUNTIME_EFFECT`, `NOT_BACKTEST`, `NOT_RUNTIME_READY`, `NOT_PROMOTABLE`, and `NO_PROFIT_CLAIM`.
+  - Do not change runtime inference, registry, promotion, paper/live execution, trading/backtest logic, model training, score-only export logic, prediction export schema, label generation, validation workflow, or profitability claims.
+- Changed files:
+  - `app/training/m20_strategy_candidate_factory.py`
+  - `scripts/build_m20_strategy_candidates.py`
+  - `tests/test_training_m20_strategy_candidate_factory.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Targeted validation before real artifact run:
+  - `python -m pytest tests/test_training_m20_strategy_candidate_factory.py -q` -> `8 passed`
+  - `python -m py_compile app/training/m20_strategy_candidate_factory.py scripts/build_m20_strategy_candidates.py` -> passed
+  - `python -m pylint --fail-under=10 app/training/m20_strategy_candidate_factory.py tests/test_training_m20_strategy_candidate_factory.py` -> `10.00/10`
+  - `python scripts/build_m20_strategy_candidates.py --source-run-dir artifacts/training/m20/20260506T054337Z` -> completed
+- Real output directory:
+  - `artifacts/training/m20/20260506T054337Z/research_labels/vol_scaled/strategy_candidate_factory`
+- Real result:
+  - Strategy families evaluated: `macd_momentum`, `rsi_mean_reversion`, `range_compression`, `volatility_state`, `return_reversal`, `volume_context`
+  - Candidate count: `15`
+  - Best candidate: `rsi_mean_reversion:rsi_oversold`
+  - Economics available: `yes`
+  - Candidate decisions: `15` `STRATEGY_CANDIDATE_ECONOMICS_NEGATIVE`
+  - Recommendation: `WATCHLIST_OR_REFINE_STRATEGY_CANDIDATE_DEFINITIONS`
+  - Next required action: `REFINE_STRATEGY_CANDIDATE_DEFINITIONS`

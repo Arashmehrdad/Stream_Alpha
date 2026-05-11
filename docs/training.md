@@ -1040,3 +1040,10 @@ Planning only. Codex must not launch long prediction exports. No export, score-o
 The training CLI supports `--export-specialist-predictions-only` for `--score-only` runs. The PowerShell helper supports dry-run planning with `-ScoreOnly`, `-ParquetDir`, and `-ExportSpecialistPredictionsOnly`.
 Manual dry-run example: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start_m20_training.ps1 -DryRun -ScoreOnly artifacts/training/m20/20260405T023104Z/fitted_models -ParquetDir exports/feature_ohlc_for_colab -ExportSpecialistPredictionsOnly -ConfirmationWindowStart 2024-04-02T11:30:00Z -ConfirmationWindowEnd 2025-04-02T11:30:00Z -ConfirmationTag confirm_prev_year
 When Arash manually launches a score-only confirmation run, the hook writes sanitized NHITS/PatchTST row-level prediction files under research_labels/vol_scaled/specialist_predictions/. No long run was launched by Codex. No runtime, registry, promotion, paper/live execution, trading/backtest, model-retrain, PnL, or profitability status change.
+
+<!-- M20_STRATEGY_CANDIDATE_FACTORY -->
+## Research-Only M20 Strategy Candidate Factory
+
+Command: python .\scripts\build_m20_strategy_candidates.py --source-run-dir .\artifacts\training\m20\20260506T054337Z
+
+Writes `research_labels/vol_scaled/strategy_candidate_factory/` from existing artifacts only. The reusable factory evaluates MACD momentum, RSI mean-reversion/overextension, range compression, volatility state, return/reversal, and volume context candidates with one generic path. It joins labels and safe economic outcomes by `symbol`, `interval_begin`, and optional `fold_index`, emits candidate rows, metrics, symbol/time slices, feature-family audit rows, decisions, and recommendation artifacts, and preserves `RESEARCH_ONLY`, `NO_RUNTIME_EFFECT`, `NOT_BACKTEST`, `NOT_RUNTIME_READY`, `NOT_PROMOTABLE`, and `NO_PROFIT_CLAIM`.
