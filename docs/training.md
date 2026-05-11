@@ -213,6 +213,30 @@ net PnL. When safe economics are absent, the recommendation is
 `ADD_SAFE_NET_PROXY_OR_ECONOMIC_OUTCOME_ARTIFACTS`, and the next required action
 is `DESIGN_SAFE_ECONOMIC_OUTCOME_ARTIFACTS_FOR_SPECIALIST_POLICIES`.
 
+## Research-Only M20 Economic Outcome Artifacts
+
+To build safe evaluation-only economic outcome rows for future policy
+evaluation:
+
+```powershell
+python .\scripts\build_m20_economic_outcomes.py `
+  --source-run-dir .\artifacts\training\m20\20260506T054337Z `
+  --prediction-run-dir .\artifacts\training\m20\20260507T135017Z
+```
+
+The builder writes `research_labels/vol_scaled/economic_outcome_artifacts/`
+under the source run. It uses safe label/evaluation artifacts with
+`future_return` when available, otherwise it can derive forward returns from a
+training-frame price column. Binary labels alone do not create a fake net proxy;
+they emit `ECONOMIC_MAGNITUDE_NOT_AVAILABLE`.
+
+Outputs include `manifest.json`, `economic_outcome_report.json`,
+`economic_outcome_report.md`, optional `economic_outcomes.csv`,
+`schema_audit.csv`, `blockers.csv`, `next_actions.csv`, and
+`recommendation.json`. These artifacts are research/evaluation-only and must
+stay out of prediction exports, runtime inference, registry, promotion,
+trading, and backtests.
+
 ## Research-Only M20 Trading-Aware Labels
 
 `app.training.research_labels` contains offline helpers for the next recovery

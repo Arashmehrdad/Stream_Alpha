@@ -5754,3 +5754,36 @@ against naive baselines.
   - Evidence blockers: `NET_PROXY_NOT_AVAILABLE`, `ECONOMIC_POLICY_EVALUATION_REQUIRED`, `NOT_BACKTEST`, `NOT_RUNTIME_READY`, `NOT_PROMOTABLE`, `NO_PROFIT_CLAIM`
   - Recommendation: `ADD_SAFE_NET_PROXY_OR_ECONOMIC_OUTCOME_ARTIFACTS`
   - Next required action: `DESIGN_SAFE_ECONOMIC_OUTCOME_ARTIFACTS_FOR_SPECIALIST_POLICIES`
+
+<!-- M20_ECONOMIC_OUTCOME_ARTIFACTS -->
+### M20 economic outcome artifacts
+
+- Scope:
+  - Add a reusable research-only builder for safe economic outcome rows keyed by `symbol` and `interval_begin`, with optional `fold_index`.
+  - Use safe evaluation/label/training-frame artifacts only; do not use prediction-export economic fields.
+  - Prefer label/evaluation `future_return` magnitude, with training-frame price-derived forward return fallback.
+  - Emit `ECONOMIC_MAGNITUDE_NOT_AVAILABLE` instead of fake net proxy when only binary labels exist.
+  - Keep artifacts `RESEARCH_ONLY`, `EVALUATION_ONLY`, `NO_RUNTIME_EFFECT`, `NOT_BACKTEST`, `NOT_PROMOTABLE`, and `NO_PROFIT_CLAIM`.
+  - Do not change runtime inference, registry, promotion, paper/live execution, trading/backtest logic, model training, score-only export logic, prediction export schema, validation workflow, or profitability claims.
+- Changed files:
+  - `app/training/m20_economic_outcome_artifacts.py`
+  - `scripts/build_m20_economic_outcomes.py`
+  - `tests/test_training_m20_economic_outcome_artifacts.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Targeted validation before real artifact run:
+  - `python -m pytest tests/test_training_m20_economic_outcome_artifacts.py -q` -> `8 passed`
+  - `python -m py_compile app/training/m20_economic_outcome_artifacts.py scripts/build_m20_economic_outcomes.py` -> passed
+  - `python -m pylint --fail-under=10 app/training/m20_economic_outcome_artifacts.py tests/test_training_m20_economic_outcome_artifacts.py` -> `10.00/10`
+  - `python scripts/build_m20_economic_outcomes.py --source-run-dir artifacts/training/m20/20260506T054337Z --prediction-run-dir artifacts/training/m20/20260507T135017Z` -> completed
+  - `git diff --check` -> passed with existing LF/CRLF working-copy warnings only
+- Real output directory:
+  - `artifacts/training/m20/20260506T054337Z/research_labels/vol_scaled/economic_outcome_artifacts`
+- Real result:
+  - Safe source used: `fee_exceedance_labels_vol_scaled.csv` `current_fee` scenario with `future_return`
+  - Economics computable: `yes`
+  - Rows written: `312485`
+  - Blockers: none
+  - Recommendation: `RUN_COST_AWARE_SPECIALIST_POLICY_EVALUATOR_WITH_ECONOMIC_OUTCOMES`
+  - Next required action: `RE_RUN_GENERIC_COST_AWARE_SPECIALIST_POLICY_EVALUATOR`
