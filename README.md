@@ -1526,3 +1526,12 @@ Writes `artifacts/research_data_upgrade/microstructure_features/`.
 Current result: `MICROSTRUCTURE_FEATURE_ROWS_BUILT_FROM_FIXTURES`; feature rows
 `2`; recommendation `AUDIT_MICROSTRUCTURE_FEATURE_READINESS_FOR_ALPHA_RESEARCH`;
 next required action `RUN_MICROSTRUCTURE_RESEARCH_READINESS_AUDIT`.
+
+<!-- MICROSTRUCTURE_RESEARCH_READINESS -->
+Microstructure research readiness audit:
+Command: python .\scripts\audit_microstructure_research_readiness.py
+Writes `artifacts/research_data_upgrade/microstructure_research_readiness/`.
+Current result: `MICROSTRUCTURE_RESEARCH_NOT_READY_FIXTURE_ONLY`; alpha
+research reopen ready `False`; recommendation
+`COLLECT_MORE_MICROSTRUCTURE_DATA_BEFORE_REOPENING_ALPHA_RESEARCH`; next
+required action `APPROVE_BOUNDED_RESEARCH_CAPTURE_OR_PAUSE_DATA_UPGRADE`.

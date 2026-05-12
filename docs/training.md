@@ -1480,6 +1480,23 @@ next required action `RUN_MICROSTRUCTURE_RESEARCH_READINESS_AUDIT`.
 This DU11 batch builds fixture-backed top-of-book feature rows from replay
 output. It does not write tables or change runtime ingestion/trading behavior.
 
+<!-- MICROSTRUCTURE_RESEARCH_READINESS -->
+## Microstructure Research Readiness Audit
+
+Command:
+python .\scripts\audit_microstructure_research_readiness.py
+
+Writes `artifacts/research_data_upgrade/microstructure_research_readiness/`.
+Current result: `MICROSTRUCTURE_RESEARCH_NOT_READY_FIXTURE_ONLY`; alpha
+research reopen ready `False`; recommendation
+`COLLECT_MORE_MICROSTRUCTURE_DATA_BEFORE_REOPENING_ALPHA_RESEARCH`; next
+required action `APPROVE_BOUNDED_RESEARCH_CAPTURE_OR_PAUSE_DATA_UPGRADE`.
+
+This DU12 audit closes the dry-run implementation route. The microstructure
+chain is structurally implemented, but fixture-only coverage is insufficient to
+reopen alpha research. No runtime, trading, backtest, training, scoring,
+promotion, or profit claim is made.
+
 <!-- M13_RELIABILITY_RECOVERY_AUDIT -->
 ## M13 Reliability And Recovery Audit
 

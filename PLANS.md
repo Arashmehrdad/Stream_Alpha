@@ -7131,3 +7131,26 @@ against naive baselines.
   - Feature rows: `2`
   - Recommendation: `AUDIT_MICROSTRUCTURE_FEATURE_READINESS_FOR_ALPHA_RESEARCH`
   - Next required action: `RUN_MICROSTRUCTURE_RESEARCH_READINESS_AUDIT`
+
+<!-- MICROSTRUCTURE_RESEARCH_READINESS -->
+### Microstructure research readiness audit
+
+- Scope:
+  - Add DU12 readiness audit over DU7-DU11 artifacts.
+  - Confirm fixture-only data is insufficient to reopen alpha research.
+  - Preserve no runtime, trading, backtest, training, scoring, promotion, or
+    profit claims.
+- Changed files:
+  - `app/training/microstructure_research_readiness.py`
+  - `scripts/audit_microstructure_research_readiness.py`
+  - `tests/test_training_microstructure_research_readiness.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real output directory:
+  - `artifacts/research_data_upgrade/microstructure_research_readiness`
+- Real result:
+  - Readiness status: `MICROSTRUCTURE_RESEARCH_NOT_READY_FIXTURE_ONLY`
+  - Alpha research reopen ready: `False`
+  - Recommendation: `COLLECT_MORE_MICROSTRUCTURE_DATA_BEFORE_REOPENING_ALPHA_RESEARCH`
+  - Next required action: `APPROVE_BOUNDED_RESEARCH_CAPTURE_OR_PAUSE_DATA_UPGRADE`
