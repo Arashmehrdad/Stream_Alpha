@@ -1177,3 +1177,15 @@ python .\scripts\build_m20_strategy_candidate_v2_refined_definitions.py --source
 python .\scripts\build_m20_strategy_candidates_v2.py --source-run-dir .\artifacts\training\m20\20260506T054337Z --research-feature-dir .\artifacts\training\m20\20260506T054337Z\research_labels\vol_scaled\research_feature_enrichment --redesign-plan-dir .\artifacts\training\m20\20260506T054337Z\research_labels\vol_scaled\strategy_candidate_v2_refined_definitions --output-name strategy_candidate_v2_refined_factory
 python .\scripts\write_m20_reframe.py --source-run-dir .\artifacts\training\m20\20260506T054337Z
 Writes `v2_refinement_plan/`, `strategy_candidate_v2_refined_definitions/`, `strategy_candidate_v2_refined_factory/`, and `m20_reframe/`. Current refined result: 4 refined definitions, 118,116 candidate rows, all 4 candidates economics-negative. M20 is reframed as research-only context-aware decision selection; next action `DESIGN_RESEARCH_ONLY_DECISION_POLICY_EVALUATOR`. No runtime, registry, promotion, training, scoring, backtest, trading, or profit claim behavior is changed.
+
+<!-- M20_DECISION_POLICY_RECOVERY -->
+M20 decision-policy recovery:
+Commands:
+python .\scripts\audit_m20_policy_inputs.py --source-run-dir .\artifacts\training\m20\20260506T054337Z --prediction-run-dir .\artifacts\training\m20\20260507T135017Z
+python .\scripts\evaluate_m20_decision_policies.py --source-run-dir .\artifacts\training\m20\20260506T054337Z --prediction-run-dir .\artifacts\training\m20\20260507T135017Z
+python .\scripts\audit_m20_policy_validation.py --source-run-dir .\artifacts\training\m20\20260506T054337Z
+python .\scripts\build_m20_trading_aware_labels.py --source-run-dir .\artifacts\training\m20\20260506T054337Z
+python .\scripts\evaluate_m20_decision_policies.py --source-run-dir .\artifacts\training\m20\20260506T054337Z --prediction-run-dir .\artifacts\training\m20\20260507T135017Z --trading-aware-label-dir .\artifacts\training\m20\20260506T054337Z\research_labels\vol_scaled\trading_aware_labels --output-name trading_aware_policy_eval
+python .\scripts\plan_m20_shadow_observer.py --source-run-dir .\artifacts\training\m20\20260506T054337Z --policy-eval-dir .\artifacts\training\m20\20260506T054337Z\research_labels\vol_scaled\trading_aware_policy_eval
+
+Writes `policy_input_availability_audit/`, `decision_policy_eval/`, `policy_validation_audit/`, `trading_aware_labels/`, `trading_aware_policy_eval/`, `trading_aware_policy_validation_audit/`, and `shadow_adaptation_observer_plan/`. Current result: policy inputs are available, 70 generic decision policies were evaluated, trading-aware labels wrote 312,485 rows, label-aware policy evaluation still found no adequate positive proxy policy, and the shadow observer plan recommends `PAUSE_M20_POLICY_ROUTE_AND_REDESIGN_INPUTS`. All artifacts remain `RESEARCH_ONLY`, `NO_RUNTIME_EFFECT`, `NOT_BACKTEST`, `NOT_RUNTIME_READY`, `NOT_PROMOTABLE`, and `NO_PROFIT_CLAIM`.

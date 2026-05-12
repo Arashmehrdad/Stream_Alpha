@@ -1125,3 +1125,18 @@ python .\scripts\build_m20_strategy_candidates_v2.py --source-run-dir .\artifact
 python .\scripts\write_m20_reframe.py --source-run-dir .\artifacts\training\m20\20260506T054337Z
 
 Writes a generic v2 refinement plan, predicate-spec refined definitions, refined candidate factory outputs, and a static M20 reframe artifact. Current result: 4 refined definitions, 118,116 candidate rows, all 4 candidates `V2_STRATEGY_CANDIDATE_ECONOMICS_NEGATIVE`; M20 remains `RESEARCH_ONLY`, `NO_RUNTIME_EFFECT`, `NOT_BACKTEST`, `NOT_RUNTIME_READY`, `NOT_PROMOTABLE`, and `NO_PROFIT_CLAIM`. The reframe records M20 as context-aware decision selection and recommends `DESIGN_RESEARCH_ONLY_DECISION_POLICY_EVALUATOR`.
+
+<!-- M20_DECISION_POLICY_RECOVERY -->
+## Research-Only M20 Decision-Policy Recovery
+
+Commands:
+python .\scripts\audit_m20_policy_inputs.py --source-run-dir .\artifacts\training\m20\20260506T054337Z --prediction-run-dir .\artifacts\training\m20\20260507T135017Z
+python .\scripts\evaluate_m20_decision_policies.py --source-run-dir .\artifacts\training\m20\20260506T054337Z --prediction-run-dir .\artifacts\training\m20\20260507T135017Z
+python .\scripts\audit_m20_policy_validation.py --source-run-dir .\artifacts\training\m20\20260506T054337Z
+python .\scripts\build_m20_trading_aware_labels.py --source-run-dir .\artifacts\training\m20\20260506T054337Z
+python .\scripts\evaluate_m20_decision_policies.py --source-run-dir .\artifacts\training\m20\20260506T054337Z --prediction-run-dir .\artifacts\training\m20\20260507T135017Z --trading-aware-label-dir .\artifacts\training\m20\20260506T054337Z\research_labels\vol_scaled\trading_aware_labels --output-name trading_aware_policy_eval
+python .\scripts\plan_m20_shadow_observer.py --source-run-dir .\artifacts\training\m20\20260506T054337Z --policy-eval-dir .\artifacts\training\m20\20260506T054337Z\research_labels\vol_scaled\trading_aware_policy_eval
+
+The recovery path first audits policy-input availability, then evaluates bounded generic TAKE/HOLD policies from existing OOF predictions, refined candidate events, and safe economic outcomes. It adds validation/search-breadth audit artifacts, builds research-only trading-aware labels for calibration diagnostics, reruns the same evaluator with those labels, and writes a shadow-observer plan artifact. Current result: 70 generic policies evaluated before and after trading-aware labels; no adequate positive proxy policy; shadow observer recommendation `PAUSE_M20_POLICY_ROUTE_AND_REDESIGN_INPUTS`.
+
+These tools do not train, score, change runtime behavior, write registry or promotion state, change trading/backtest logic, or make profit claims. Policy selection blocks future/net/economic outcome columns as inputs; those columns are outcome diagnostics only.

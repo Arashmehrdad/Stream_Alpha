@@ -6260,3 +6260,62 @@ against naive baselines.
   - M20 reframe decision: `REFRAME_M20_AS_CONTEXT_AWARE_DECISION_SELECTION`
   - Recommendation: `DESIGN_RESEARCH_ONLY_DECISION_POLICY_EVALUATOR`
   - Next required action: `DESIGN_RESEARCH_ONLY_DECISION_POLICY_EVALUATOR`
+
+<!-- M20_DECISION_POLICY_RECOVERY -->
+### M20 generic pipeline Batches P-U - decision-policy recovery
+
+- Scope:
+  - Add a reusable policy input availability audit for OOF predictions, refined candidate events, safe economic outcomes, enriched features, labels, and baseline-comparison readiness.
+  - Add a generic research-only decision-policy evaluator for baseline, probability threshold, confidence threshold, regime-conditioned, candidate-event, and candidate-plus-score TAKE/HOLD policies.
+  - Add a policy validation/search-breadth audit to keep positive-looking policy outputs from being treated as promotion or profit evidence.
+  - Add research-only trading-aware labels with explicit lineage and leakage audit.
+  - Reuse the same generic evaluator with trading-aware labels for calibration diagnostics.
+  - Add a shadow-only observer plan artifact that blocks runtime adaptation when no adequate positive proxy policy exists.
+  - Preserve `RESEARCH_ONLY`, `NO_RUNTIME_EFFECT`, `NOT_BACKTEST`, `NOT_RUNTIME_READY`, `NOT_PROMOTABLE`, and `NO_PROFIT_CLAIM`.
+  - Do not change runtime inference, registry, promotion, paper/live execution, trading/backtest logic, model training, scoring, prediction exports, validation workflow, or profitability claims.
+- Changed files:
+  - `app/training/m20_policy_research_common.py`
+  - `app/training/m20_policy_input_availability.py`
+  - `scripts/audit_m20_policy_inputs.py`
+  - `tests/test_training_m20_policy_input_availability.py`
+  - `app/training/m20_decision_policy_evaluator.py`
+  - `scripts/evaluate_m20_decision_policies.py`
+  - `tests/test_training_m20_decision_policy_evaluator.py`
+  - `app/training/m20_policy_validation_audit.py`
+  - `scripts/audit_m20_policy_validation.py`
+  - `tests/test_training_m20_policy_validation_audit.py`
+  - `app/training/m20_trading_aware_labels.py`
+  - `scripts/build_m20_trading_aware_labels.py`
+  - `tests/test_training_m20_trading_aware_labels.py`
+  - `app/training/m20_shadow_observer_plan.py`
+  - `scripts/plan_m20_shadow_observer.py`
+  - `tests/test_training_m20_shadow_observer_plan.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Validation:
+  - `python -m pytest tests/test_training_m20_policy_input_availability.py tests/test_training_m20_decision_policy_evaluator.py tests/test_training_m20_policy_validation_audit.py tests/test_training_m20_trading_aware_labels.py tests/test_training_m20_shadow_observer_plan.py -q` -> `12 passed`
+  - `python -m py_compile app/training/m20_policy_research_common.py app/training/m20_policy_input_availability.py app/training/m20_decision_policy_evaluator.py app/training/m20_policy_validation_audit.py app/training/m20_trading_aware_labels.py app/training/m20_shadow_observer_plan.py scripts/audit_m20_policy_inputs.py scripts/evaluate_m20_decision_policies.py scripts/audit_m20_policy_validation.py scripts/build_m20_trading_aware_labels.py scripts/plan_m20_shadow_observer.py` -> passed
+  - `python -m pylint --fail-under=10 app/training/m20_policy_research_common.py app/training/m20_policy_input_availability.py app/training/m20_decision_policy_evaluator.py app/training/m20_policy_validation_audit.py app/training/m20_trading_aware_labels.py app/training/m20_shadow_observer_plan.py tests/test_training_m20_policy_input_availability.py tests/test_training_m20_decision_policy_evaluator.py tests/test_training_m20_policy_validation_audit.py tests/test_training_m20_trading_aware_labels.py tests/test_training_m20_shadow_observer_plan.py` -> `10.00/10`
+  - `python scripts/audit_m20_policy_inputs.py --source-run-dir artifacts/training/m20/20260506T054337Z --prediction-run-dir artifacts/training/m20/20260507T135017Z` -> completed
+  - `python scripts/evaluate_m20_decision_policies.py --source-run-dir artifacts/training/m20/20260506T054337Z --prediction-run-dir artifacts/training/m20/20260507T135017Z` -> completed
+  - `python scripts/audit_m20_policy_validation.py --source-run-dir artifacts/training/m20/20260506T054337Z` -> completed
+  - `python scripts/build_m20_trading_aware_labels.py --source-run-dir artifacts/training/m20/20260506T054337Z` -> completed
+  - `python scripts/evaluate_m20_decision_policies.py --source-run-dir artifacts/training/m20/20260506T054337Z --prediction-run-dir artifacts/training/m20/20260507T135017Z --trading-aware-label-dir artifacts/training/m20/20260506T054337Z/research_labels/vol_scaled/trading_aware_labels --output-name trading_aware_policy_eval` -> completed
+  - `python scripts/audit_m20_policy_validation.py --source-run-dir artifacts/training/m20/20260506T054337Z --policy-eval-dir artifacts/training/m20/20260506T054337Z/research_labels/vol_scaled/trading_aware_policy_eval --output-name trading_aware_policy_validation_audit` -> completed
+  - `python scripts/plan_m20_shadow_observer.py --source-run-dir artifacts/training/m20/20260506T054337Z --policy-eval-dir artifacts/training/m20/20260506T054337Z/research_labels/vol_scaled/trading_aware_policy_eval` -> completed
+- Real output directories:
+  - `artifacts/training/m20/20260506T054337Z/research_labels/vol_scaled/policy_input_availability_audit`
+  - `artifacts/training/m20/20260506T054337Z/research_labels/vol_scaled/decision_policy_eval`
+  - `artifacts/training/m20/20260506T054337Z/research_labels/vol_scaled/policy_validation_audit`
+  - `artifacts/training/m20/20260506T054337Z/research_labels/vol_scaled/trading_aware_labels`
+  - `artifacts/training/m20/20260506T054337Z/research_labels/vol_scaled/trading_aware_policy_eval`
+  - `artifacts/training/m20/20260506T054337Z/research_labels/vol_scaled/trading_aware_policy_validation_audit`
+  - `artifacts/training/m20/20260506T054337Z/research_labels/vol_scaled/shadow_adaptation_observer_plan`
+- Real result:
+  - Policy input audit: ready, missing input count `0`, recommendation `BUILD_RESEARCH_ONLY_DECISION_POLICY_EVALUATOR`.
+  - Decision policy eval: `70` policies, best proxy candidate `neuralforecast_nhits:CANDIDATE_refined_hold_avoid_extreme_context`, no adequate positive proxy policy, recommendation `DESIGN_TRADING_AWARE_RESEARCH_LABELS`.
+  - Trading-aware labels: `312485` rows, blocked labels `forward_return_6_candles` and `forward_return_12_candles`, recommendation `RE_RUN_DECISION_POLICY_EVALUATOR_WITH_TRADING_AWARE_LABELS`.
+  - Label-aware policy eval: `70` policies, same best proxy candidate, no adequate positive proxy policy, recommendation `DESIGN_TRADING_AWARE_RESEARCH_LABELS`.
+  - Shadow observer plan: plausible policy count `0`, recommendation `PAUSE_M20_POLICY_ROUTE_AND_REDESIGN_INPUTS`.
+  - Current blockers: `NO_POLICY_READY_FOR_SHADOW_OBSERVATION`, `NOT_BACKTEST`, `NOT_RUNTIME_READY`, `NOT_PROMOTABLE`, `NO_PROFIT_CLAIM`.
