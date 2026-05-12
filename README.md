@@ -26,7 +26,7 @@ Accepted milestones and current higher-foundation status:
 * M20 dynamic ensemble surfaces and persisted profile truth exist, and the current active roster is now aligned to the real registry-backed AutoGluon generalist only, but the candidate ecosystem remains narrow and not economically accepted yet
 * M21 guarded continual learning now has runtime-generated persisted drift-cap truth, without invented active profiles, experiments, or promotions beyond real persisted state
 
-Second Foundation v2 is not honestly complete through M21 yet. The repo now exposes truthful M19-M21 runtime surfaces without overclaiming stronger model diversity, profile activity, or promotion evidence than currently exists.
+Second Foundation v2 platform-maturity audits are now complete through M21. That means the control surfaces are consolidated, not that the model ecosystem, profile activity, promotion evidence, or economic edge is stronger than the real persisted state supports.
 
 ## What Stream Alpha Is
 
@@ -986,7 +986,7 @@ Current intentional limits include:
 
 ## Closeout
 
-Second Foundation v2 is mostly aligned through accepted M18, with active but still limited M19-M21 runtime truth surfaces.
+Second Foundation v2 platform-maturity audits are consolidated through M21, with active but still limited M19-M21 runtime truth surfaces.
 
 That means:
 
@@ -1256,3 +1256,126 @@ gates, broker reconciliation, canonical health gating, guarded submit blocks,
 live safety persistence, and operator status artifacts without changing runtime,
 registry, promotion, execution, trading, backtest, training, scoring, or M20
 status.
+
+<!-- M13_RELIABILITY_RECOVERY_AUDIT -->
+M13 reliability and recovery audit:
+Command: python .\scripts\audit_m13_reliability_recovery.py
+Writes `artifacts/platform_maturity/m13/reliability_recovery_audit/`.
+Current audit result: `M13_RELIABILITY_RECOVERY_CONTROLS_CONSOLIDATED`; gap
+count `0`; recommendation `PROCEED_TO_M14_EXPLAINABILITY_AUDIT`; next required
+action `AUDIT_M14_EXPLAINABILITY_AND_DECISION_TRACE_CONTROLS`. The audit
+confirms freshness evaluators, heartbeat and breaker state, feature-lag checks,
+recovery-event truth, persistence surfaces, `/freshness`, `/reliability/system`,
+runner recovery integration, and live health-gate integration without changing
+runtime, registry, promotion, execution, trading, backtest, training, scoring,
+or M20 status.
+
+<!-- M14_EXPLAINABILITY_AUDIT -->
+M14 explainability and decision-trace audit:
+Command: python .\scripts\audit_m14_explainability.py
+Writes `artifacts/platform_maturity/m14/explainability_audit/`.
+Current audit result: `M14_EXPLAINABILITY_DECISION_TRACE_CONTROLS_CONSOLIDATED`;
+gap count `0`; recommendation `PROCEED_TO_M15_OPERATOR_CONSOLE_AUDIT`; next
+required action `AUDIT_M15_OPERATOR_CONSOLE_AND_VISIBILITY_CONTROLS`. The audit
+confirms reference-ablation explainability, signal and regime explanation
+payloads, canonical decision traces, M10 risk-rationale enrichment, deterministic
+rationale report paths, trace persistence, order/position/ledger linkage, and
+dashboard read surfaces without changing runtime, registry, promotion, execution,
+trading, backtest, training, scoring, or M20 status.
+
+<!-- M15_OPERATOR_CONSOLE_AUDIT -->
+M15 operator console audit:
+Command: python .\scripts\audit_m15_operator_console.py
+Writes `artifacts/platform_maturity/m15/operator_console_audit/`.
+Current audit result: `M15_OPERATOR_CONSOLE_VISIBILITY_CONTROLS_CONSOLIDATED`;
+gap count `0`; recommendation `PROCEED_TO_M16_DEPLOYMENT_ENVIRONMENT_AUDIT`;
+next required action `AUDIT_M16_DEPLOYMENT_ENVIRONMENT_CONTROLS`. The audit
+confirms the Streamlit operator console, dashboard data-source snapshots,
+health/reliability/alert reads, live-safety visibility, operator banner,
+incident panel, decision traces, blocked trades, trade journal, model references,
+and config summaries without changing runtime, registry, promotion, execution,
+trading, backtest, training, scoring, or M20 status.
+
+<!-- M16_DEPLOYMENT_ENVIRONMENT_AUDIT -->
+M16 deployment and environment audit:
+Command: python .\scripts\audit_m16_deployment_environment.py
+Writes `artifacts/platform_maturity/m16/deployment_environment_audit/`.
+Current audit result: `M16_DEPLOYMENT_ENVIRONMENT_CONTROLS_CONSOLIDATED`; gap
+count `0`; recommendation `PROCEED_TO_M17_OPERATIONAL_ALERTING_AUDIT`; next
+required action `AUDIT_M17_OPERATIONAL_ALERTING_AND_INCIDENT_CONTROLS`. The
+audit confirms runtime profile contracts, profile-specific trading configs,
+startup validation/report writing, Docker Compose profile/config-check gating,
+local start/stop helpers, environment examples, and paper VPS deployment helpers
+without changing runtime, registry, promotion, execution, trading, backtest,
+training, scoring, or M20 status.
+
+<!-- M17_OPERATIONAL_ALERTING_AUDIT -->
+M17 operational alerting and incident audit:
+Command: python .\scripts\audit_m17_operational_alerting.py
+Writes `artifacts/platform_maturity/m17/operational_alerting_audit/`.
+Current audit result: `M17_OPERATIONAL_ALERTING_INCIDENT_CONTROLS_CONSOLIDATED`;
+gap count `0`; recommendation `PROCEED_TO_M18_EVALUATION_REPORTING_AUDIT`; next
+required action `AUDIT_M18_EVALUATION_REPORTING_AND_DEGRADATION_CONTROLS`. The
+audit confirms checked-in alert config, alert event/state schemas,
+startup-safety and daily-summary contracts, alert rules, alert persistence,
+active-alert/timeline/startup/daily API reads, runner integration, and dashboard
+incident visibility without changing runtime, registry, promotion, execution,
+trading, backtest, training, scoring, or M20 status.
+
+<!-- M18_EVALUATION_REPORTING_AUDIT -->
+M18 evaluation reporting and degradation audit:
+Command: python .\scripts\audit_m18_evaluation_reporting.py
+Writes `artifacts/platform_maturity/m18/evaluation_reporting_audit/`.
+Current audit result:
+`M18_EVALUATION_REPORTING_DEGRADATION_CONTROLS_CONSOLIDATED`; gap count `0`;
+recommendation `PROCEED_TO_M19_BOUNDED_ADAPTATION_AUDIT`; next required action
+`AUDIT_M19_BOUNDED_ADAPTATION_AND_DRIFT_CONTROLS`. The audit confirms checked-in
+evaluation config, schemas, service, read-only repository, artifact writer,
+decision-opportunity normalization, comparison matching, degradation metrics,
+research-only challenger observer surfaces, and operator scripts without
+changing runtime, registry, promotion, execution, trading, backtest, training,
+scoring, or M20 status.
+
+<!-- M19_BOUNDED_ADAPTATION_AUDIT -->
+M19 bounded adaptation and drift-control audit:
+Command: python .\scripts\audit_m19_bounded_adaptation.py
+Writes `artifacts/platform_maturity/m19/bounded_adaptation_audit/`.
+Current audit result: `M19_BOUNDED_ADAPTATION_DRIFT_CONTROLS_CONSOLIDATED`;
+gap count `0`; recommendation `PROCEED_TO_M20_DYNAMIC_ENSEMBLE_AUDIT`; next
+required action `AUDIT_M20_DYNAMIC_ENSEMBLE_AND_RESEARCH_BOUNDARIES`. The audit
+confirms checked-in adaptation config, bounded drift/performance schemas,
+adaptation service, runtime drift/performance truth writer, bounded threshold
+and sizing helpers, explicit rollback boundary, persistence surfaces,
+read-only adaptation endpoints, dashboard visibility, and M10/M18/M20 authority
+boundaries without changing runtime, registry, promotion, execution, trading,
+backtest, training, scoring, or M20 status.
+
+<!-- M20_DYNAMIC_ENSEMBLE_AUDIT -->
+M20 dynamic ensemble and research-boundary audit:
+Command: python .\scripts\audit_m20_dynamic_ensemble.py
+Writes `artifacts/platform_maturity/m20/dynamic_ensemble_audit/`.
+Current audit result: `M20_DYNAMIC_ENSEMBLE_RESEARCH_BOUNDARIES_CONSOLIDATED`;
+gap count `0`; recommendation `PROCEED_TO_M21_CONTINUAL_LEARNING_AUDIT`; next
+required action `AUDIT_M21_CONTINUAL_LEARNING_AND_GUARDED_WORKFLOW`. The audit
+confirms checked-in ensemble config, runtime ensemble service/fallbacks,
+agreement-weighting context, profile promotion and rollback helpers, repository
+persistence, inference and decision-trace ensemble read surfaces, dashboard
+visibility, and the terminal M20 negative research decision
+`M20_POLICY_ROUTE_PAUSED_NO_POSITIVE_PROXY` without changing runtime, registry,
+promotion, execution, trading, backtest, training, scoring, or profit-claim
+behavior.
+
+<!-- M21_CONTINUAL_LEARNING_AUDIT -->
+M21 continual-learning guarded-workflow audit:
+Command: python .\scripts\audit_m21_continual_learning.py
+Writes `artifacts/platform_maturity/m21/continual_learning_audit/`.
+Current audit result: `M21_CONTINUAL_LEARNING_GUARDED_WORKFLOW_CONSOLIDATED`;
+gap count `0`; recommendation
+`SECOND_FOUNDATION_PLATFORM_MATURITY_AUDITS_COMPLETE`; next required action
+`PLAN_NEXT_PLATFORM_MATURITY_OR_DATA_UPGRADE_ROUTE`. The audit confirms
+checked-in continual-learning config, schemas, service/read surfaces, guarded
+promotion and rollback blocks, M19-derived runtime drift-cap persistence,
+repository persistence, inference endpoints, decision-trace context, dashboard
+visibility, and M20 paused/non-authoritative status without changing runtime,
+registry, promotion, execution, trading, backtest, training, scoring, or
+profit-claim behavior.

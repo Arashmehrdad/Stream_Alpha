@@ -1241,3 +1241,183 @@ recommendation `PROCEED_TO_M13_RELIABILITY_RECOVERY_AUDIT`; next required action
 
 The audit does not reopen M20, does not change runtime behavior, and creates no
 promotion, backtest, trading, execution, live-readiness, or profit claim.
+
+<!-- M13_RELIABILITY_RECOVERY_AUDIT -->
+## M13 Reliability And Recovery Audit
+
+Command:
+python .\scripts\audit_m13_reliability_recovery.py
+
+Writes `artifacts/platform_maturity/m13/reliability_recovery_audit/` as the
+audit-first M13 platform-maturity artifact. It records reliability config,
+freshness evaluators, heartbeat and breaker state, feature-lag checks,
+recovery-event truth, persistence surfaces, `/freshness`, `/reliability/system`,
+runner recovery integration, and guarded-live health-gate integration.
+
+Current result: `M13_RELIABILITY_RECOVERY_CONTROLS_CONSOLIDATED`; gap count
+`0`; recommendation `PROCEED_TO_M14_EXPLAINABILITY_AUDIT`; next required action
+`AUDIT_M14_EXPLAINABILITY_AND_DECISION_TRACE_CONTROLS`.
+
+The audit does not reopen M20, does not change runtime behavior, and creates no
+promotion, backtest, trading, execution, live-readiness, or profit claim.
+
+<!-- M14_EXPLAINABILITY_AUDIT -->
+## M14 Explainability And Decision-Trace Audit
+
+Command:
+python .\scripts\audit_m14_explainability.py
+
+Writes `artifacts/platform_maturity/m14/explainability_audit/` as the
+audit-first M14 platform-maturity artifact. It records reference-ablation
+explainability, signal and regime explanation payloads, canonical decision
+traces, M10 risk-rationale enrichment, deterministic rationale report paths,
+trace persistence, order/position/ledger linkage, and dashboard read surfaces.
+
+Current result: `M14_EXPLAINABILITY_DECISION_TRACE_CONTROLS_CONSOLIDATED`; gap
+count `0`; recommendation `PROCEED_TO_M15_OPERATOR_CONSOLE_AUDIT`; next required
+action `AUDIT_M15_OPERATOR_CONSOLE_AND_VISIBILITY_CONTROLS`.
+
+The audit does not reopen M20, does not change runtime behavior, and creates no
+promotion, backtest, trading, execution, live-readiness, or profit claim.
+
+<!-- M15_OPERATOR_CONSOLE_AUDIT -->
+## M15 Operator Console Audit
+
+Command:
+python .\scripts\audit_m15_operator_console.py
+
+Writes `artifacts/platform_maturity/m15/operator_console_audit/` as the
+audit-first M15 platform-maturity artifact. It records the Streamlit operator
+console entrypoint, dashboard snapshot/data-source contracts, health,
+freshness, reliability, alerts, trading-state reads, operator banner, incidents,
+live critical strip, decision traces, blocked trades, trade journal, model
+references, and config-summary visibility.
+
+Current result: `M15_OPERATOR_CONSOLE_VISIBILITY_CONTROLS_CONSOLIDATED`; gap
+count `0`; recommendation `PROCEED_TO_M16_DEPLOYMENT_ENVIRONMENT_AUDIT`; next
+required action `AUDIT_M16_DEPLOYMENT_ENVIRONMENT_CONTROLS`.
+
+The audit does not reopen M20, does not change runtime behavior, and creates no
+promotion, backtest, trading, execution, live-readiness, or profit claim.
+
+<!-- M16_DEPLOYMENT_ENVIRONMENT_AUDIT -->
+## M16 Deployment And Environment Audit
+
+Command:
+python .\scripts\audit_m16_deployment_environment.py
+
+Writes `artifacts/platform_maturity/m16/deployment_environment_audit/` as the
+audit-first M16 platform-maturity artifact. It records runtime profile
+contracts, profile-specific trading config resolution, startup validation,
+startup report writing, Docker Compose profile/config-check gating, local
+start/stop helpers, environment-variable examples, and paper VPS deployment
+helpers.
+
+Current result: `M16_DEPLOYMENT_ENVIRONMENT_CONTROLS_CONSOLIDATED`; gap count
+`0`; recommendation `PROCEED_TO_M17_OPERATIONAL_ALERTING_AUDIT`; next required
+action `AUDIT_M17_OPERATIONAL_ALERTING_AND_INCIDENT_CONTROLS`.
+
+The audit does not reopen M20, does not change runtime behavior, and creates no
+promotion, backtest, trading, execution, live-readiness, or profit claim.
+
+<!-- M17_OPERATIONAL_ALERTING_AUDIT -->
+## M17 Operational Alerting And Incident Audit
+
+Command:
+python .\scripts\audit_m17_operational_alerting.py
+
+Writes `artifacts/platform_maturity/m17/operational_alerting_audit/` as the
+audit-first M17 platform-maturity artifact. It records checked-in alert config,
+alert event/state schemas, startup-safety and daily-summary contracts, alert
+service rules, alert repository persistence, inference API read surfaces, runner
+alerting integration, and dashboard incident/operator visibility.
+
+Current result: `M17_OPERATIONAL_ALERTING_INCIDENT_CONTROLS_CONSOLIDATED`; gap
+count `0`; recommendation `PROCEED_TO_M18_EVALUATION_REPORTING_AUDIT`; next
+required action `AUDIT_M18_EVALUATION_REPORTING_AND_DEGRADATION_CONTROLS`.
+
+The audit does not reopen M20, does not change runtime behavior, and creates no
+promotion, backtest, trading, execution, live-readiness, or profit claim.
+
+<!-- M18_EVALUATION_REPORTING_AUDIT -->
+## M18 Evaluation Reporting And Degradation Audit
+
+Command:
+python .\scripts\audit_m18_evaluation_reporting.py
+
+Writes `artifacts/platform_maturity/m18/evaluation_reporting_audit/` as the
+audit-first M18 platform-maturity artifact. It records checked-in evaluation
+config, evaluation schemas, service orchestration, read-only repository,
+artifact writer, decision-opportunity normalization, comparison matching,
+paper-to-live degradation metrics, research-only challenger observer surfaces,
+and operator scripts.
+
+Current result: `M18_EVALUATION_REPORTING_DEGRADATION_CONTROLS_CONSOLIDATED`;
+gap count `0`; recommendation `PROCEED_TO_M19_BOUNDED_ADAPTATION_AUDIT`; next
+required action `AUDIT_M19_BOUNDED_ADAPTATION_AND_DRIFT_CONTROLS`.
+
+The audit does not reopen M20, does not change runtime behavior, and creates no
+promotion, backtest, trading, execution, live-readiness, or profit claim.
+
+<!-- M19_BOUNDED_ADAPTATION_AUDIT -->
+## M19 Bounded Adaptation And Drift-Control Audit
+
+Command:
+python .\scripts\audit_m19_bounded_adaptation.py
+
+Writes `artifacts/platform_maturity/m19/bounded_adaptation_audit/` as the
+audit-first M19 platform-maturity artifact. It records checked-in adaptation
+config, drift/performance/profile/promotion schemas, adaptation service,
+runtime drift/performance truth writer, bounded threshold and sizing helpers,
+explicit rollback boundary, persistence surfaces, read-only adaptation
+endpoints, and dashboard visibility.
+
+Current result: `M19_BOUNDED_ADAPTATION_DRIFT_CONTROLS_CONSOLIDATED`; gap count
+`0`; recommendation `PROCEED_TO_M20_DYNAMIC_ENSEMBLE_AUDIT`; next required
+action `AUDIT_M20_DYNAMIC_ENSEMBLE_AND_RESEARCH_BOUNDARIES`.
+
+The audit does not reopen M20, does not change runtime behavior, and creates no
+promotion, backtest, trading, execution, live-readiness, or profit claim.
+
+<!-- M20_DYNAMIC_ENSEMBLE_AUDIT -->
+## M20 Dynamic Ensemble And Research-Boundary Audit
+
+Command:
+python .\scripts\audit_m20_dynamic_ensemble.py
+
+Writes `artifacts/platform_maturity/m20/dynamic_ensemble_audit/` as the
+audit-first M20 platform-maturity artifact. It records checked-in ensemble
+config, runtime ensemble service and fallback behavior, agreement weighting,
+profile promotion and rollback helpers, repository persistence, inference and
+decision-trace ensemble read surfaces, dashboard visibility, and M20 research
+pause boundaries.
+
+Current result: `M20_DYNAMIC_ENSEMBLE_RESEARCH_BOUNDARIES_CONSOLIDATED`; gap
+count `0`; recommendation `PROCEED_TO_M21_CONTINUAL_LEARNING_AUDIT`; next
+required action `AUDIT_M21_CONTINUAL_LEARNING_AND_GUARDED_WORKFLOW`.
+
+The audit preserves the terminal M20 research decision
+`M20_POLICY_ROUTE_PAUSED_NO_POSITIVE_PROXY`. It does not reopen M20, does not
+change runtime behavior, and creates no promotion, backtest, trading, execution,
+live-readiness, or profit claim.
+
+<!-- M21_CONTINUAL_LEARNING_AUDIT -->
+## M21 Continual-Learning Guarded-Workflow Audit
+
+Command:
+python .\scripts\audit_m21_continual_learning.py
+
+Writes `artifacts/platform_maturity/m21/continual_learning_audit/` as the
+audit-first M21 platform-maturity artifact. It records checked-in
+continual-learning config, schemas, service/read surfaces, guarded promotion and
+rollback blocks, M19-derived runtime drift-cap persistence, repository
+persistence, inference endpoints, decision-trace context, dashboard visibility,
+and M20 paused/non-authoritative status.
+
+Current result: `M21_CONTINUAL_LEARNING_GUARDED_WORKFLOW_CONSOLIDATED`; gap
+count `0`; recommendation
+`SECOND_FOUNDATION_PLATFORM_MATURITY_AUDITS_COMPLETE`; next required action
+`PLAN_NEXT_PLATFORM_MATURITY_OR_DATA_UPGRADE_ROUTE`.
+
+The audit does not reopen M20, does not change runtime behavior, and creates no
+promotion, backtest, trading, execution, live-readiness, or profit claim.

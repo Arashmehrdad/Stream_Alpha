@@ -4,7 +4,7 @@
 1. M20 is active but still limited and candidate-pool constrained.
 2. M19 and M21 now have runtime-generated persisted truth, but they still sit on a narrow upstream model ecosystem.
 3. /health now reports the truthful top-level ensemble identity.
-4. README no longer overclaims completion through M21 and must keep tracking the narrower honest state.
+4. README may state that platform-maturity audits are complete through M21, but must not overclaim model diversity, economic acceptance, profile activity, or promotion evidence.
 5. Real trained/runtime-usable model support is still narrower than design intent even after the first real authoritative AutoGluon path landed.
 6. Research hooks do not count as trained model presence.
 7. AutoGluon now receives credit only because there is real training/import support plus registry/runtime-usable artifacts; that does not imply economic acceptance.
@@ -6506,3 +6506,276 @@ against naive baselines.
   - Gap count: `0`
   - Recommendation: `PROCEED_TO_M13_RELIABILITY_RECOVERY_AUDIT`
   - Next required action: `AUDIT_M13_RELIABILITY_AND_RECOVERY_CONTROLS`
+
+<!-- M13_RELIABILITY_RECOVERY_AUDIT -->
+### M13 platform maturity - audit-first reliability and recovery controls
+
+- Scope:
+  - Add an artifact-backed M13 reliability and recovery audit.
+  - Audit checked-in reliability config, freshness evaluators, heartbeat state,
+    breaker transitions, feature-lag checks, pending-signal recovery,
+    persistence surfaces, operator artifacts, `/freshness`,
+    `/reliability/system`, runner recovery integration, and guarded-live health
+    gate integration.
+  - Confirm M13 reliability/recovery boundaries without changing runtime
+    behavior.
+  - Preserve M20 as `M20_POLICY_ROUTE_PAUSED_NO_POSITIVE_PROXY`.
+  - Do not change runtime inference, registry, promotion, paper/live execution,
+    trading/backtest logic, model training, scoring, validation workflow, or
+    profitability claims.
+- Changed files:
+  - `app/reliability/m13_reliability_recovery_audit.py`
+  - `scripts/audit_m13_reliability_recovery.py`
+  - `tests/test_reliability_m13_audit.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real output directory:
+  - `artifacts/platform_maturity/m13/reliability_recovery_audit`
+- Real result:
+  - M13 state: `M13_RELIABILITY_RECOVERY_CONTROLS_CONSOLIDATED`
+  - Gap count: `0`
+  - Recommendation: `PROCEED_TO_M14_EXPLAINABILITY_AUDIT`
+  - Next required action: `AUDIT_M14_EXPLAINABILITY_AND_DECISION_TRACE_CONTROLS`
+
+<!-- M14_EXPLAINABILITY_AUDIT -->
+### M14 platform maturity - audit-first explainability and decision traces
+
+- Scope:
+  - Add an artifact-backed M14 explainability and decision-trace audit.
+  - Audit checked-in explainability config, reference-ablation prediction
+    explainability, signal and regime explanation payloads, canonical decision
+    trace schemas, M10 risk-rationale enrichment, deterministic rationale report
+    writers, decision-trace persistence, order/position/ledger linkage, and
+    dashboard read surfaces.
+  - Confirm M14 explainability boundaries without changing runtime behavior.
+  - Preserve M20 as `M20_POLICY_ROUTE_PAUSED_NO_POSITIVE_PROXY`.
+  - Do not change runtime inference, registry, promotion, paper/live execution,
+    trading/backtest logic, model training, scoring, validation workflow, or
+    profitability claims.
+- Changed files:
+  - `app/explainability/m14_explainability_audit.py`
+  - `scripts/audit_m14_explainability.py`
+  - `tests/test_explainability_m14_audit.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real output directory:
+  - `artifacts/platform_maturity/m14/explainability_audit`
+- Real result:
+  - M14 state: `M14_EXPLAINABILITY_DECISION_TRACE_CONTROLS_CONSOLIDATED`
+  - Gap count: `0`
+  - Recommendation: `PROCEED_TO_M15_OPERATOR_CONSOLE_AUDIT`
+  - Next required action: `AUDIT_M15_OPERATOR_CONSOLE_AND_VISIBILITY_CONTROLS`
+
+<!-- M15_OPERATOR_CONSOLE_AUDIT -->
+### M15 platform maturity - audit-first operator console visibility
+
+- Scope:
+  - Add an artifact-backed M15 operator-console audit.
+  - Audit dashboard package, Streamlit console entrypoint, data-source snapshot
+    contracts, API and database read surfaces, operator banner, incident panel,
+    live critical strip, reliability/lag/live-safety views, decision-trace and
+    blocked-trade views, trade journal, model references, and config summaries.
+  - Confirm M15 operator-console visibility boundaries without changing
+    dashboard/runtime behavior.
+  - Preserve M20 as `M20_POLICY_ROUTE_PAUSED_NO_POSITIVE_PROXY`.
+  - Do not change runtime inference, registry, promotion, paper/live execution,
+    trading/backtest logic, model training, scoring, validation workflow, or
+    profitability claims.
+- Changed files:
+  - `dashboards/m15_operator_console_audit.py`
+  - `scripts/audit_m15_operator_console.py`
+  - `tests/test_dashboard_m15_operator_console_audit.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real output directory:
+  - `artifacts/platform_maturity/m15/operator_console_audit`
+- Real result:
+  - M15 state: `M15_OPERATOR_CONSOLE_VISIBILITY_CONTROLS_CONSOLIDATED`
+  - Gap count: `0`
+  - Recommendation: `PROCEED_TO_M16_DEPLOYMENT_ENVIRONMENT_AUDIT`
+  - Next required action: `AUDIT_M16_DEPLOYMENT_ENVIRONMENT_CONTROLS`
+
+<!-- M16_DEPLOYMENT_ENVIRONMENT_AUDIT -->
+### M16 platform maturity - audit-first deployment and environment controls
+
+- Scope:
+  - Add an artifact-backed M16 deployment/environment audit.
+  - Audit runtime profile contracts, profile-specific trading configs, startup
+    validation/report writing, Docker Compose profiles and config-check gating,
+    local start/stop helpers, environment-variable examples, and paper VPS
+    deployment helpers.
+  - Confirm M16 deployment/environment boundaries without changing startup,
+    deployment, runtime, or execution behavior.
+  - Preserve M20 as `M20_POLICY_ROUTE_PAUSED_NO_POSITIVE_PROXY`.
+  - Do not change runtime inference, registry, promotion, paper/live execution,
+    trading/backtest logic, model training, scoring, validation workflow, or
+    profitability claims.
+- Changed files:
+  - `app/runtime/m16_deployment_environment_audit.py`
+  - `scripts/audit_m16_deployment_environment.py`
+  - `tests/test_runtime_m16_deployment_environment_audit.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real output directory:
+  - `artifacts/platform_maturity/m16/deployment_environment_audit`
+- Real result:
+  - M16 state: `M16_DEPLOYMENT_ENVIRONMENT_CONTROLS_CONSOLIDATED`
+  - Gap count: `0`
+  - Recommendation: `PROCEED_TO_M17_OPERATIONAL_ALERTING_AUDIT`
+  - Next required action: `AUDIT_M17_OPERATIONAL_ALERTING_AND_INCIDENT_CONTROLS`
+
+<!-- M17_OPERATIONAL_ALERTING_AUDIT -->
+### M17 platform maturity - audit-first operational alerting and incidents
+
+- Scope:
+  - Add an artifact-backed M17 operational alerting and incident audit.
+  - Audit checked-in alert config, alert event/state schemas, startup-safety and
+    daily-summary contracts, alert service rules, alert repository persistence,
+    inference API read surfaces, runner alerting integration, and dashboard
+    incident/operator visibility.
+  - Confirm M17 alerting boundaries without changing alerting, runtime, trading,
+    startup, deployment, or execution behavior.
+  - Preserve M20 as `M20_POLICY_ROUTE_PAUSED_NO_POSITIVE_PROXY`.
+  - Do not change runtime inference, registry, promotion, paper/live execution,
+    trading/backtest logic, model training, scoring, validation workflow, or
+    profitability claims.
+- Changed files:
+  - `app/alerting/m17_operational_alerting_audit.py`
+  - `scripts/audit_m17_operational_alerting.py`
+  - `tests/test_alerting_m17_operational_alerting_audit.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real output directory:
+  - `artifacts/platform_maturity/m17/operational_alerting_audit`
+- Real result:
+  - M17 state: `M17_OPERATIONAL_ALERTING_INCIDENT_CONTROLS_CONSOLIDATED`
+  - Gap count: `0`
+  - Recommendation: `PROCEED_TO_M18_EVALUATION_REPORTING_AUDIT`
+  - Next required action: `AUDIT_M18_EVALUATION_REPORTING_AND_DEGRADATION_CONTROLS`
+
+<!-- M18_EVALUATION_REPORTING_AUDIT -->
+### M18 platform maturity - audit-first evaluation reporting and degradation
+
+- Scope:
+  - Add an artifact-backed M18 evaluation reporting and degradation audit.
+  - Audit checked-in evaluation config, evaluation schemas, service orchestration,
+    read-only repository loading, artifact writing, decision-opportunity
+    normalization, comparison matching, paper-to-live degradation metrics,
+    research-only challenger observer surfaces, and operator scripts.
+  - Confirm M18 evaluation boundaries without changing runtime, registry,
+    promotion, paper/live execution, trading/backtest logic, model training,
+    scoring, validation workflow, or profitability claims.
+  - Preserve M20 as `M20_POLICY_ROUTE_PAUSED_NO_POSITIVE_PROXY`.
+- Changed files:
+  - `app/evaluation/m18_evaluation_reporting_audit.py`
+  - `scripts/audit_m18_evaluation_reporting.py`
+  - `tests/test_evaluation_m18_audit.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real output directory:
+  - `artifacts/platform_maturity/m18/evaluation_reporting_audit`
+- Real result:
+  - M18 state: `M18_EVALUATION_REPORTING_DEGRADATION_CONTROLS_CONSOLIDATED`
+  - Gap count: `0`
+  - Recommendation: `PROCEED_TO_M19_BOUNDED_ADAPTATION_AUDIT`
+  - Next required action: `AUDIT_M19_BOUNDED_ADAPTATION_AND_DRIFT_CONTROLS`
+
+<!-- M19_BOUNDED_ADAPTATION_AUDIT -->
+### M19 platform maturity - audit-first bounded adaptation and drift controls
+
+- Scope:
+  - Add an artifact-backed M19 bounded adaptation and drift-control audit.
+  - Audit checked-in adaptation config, drift/performance/profile/promotion
+    schemas, adaptation service, runtime drift/performance truth writer,
+    bounded threshold and sizing helpers, explicit rollback boundary,
+    persistence surfaces, read-only adaptation endpoints, runner integration,
+    and dashboard visibility.
+  - Confirm M19 adaptation boundaries without changing runtime, registry,
+    promotion, paper/live execution, trading/backtest logic, model training,
+    scoring, validation workflow, or profitability claims.
+  - Preserve M20 as `M20_POLICY_ROUTE_PAUSED_NO_POSITIVE_PROXY`.
+- Changed files:
+  - `app/adaptation/m19_bounded_adaptation_audit.py`
+  - `scripts/audit_m19_bounded_adaptation.py`
+  - `tests/test_adaptation_m19_audit.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real output directory:
+  - `artifacts/platform_maturity/m19/bounded_adaptation_audit`
+- Real result:
+  - M19 state: `M19_BOUNDED_ADAPTATION_DRIFT_CONTROLS_CONSOLIDATED`
+  - Gap count: `0`
+  - Recommendation: `PROCEED_TO_M20_DYNAMIC_ENSEMBLE_AUDIT`
+  - Next required action: `AUDIT_M20_DYNAMIC_ENSEMBLE_AND_RESEARCH_BOUNDARIES`
+
+<!-- M20_DYNAMIC_ENSEMBLE_AUDIT -->
+### M20 platform maturity - audit-first dynamic ensemble and research boundaries
+
+- Scope:
+  - Add an artifact-backed M20 dynamic ensemble and research-boundary audit.
+  - Audit checked-in ensemble config, profile/result/context schemas, runtime
+    ensemble service, fallback behavior, agreement weighting, profile promotion
+    and rollback helpers, research inventory truth, repository persistence,
+    inference/runtime ensemble state, decision-trace context, dashboard
+    visibility, and final M20 negative-result documentation.
+  - Confirm M20 platform boundaries while preserving the terminal research
+    decision `M20_POLICY_ROUTE_PAUSED_NO_POSITIVE_PROXY`.
+  - Do not change runtime inference, registry, promotion, paper/live execution,
+    trading/backtest logic, model training, scoring, validation workflow, or
+    profitability claims.
+- Changed files:
+  - `app/ensemble/m20_dynamic_ensemble_audit.py`
+  - `scripts/audit_m20_dynamic_ensemble.py`
+  - `tests/test_ensemble_m20_audit.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real output directory:
+  - `artifacts/platform_maturity/m20/dynamic_ensemble_audit`
+- Real result:
+  - M20 state: `M20_DYNAMIC_ENSEMBLE_RESEARCH_BOUNDARIES_CONSOLIDATED`
+  - Gap count: `0`
+  - Recommendation: `PROCEED_TO_M21_CONTINUAL_LEARNING_AUDIT`
+  - Next required action: `AUDIT_M21_CONTINUAL_LEARNING_AND_GUARDED_WORKFLOW`
+
+<!-- M21_CONTINUAL_LEARNING_AUDIT -->
+### M21 platform maturity - audit-first continual-learning guarded workflow
+
+- Scope:
+  - Add an artifact-backed M21 continual-learning guarded-workflow audit.
+  - Audit checked-in continual-learning config, experiment/profile/drift-cap/
+    promotion/event/context schemas, service read surfaces, guarded promotion
+    and rollback workflow, M19-derived drift-cap persistence, repository
+    persistence, inference endpoints, runner hook, decision-trace context, and
+    dashboard visibility.
+  - Confirm M20 remains paused and non-authoritative via
+    `M20_POLICY_ROUTE_PAUSED_NO_POSITIVE_PROXY`.
+  - Do not change runtime inference, registry, promotion, paper/live execution,
+    trading/backtest logic, model training, scoring, validation workflow, or
+    profitability claims.
+- Changed files:
+  - `app/continual_learning/m21_continual_learning_audit.py`
+  - `scripts/audit_m21_continual_learning.py`
+  - `tests/test_continual_learning_m21_audit.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real output directory:
+  - `artifacts/platform_maturity/m21/continual_learning_audit`
+- Real result:
+  - M21 state: `M21_CONTINUAL_LEARNING_GUARDED_WORKFLOW_CONSOLIDATED`
+  - Gap count: `0`
+  - Recommendation: `SECOND_FOUNDATION_PLATFORM_MATURITY_AUDITS_COMPLETE`
+  - Next required action: `PLAN_NEXT_PLATFORM_MATURITY_OR_DATA_UPGRADE_ROUTE`
+- Validation:
+  - `python -m pytest tests/test_continual_learning_m21_audit.py -q` -> `6 passed`
+  - `python -m py_compile app/continual_learning/m21_continual_learning_audit.py scripts/audit_m21_continual_learning.py` -> passed
+  - `python -m pylint --fail-under=10 app/continual_learning/m21_continual_learning_audit.py tests/test_continual_learning_m21_audit.py` -> `10.00/10`
+  - `python scripts/audit_m21_continual_learning.py` -> consolidated, gap count `0`
