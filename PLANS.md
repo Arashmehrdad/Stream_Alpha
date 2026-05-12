@@ -7040,3 +7040,26 @@ against naive baselines.
   - DDL apply executed: `False`
   - Recommendation: `BUILD_ISOLATED_RESEARCH_CAPTURE_SERVICE_DRY_RUN`
   - Next required action: `IMPLEMENT_DRY_RUN_MICROSTRUCTURE_CAPTURE_SERVICE`
+
+<!-- MICROSTRUCTURE_CAPTURE_SERVICE_DRY_RUN -->
+### Microstructure capture service dry run
+
+- Scope:
+  - Add DU8 dry-run capture service planning.
+  - Validate symbols, depth, duration, max events, and Kraken book subscription
+    payload without network capture.
+  - Block real capture execution.
+- Changed files:
+  - `app/training/microstructure_capture_service.py`
+  - `scripts/run_microstructure_capture.py`
+  - `tests/test_training_microstructure_capture_service.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real output directory:
+  - `artifacts/research_data_upgrade/microstructure_capture_service_dry_run`
+- Real result:
+  - Capture service status: `DRY_RUN_CAPTURE_SERVICE_PLAN_DEFINED`
+  - Network capture executed: `False`
+  - Recommendation: `ADD_BOUNDED_CAPTURE_SMOKE_HARNESS_DRY_RUN`
+  - Next required action: `IMPLEMENT_BOUNDED_CAPTURE_SMOKE_HARNESS_DRY_RUN`

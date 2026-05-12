@@ -1420,6 +1420,22 @@ microstructure storage. It does not execute DDL, create tables, mutate
 `raw_trades`, `raw_ohlc`, or `feature_ohlc`, or change runtime, registry,
 promotion, trading, backtest, training, scoring, or profit claims.
 
+<!-- MICROSTRUCTURE_CAPTURE_SERVICE_DRY_RUN -->
+## Microstructure Capture Service Dry Run
+
+Command:
+python .\scripts\run_microstructure_capture.py
+
+Writes `artifacts/research_data_upgrade/microstructure_capture_service_dry_run/`.
+Current result: `DRY_RUN_CAPTURE_SERVICE_PLAN_DEFINED`; network capture
+executed `False`; database writes executed `False`; recommendation
+`ADD_BOUNDED_CAPTURE_SMOKE_HARNESS_DRY_RUN`; next required action
+`IMPLEMENT_BOUNDED_CAPTURE_SMOKE_HARNESS_DRY_RUN`.
+
+This DU8 batch validates the isolated research capture service parameters and
+subscription payload only. It does not connect to Kraken, write database rows,
+publish topics, or change runtime ingestion/trading behavior.
+
 <!-- M13_RELIABILITY_RECOVERY_AUDIT -->
 ## M13 Reliability And Recovery Audit
 

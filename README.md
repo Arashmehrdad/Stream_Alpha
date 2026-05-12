@@ -1491,3 +1491,12 @@ executed `False`; recommendation `BUILD_ISOLATED_RESEARCH_CAPTURE_SERVICE_DRY_RU
 next required action `IMPLEMENT_DRY_RUN_MICROSTRUCTURE_CAPTURE_SERVICE`. This
 is dry-run only and does not create tables or mutate existing ingestion/runtime
 contracts.
+
+<!-- MICROSTRUCTURE_CAPTURE_SERVICE_DRY_RUN -->
+Microstructure capture service dry run:
+Command: python .\scripts\run_microstructure_capture.py
+Writes `artifacts/research_data_upgrade/microstructure_capture_service_dry_run/`.
+Current result: `DRY_RUN_CAPTURE_SERVICE_PLAN_DEFINED`; network capture
+executed `False`; recommendation `ADD_BOUNDED_CAPTURE_SMOKE_HARNESS_DRY_RUN`;
+next required action `IMPLEMENT_BOUNDED_CAPTURE_SMOKE_HARNESS_DRY_RUN`. This
+does not connect to Kraken, write database rows, or alter runtime ingestion.
