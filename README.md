@@ -1491,6 +1491,9 @@ executed `False`; recommendation `BUILD_ISOLATED_RESEARCH_CAPTURE_SERVICE_DRY_RU
 next required action `IMPLEMENT_DRY_RUN_MICROSTRUCTURE_CAPTURE_SERVICE`. This
 is dry-run only and does not create tables or mutate existing ingestion/runtime
 contracts.
+Approved apply path now exists but remains explicit:
+`python .\scripts\prepare_microstructure_research_schema.py --apply --allow-apply --dsn <postgres-dsn>`.
+It creates only research microstructure tables.
 
 <!-- MICROSTRUCTURE_CAPTURE_SERVICE_DRY_RUN -->
 Microstructure capture service dry run:
@@ -1500,6 +1503,8 @@ Current result: `DRY_RUN_CAPTURE_SERVICE_PLAN_DEFINED`; network capture
 executed `False`; recommendation `ADD_BOUNDED_CAPTURE_SMOKE_HARNESS_DRY_RUN`;
 next required action `IMPLEMENT_BOUNDED_CAPTURE_SMOKE_HARNESS_DRY_RUN`. This
 does not connect to Kraken, write database rows, or alter runtime ingestion.
+Approved bounded capture path now exists behind `--execute --dsn <postgres-dsn>`;
+without `--execute`, the command remains dry-run only.
 
 <!-- MICROSTRUCTURE_CAPTURE_SMOKE -->
 Microstructure capture smoke dry run:

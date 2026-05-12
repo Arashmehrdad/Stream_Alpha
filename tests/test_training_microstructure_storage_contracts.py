@@ -55,12 +55,19 @@ def test_storage_contracts_are_additive_and_dry_run(tmp_path: Path) -> None:
 
 
 def test_storage_apply_is_blocked(tmp_path: Path) -> None:
-    """DDL execution must remain blocked in this dry-run batch."""
-    with pytest.raises(ValueError, match="DDL apply is blocked"):
+    """DDL execution must require explicit approval."""
+    with pytest.raises(ValueError, match="requires --allow-apply"):
         write_microstructure_storage_contracts(
             repo_root=tmp_path,
             output_dir=tmp_path / "storage",
             apply=True,
+        )
+    with pytest.raises(ValueError, match="requires a PostgreSQL DSN"):
+        write_microstructure_storage_contracts(
+            repo_root=tmp_path,
+            output_dir=tmp_path / "storage",
+            apply=True,
+            allow_apply=True,
         )
 
 

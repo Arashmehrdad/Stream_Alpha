@@ -7040,6 +7040,10 @@ against naive baselines.
   - DDL apply executed: `False`
   - Recommendation: `BUILD_ISOLATED_RESEARCH_CAPTURE_SERVICE_DRY_RUN`
   - Next required action: `IMPLEMENT_DRY_RUN_MICROSTRUCTURE_CAPTURE_SERVICE`
+- Follow-up implementation:
+  - Added explicit approved schema application path:
+    `--apply --allow-apply --dsn <postgres-dsn>`.
+  - Default behavior remains dry-run.
 
 <!-- MICROSTRUCTURE_CAPTURE_SERVICE_DRY_RUN -->
 ### Microstructure capture service dry run
@@ -7063,6 +7067,9 @@ against naive baselines.
   - Network capture executed: `False`
   - Recommendation: `ADD_BOUNDED_CAPTURE_SMOKE_HARNESS_DRY_RUN`
   - Next required action: `IMPLEMENT_BOUNDED_CAPTURE_SMOKE_HARNESS_DRY_RUN`
+- Follow-up implementation:
+  - Added explicit bounded capture execution path behind `--execute --dsn`.
+  - Default behavior remains dry-run; no capture is run by validation.
 
 <!-- MICROSTRUCTURE_CAPTURE_SMOKE -->
 ### Microstructure capture smoke dry run

@@ -1420,6 +1420,12 @@ microstructure storage. It does not execute DDL, create tables, mutate
 `raw_trades`, `raw_ohlc`, or `feature_ohlc`, or change runtime, registry,
 promotion, trading, backtest, training, scoring, or profit claims.
 
+Approved schema application is now available only through the explicit operator
+command:
+`python .\scripts\prepare_microstructure_research_schema.py --apply --allow-apply --dsn <postgres-dsn>`.
+It creates only research microstructure tables and does not modify existing raw
+or runtime tables.
+
 <!-- MICROSTRUCTURE_CAPTURE_SERVICE_DRY_RUN -->
 ## Microstructure Capture Service Dry Run
 
@@ -1435,6 +1441,10 @@ executed `False`; database writes executed `False`; recommendation
 This DU8 batch validates the isolated research capture service parameters and
 subscription payload only. It does not connect to Kraken, write database rows,
 publish topics, or change runtime ingestion/trading behavior.
+
+Approved bounded capture is now available only behind explicit execution flags:
+`python .\scripts\run_microstructure_capture.py --execute --dsn <postgres-dsn> --symbols BTC/USD --depth 10 --duration-seconds 60 --max-events 1000`.
+The default command remains dry-run only.
 
 <!-- MICROSTRUCTURE_CAPTURE_SMOKE -->
 ## Microstructure Capture Smoke Dry Run

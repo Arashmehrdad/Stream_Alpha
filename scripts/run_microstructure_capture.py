@@ -27,6 +27,8 @@ def main() -> None:
     parser.add_argument("--duration-seconds", type=int, default=60)
     parser.add_argument("--max-events", type=int, default=1000)
     parser.add_argument("--execute", action="store_true")
+    parser.add_argument("--dsn", default="")
+    parser.add_argument("--ws-url", default="wss://ws.kraken.com/v2")
     args = parser.parse_args()
     repo_root = Path(args.repo_root).resolve()
     output_dir = Path(args.output_dir)
@@ -41,6 +43,8 @@ def main() -> None:
         duration_seconds=args.duration_seconds,
         max_events=args.max_events,
         execute=args.execute,
+        dsn=args.dsn or None,
+        ws_url=args.ws_url,
     )
     print(f"output_dir={Path(result['output_files']['manifest_json']).parent}")
     print(f"capture_service_status={result['capture_service_status']}")

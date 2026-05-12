@@ -2,13 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
+import json
 from pathlib import Path
 from typing import Any, Mapping
+
+import asyncpg
+import websockets
 
 from app.common.serialization import make_json_safe
 from app.regime.artifacts import write_csv, write_json_atomic
 from app.training.market_microstructure_book_normalizers import planned_kraken_book_subscription
+from app.training.market_microstructure_book_normalizers import (
+    normalize_kraken_book_payload_fixture,
+)
 
 
 DEFAULT_OUTPUT_DIR = "artifacts/research_data_upgrade/microstructure_capture_service_dry_run"
@@ -62,7 +71,7 @@ def build_capture_dry_run_plan(
     )
 
 
-def write_microstructure_capture_service_dry_run(  # pylint: disable=too-many-arguments
+def write_microstructure_capture_service_dry_run(  # pylint: disable=too-many-arguments,too-many-locals
     *,
     repo_root: Path,
     output_dir: Path | None = None,
@@ -71,10 +80,12 @@ def write_microstructure_capture_service_dry_run(  # pylint: disable=too-many-ar
     duration_seconds: int = 60,
     max_events: int = 1000,
     execute: bool = False,
+    dsn: str | None = None,
+    ws_url: str = "wss://ws.kraken.com/v2",
 ) -> dict[str, Any]:
     """Write an isolated capture service dry-run artifact."""
-    if execute:
-        raise ValueError("Real capture execution is blocked in DU8")
+    if execute and not dsn:
+        raise ValueError("Real capture execution requires a PostgreSQL DSN")
     root = Path(repo_root).resolve()
     resolved_output_dir = (
         root / DEFAULT_OUTPUT_DIR if output_dir is None else Path(output_dir).resolve()
@@ -89,12 +100,21 @@ def write_microstructure_capture_service_dry_run(  # pylint: disable=too-many-ar
     rows = _rows(plan)
     recommendation = _recommendation()
     output_files = _output_files(resolved_output_dir)
+    capture_result: dict[str, Any] | None = None
+    if execute:
+        capture_result = run_bounded_capture_sync(plan=plan, dsn=str(dsn), ws_url=ws_url)
     report = {
         "schema_version": "microstructure_capture_service_dry_run_v1",
         "repo_root": str(root),
-        "capture_service_status": "DRY_RUN_CAPTURE_SERVICE_PLAN_DEFINED",
-        "network_capture_executed": False,
-        "database_writes_executed": False,
+        "capture_service_status": (
+            "BOUNDED_CAPTURE_EXECUTED" if capture_result
+            else "DRY_RUN_CAPTURE_SERVICE_PLAN_DEFINED"
+        ),
+        "network_capture_executed": bool(capture_result),
+        "database_writes_executed": bool(capture_result),
+        "captured_event_count": (
+            0 if capture_result is None else capture_result["captured_event_count"]
+        ),
         "symbols": list(plan.symbols),
         "depth": plan.depth,
         "duration_seconds": plan.duration_seconds,
@@ -119,7 +139,88 @@ def write_microstructure_capture_service_dry_run(  # pylint: disable=too-many-ar
         rows_by_file={**rows, "next_actions_csv": recommendation["next_actions"]},
     )
     Path(output_files["report_md"]).write_text(_markdown(report), encoding="utf-8")
-    return make_json_safe({**report, "manifest": manifest, "dry_run_plan": asdict(plan)})
+    return make_json_safe(
+        {
+            **report,
+            "manifest": manifest,
+            "dry_run_plan": asdict(plan),
+            "capture_result": capture_result,
+        }
+    )
+
+
+async def run_bounded_capture(
+    *,
+    plan: CaptureDryRunPlan,
+    dsn: str,
+    ws_url: str = "wss://ws.kraken.com/v2",
+) -> dict[str, Any]:
+    """Run a bounded isolated research capture."""
+    connection = await asyncpg.connect(dsn)
+    captured = 0
+    started_at = datetime.now(UTC)
+    try:
+        async with websockets.connect(ws_url) as websocket:
+            await websocket.send(json.dumps(plan.subscription))
+            while captured < plan.max_events:
+                if (datetime.now(UTC) - started_at).total_seconds() >= plan.duration_seconds:
+                    break
+                raw_message = await websocket.recv()
+                payload = json.loads(str(raw_message))
+                if not _is_book_data_message(payload):
+                    continue
+                event = normalize_kraken_book_payload_fixture(
+                    payload,
+                    received_at=datetime.now(UTC),
+                )
+                await _insert_book_event(connection, event)
+                captured += 1
+    finally:
+        await connection.close()
+    return {
+        "captured_event_count": captured,
+        "duration_seconds": plan.duration_seconds,
+        "max_events": plan.max_events,
+    }
+
+
+def run_bounded_capture_sync(
+    *,
+    plan: CaptureDryRunPlan,
+    dsn: str,
+    ws_url: str = "wss://ws.kraken.com/v2",
+) -> dict[str, Any]:
+    """Synchronous wrapper for the bounded async capture."""
+    return asyncio.run(run_bounded_capture(plan=plan, dsn=dsn, ws_url=ws_url))
+
+
+def _is_book_data_message(payload: Mapping[str, Any]) -> bool:
+    return payload.get("channel") == "book" and payload.get("type") in {"snapshot", "update"}
+
+
+async def _insert_book_event(connection: Any, event: Any) -> None:
+    bids_json = json.dumps([asdict(level) for level in event.bids])
+    asks_json = json.dumps([asdict(level) for level in event.asks])
+    payload_json = json.dumps(make_json_safe(event.payload))
+    await connection.execute(
+        """
+        INSERT INTO research_raw_order_book (
+            source_exchange, symbol, event_time, received_at, sequence_or_checksum,
+            update_type, bids_json, asks_json, payload
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb)
+        ON CONFLICT (source_exchange, symbol, event_time, received_at, sequence_or_checksum)
+        DO NOTHING
+        """,
+        event.source_exchange,
+        event.symbol,
+        event.event_time,
+        event.received_at,
+        event.sequence_or_checksum,
+        event.update_type,
+        bids_json,
+        asks_json,
+        payload_json,
+    )
 
 
 def _rows(plan: CaptureDryRunPlan) -> dict[str, list[dict[str, str]]]:

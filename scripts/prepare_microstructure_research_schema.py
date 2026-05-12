@@ -23,6 +23,8 @@ def main() -> None:
     parser.add_argument("--repo-root", default=str(REPO_ROOT))
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--allow-apply", action="store_true")
+    parser.add_argument("--dsn", default="")
     args = parser.parse_args()
     repo_root = Path(args.repo_root).resolve()
     output_dir = Path(args.output_dir)
@@ -32,6 +34,8 @@ def main() -> None:
         repo_root=repo_root,
         output_dir=output_dir,
         apply=args.apply,
+        allow_apply=args.allow_apply,
+        dsn=args.dsn or None,
     )
     print(f"output_dir={Path(result['output_files']['manifest_json']).parent}")
     print(f"storage_contract_status={result['storage_contract_status']}")

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from app.training import microstructure_capture_service as capture_service
 from app.training.microstructure_capture_service import (
     build_capture_dry_run_plan,
     write_microstructure_capture_service_dry_run,
@@ -45,14 +46,38 @@ def test_capture_dry_run_rejects_unbounded_parameters() -> None:
         )
 
 
-def test_capture_execute_is_blocked(tmp_path: Path) -> None:
-    """Real capture execution must remain blocked in DU8."""
-    with pytest.raises(ValueError, match="Real capture execution is blocked"):
+def test_capture_execute_requires_dsn(tmp_path: Path) -> None:
+    """Real capture execution must require explicit storage configuration."""
+    with pytest.raises(ValueError, match="requires a PostgreSQL DSN"):
         write_microstructure_capture_service_dry_run(
             repo_root=tmp_path,
             output_dir=tmp_path / "capture",
             execute=True,
         )
+
+
+def test_capture_execute_uses_bounded_capture_wrapper(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Execute mode should call the bounded capture wrapper with approved settings."""
+
+    def fake_capture(**kwargs: object) -> dict[str, object]:
+        assert kwargs["dsn"] == "postgresql://example"
+        return {"captured_event_count": 2, "duration_seconds": 1, "max_events": 2}
+
+    monkeypatch.setattr(capture_service, "run_bounded_capture_sync", fake_capture)
+    result = write_microstructure_capture_service_dry_run(
+        repo_root=tmp_path,
+        output_dir=tmp_path / "capture",
+        execute=True,
+        dsn="postgresql://example",
+        duration_seconds=1,
+        max_events=2,
+    )
+
+    assert result["network_capture_executed"] is True
+    assert result["captured_event_count"] == 2
 
 
 def test_capture_dry_run_writes_artifacts(tmp_path: Path) -> None:

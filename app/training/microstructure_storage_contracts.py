@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any, Mapping
+
+import asyncpg
 
 from app.common.serialization import make_json_safe
 from app.regime.artifacts import write_csv, write_json_atomic
@@ -27,10 +30,14 @@ def write_microstructure_storage_contracts(
     repo_root: Path,
     output_dir: Path | None = None,
     apply: bool = False,  # pylint: disable=redefined-builtin
+    dsn: str | None = None,
+    allow_apply: bool = False,
 ) -> dict[str, Any]:
-    """Write DU7 research storage contracts; never executes DDL by default."""
-    if apply:
-        raise ValueError("DDL apply is blocked; this batch is dry-run contract only")
+    """Write DU7 research storage contracts; executes DDL only with explicit approval."""
+    if apply and not allow_apply:
+        raise ValueError("DDL apply requires --allow-apply")
+    if apply and not dsn:
+        raise ValueError("DDL apply requires a PostgreSQL DSN")
     root = Path(repo_root).resolve()
     resolved_output_dir = (
         root / DEFAULT_OUTPUT_DIR if output_dir is None else Path(output_dir).resolve()
@@ -39,11 +46,18 @@ def write_microstructure_storage_contracts(
     rows = _rows()
     recommendation = _recommendation()
     output_files = _output_files(resolved_output_dir)
+    applied_tables: list[str] = []
+    if apply:
+        applied_tables = apply_microstructure_storage_contracts_sync(dsn=str(dsn))
     report = {
         "schema_version": "microstructure_storage_contracts_v1",
         "repo_root": str(root),
-        "storage_contract_status": "RESEARCH_STORAGE_CONTRACTS_DEFINED_DRY_RUN",
-        "ddl_apply_executed": False,
+        "storage_contract_status": (
+            "RESEARCH_STORAGE_CONTRACTS_APPLIED" if applied_tables
+            else "RESEARCH_STORAGE_CONTRACTS_DEFINED_DRY_RUN"
+        ),
+        "ddl_apply_executed": bool(applied_tables),
+        "applied_tables": applied_tables,
         "table_contract_count": len(rows["table_contracts_csv"]),
         "recommendation": recommendation["recommendation"],
         "next_required_action": recommendation["next_required_action"],
@@ -134,6 +148,24 @@ def _ddl_sql(name: str) -> str:
     return f"CREATE TABLE IF NOT EXISTS {name} ({common}, {extra}, UNIQUE ({unique}));"
 
 
+async def apply_microstructure_storage_contracts(*, dsn: str) -> list[str]:
+    """Apply only the research microstructure DDL contracts."""
+    connection = await asyncpg.connect(dsn)
+    try:
+        applied: list[str] = []
+        for row in _rows()["ddl_contracts_csv"]:
+            await connection.execute(row["ddl_sql"])
+            applied.append(row["table_name"])
+        return applied
+    finally:
+        await connection.close()
+
+
+def apply_microstructure_storage_contracts_sync(*, dsn: str) -> list[str]:
+    """Synchronous wrapper for CLI callers."""
+    return asyncio.run(apply_microstructure_storage_contracts(dsn=dsn))
+
+
 def _boundary_rows() -> list[dict[str, str]]:
     return [
         _boundary("existing_tables", "raw_trades/raw_ohlc/feature_ohlc are not modified"),
@@ -159,7 +191,7 @@ def _blocked_rows() -> list[dict[str, str]]:
 def _recommendation() -> dict[str, Any]:
     return {
         "recommendation": "BUILD_ISOLATED_RESEARCH_CAPTURE_SERVICE_DRY_RUN",
-        "next_required_action": "IMPLEMENT_DRY_RUN_MICROSTRUCTURE_CAPTURE_SERVICE",
+        "next_required_action": "RUN_BOUNDED_RESEARCH_CAPTURE_WHEN_APPROVED",
         "next_actions": [
             {
                 "action": "IMPLEMENT_DRY_RUN_MICROSTRUCTURE_CAPTURE_SERVICE",
