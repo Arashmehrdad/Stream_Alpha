@@ -1103,3 +1103,10 @@ Writes `research_labels/vol_scaled/strategy_candidate_v2_factory/` from redesign
 Command: python .\scripts\audit_m20_safe_feature_availability.py --source-run-dir .\artifacts\training\m20\20260506T054337Z --regime-thresholds-path .\artifacts\regime\m8\20260320T165813Z\thresholds.json
 
 Writes `research_labels/vol_scaled/safe_feature_availability/` from existing feature-frame metadata and M8 threshold artifacts only. The audit records feature sources, leakage-risk checks, blocked features, and recommendation artifacts without computing or appending new features. Current result: `regime_label` is safe-computable from fixed M8 thresholds and existing `realized_vol_12`, `momentum_3`, `macd_line_12_26`; `adx_14` is safe-computable later from causal per-symbol OHLC history; recommendation `BUILD_M20_RESEARCH_FEATURE_ENRICHMENT_ARTIFACT`.
+
+<!-- M20_RESEARCH_FEATURE_ENRICHMENT -->
+## Research-Only M20 Feature Enrichment
+
+Command: python .\scripts\build_m20_research_feature_enrichment.py --source-run-dir .\artifacts\training\m20\20260506T054337Z --regime-thresholds-path .\artifacts\regime\m8\20260320T165813Z\thresholds.json
+
+Writes `research_labels/vol_scaled/research_feature_enrichment/` as a separate research-only frame. The builder keeps original `training_frame/` files unchanged, adds `regime_label` using fixed M8 threshold provenance, computes causal per-symbol `adx_14` from OHLC history with warmup rows blank, and records lineage/leakage audits. Current result: 312,494 rows, features added `regime_label` and `adx_14`, blocked features 0, recommendation `RE_RUN_V2_STRATEGY_CANDIDATE_FACTORY_WITH_RESEARCH_FEATURES`.

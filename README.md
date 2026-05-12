@@ -1160,3 +1160,8 @@ Writes `research_labels/vol_scaled/strategy_candidate_v2_factory/` from the rede
 M20 safe feature availability audit:
 Command: python .\scripts\audit_m20_safe_feature_availability.py --source-run-dir .\artifacts\training\m20\20260506T054337Z --regime-thresholds-path .\artifacts\regime\m8\20260320T165813Z\thresholds.json
 Writes `research_labels/vol_scaled/safe_feature_availability/` from existing M20 feature-frame and M8 threshold artifacts only. Current result: `regime_label` and `adx_14` are not already in the M20 frame, but both are marked safe-computable for a future research-only enrichment artifact; no feature engineering, runtime, registry, promotion, training, scoring, backtest, trading, or profit-claim behavior is changed.
+
+<!-- M20_RESEARCH_FEATURE_ENRICHMENT -->
+M20 research feature enrichment:
+Command: python .\scripts\build_m20_research_feature_enrichment.py --source-run-dir .\artifacts\training\m20\20260506T054337Z --regime-thresholds-path .\artifacts\regime\m8\20260320T165813Z\thresholds.json
+Writes `research_labels/vol_scaled/research_feature_enrichment/` without mutating `training_frame/`. Current result: 312,494 enriched research rows, added `regime_label` from fixed M8 thresholds and causal per-symbol `adx_14`, blocked features 0, recommendation `RE_RUN_V2_STRATEGY_CANDIDATE_FACTORY_WITH_RESEARCH_FEATURES`. No runtime, registry, promotion, training, scoring, backtest, trading, or profit-claim behavior is changed.

@@ -6157,3 +6157,35 @@ against naive baselines.
   - `adx_14`: future research-only causal per-symbol OHLC rolling feature from `high_price`, `low_price`, `close_price`
   - Recommendation: `BUILD_M20_RESEARCH_FEATURE_ENRICHMENT_ARTIFACT`
   - Next required action: `BUILD_M20_RESEARCH_FEATURE_ENRICHMENT_ARTIFACT`
+
+<!-- M20_RESEARCH_FEATURE_ENRICHMENT -->
+### M20 generic pipeline Batch J - research feature enrichment artifact
+
+- Scope:
+  - Add a separate research-only feature enrichment artifact for blocked v2 features.
+  - Derive `regime_label` from fixed M8 thresholds and existing `realized_vol_12`, `momentum_3`, `macd_line_12_26`.
+  - Derive `adx_14` causally per symbol from `high_price`, `low_price`, and `close_price`, with warmup rows blank.
+  - Preserve the original `training_frame/` files unchanged and do not evaluate candidates in this batch.
+  - Preserve `RESEARCH_ONLY`, `EVALUATION_ONLY`, `NO_RUNTIME_EFFECT`, `NOT_BACKTEST`, `NOT_RUNTIME_READY`, `NOT_PROMOTABLE`, and `NO_PROFIT_CLAIM`.
+  - Do not change runtime inference, registry, promotion, paper/live execution, trading/backtest logic, model training, scoring, prediction exports, label generation, validation workflow, or profitability claims.
+- Changed files:
+  - `app/training/m20_research_feature_enrichment.py`
+  - `scripts/build_m20_research_feature_enrichment.py`
+  - `tests/test_training_m20_research_feature_enrichment.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Validation:
+  - `python -m pytest tests/test_training_m20_research_feature_enrichment.py -q` -> `6 passed`
+  - `python -m py_compile app/training/m20_research_feature_enrichment.py scripts/build_m20_research_feature_enrichment.py` -> passed
+  - `python -m pylint --fail-under=10 app/training/m20_research_feature_enrichment.py tests/test_training_m20_research_feature_enrichment.py` -> `10.00/10`
+  - `python scripts/build_m20_research_feature_enrichment.py --source-run-dir artifacts/training/m20/20260506T054337Z --regime-thresholds-path artifacts/regime/m8/20260320T165813Z/thresholds.json` -> completed
+- Real output directory:
+  - `artifacts/training/m20/20260506T054337Z/research_labels/vol_scaled/research_feature_enrichment`
+- Real result:
+  - Rows written: `312494`
+  - Features added: `regime_label`, `adx_14`
+  - Blocked features: `0`
+  - Leakage audit: no future data, labels, economic outcomes, or runtime effects used
+  - Recommendation: `RE_RUN_V2_STRATEGY_CANDIDATE_FACTORY_WITH_RESEARCH_FEATURES`
+  - Next required action: `RE_RUN_V2_STRATEGY_CANDIDATE_FACTORY_WITH_RESEARCH_FEATURES`
