@@ -26,6 +26,7 @@ def main() -> None:
     parser.add_argument("--redesign-plan-dir")
     parser.add_argument("--economic-outcome-dir")
     parser.add_argument("--training-frame-dir")
+    parser.add_argument("--research-feature-dir")
     parser.add_argument("--label-source-run-dir")
     parser.add_argument("--output-name", default=DEFAULT_OUTPUT_NAME)
     parser.add_argument("--json", action="store_true")
@@ -37,6 +38,9 @@ def main() -> None:
             Path(args.economic_outcome_dir) if args.economic_outcome_dir else None
         ),
         training_frame_dir=Path(args.training_frame_dir) if args.training_frame_dir else None,
+        research_feature_dir=(
+            Path(args.research_feature_dir) if args.research_feature_dir else None
+        ),
         label_source_run_dir=(
             Path(args.label_source_run_dir) if args.label_source_run_dir else None
         ),
@@ -46,6 +50,7 @@ def main() -> None:
         print(json.dumps(make_json_safe(result), sort_keys=True))
         return
     print(f"output_dir={Path(result['output_files']['manifest_json']).parent}")
+    print(f"source_feature_mode={result['source_feature_mode']}")
     print(f"candidate_count={result['candidate_count']}")
     print(f"candidate_event_rows={result['candidate_event_rows']}")
     print(f"recommendation={result['recommendation']}")

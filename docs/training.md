@@ -1097,6 +1097,10 @@ Command: python .\scripts\build_m20_strategy_candidates_v2.py --source-run-dir .
 
 Writes `research_labels/vol_scaled/strategy_candidate_v2_factory/` from redesign-plan definitions and safe training-frame features only. The factory generates ready v2 candidate rows, carries blocked definitions forward, joins labels and economic outcomes only after setup selection, and emits candidate metrics, symbol/time diagnostics, decisions, next actions, and recommendation artifacts. Current result: 8 definitions processed, 6 ready candidates generated 237,794 rows, 2 definitions blocked by missing `regime_label` and `adx_14`, all ready candidates economics-negative, recommendation `REFINE_OR_ADD_SAFE_FEATURES_FOR_V2_CANDIDATES`.
 
+Enriched-source command: python .\scripts\build_m20_strategy_candidates_v2.py --source-run-dir .\artifacts\training\m20\20260506T054337Z --research-feature-dir .\artifacts\training\m20\20260506T054337Z\research_labels\vol_scaled\research_feature_enrichment
+
+With `--research-feature-dir`, the factory uses the separate enrichment artifact instead of mutating or rereading new features into `training_frame/`. Current enriched result: source mode `research_feature_enrichment`, 8 definitions ready, `regime_conditioned_momentum` and `trend_strength_filtered_momentum` newly unblocked, 387,036 candidate rows, all 8 candidates `V2_STRATEGY_CANDIDATE_ECONOMICS_NEGATIVE`, recommendation `REFINE_OR_ADD_SAFE_FEATURES_FOR_V2_CANDIDATES`.
+
 <!-- M20_SAFE_FEATURE_AVAILABILITY -->
 ## Research-Only M20 Safe Feature Availability Audit
 

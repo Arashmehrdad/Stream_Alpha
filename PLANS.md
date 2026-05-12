@@ -6189,3 +6189,37 @@ against naive baselines.
   - Leakage audit: no future data, labels, economic outcomes, or runtime effects used
   - Recommendation: `RE_RUN_V2_STRATEGY_CANDIDATE_FACTORY_WITH_RESEARCH_FEATURES`
   - Next required action: `RE_RUN_V2_STRATEGY_CANDIDATE_FACTORY_WITH_RESEARCH_FEATURES`
+
+<!-- M20_STRATEGY_CANDIDATE_V2_ENRICHED_SOURCE -->
+### M20 generic pipeline Batch K - v2 factory enriched feature source
+
+- Scope:
+  - Add explicit `--research-feature-dir` support to the generic v2 strategy candidate factory.
+  - Preserve default behavior using original `training_frame/` when the enriched source is not provided.
+  - When provided, read `research_features.csv`, `research_feature_columns.json`, and `blocked_features.csv` from the enrichment artifact.
+  - Recheck previously blocked definitions against the active feature source and record source mode in manifest/report.
+  - Preserve `RESEARCH_ONLY`, `NO_RUNTIME_EFFECT`, `NOT_BACKTEST`, `NOT_RUNTIME_READY`, `NOT_PROMOTABLE`, and `NO_PROFIT_CLAIM`.
+  - Do not change runtime inference, registry, promotion, paper/live execution, trading/backtest logic, model training, scoring, prediction exports, label generation, validation workflow, or profitability claims.
+- Changed files:
+  - `app/training/m20_strategy_candidate_v2_factory.py`
+  - `scripts/build_m20_strategy_candidates_v2.py`
+  - `tests/test_training_m20_strategy_candidate_v2_factory.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Validation:
+  - `python -m pytest tests/test_training_m20_strategy_candidate_v2_factory.py -q` -> `9 passed`
+  - `python -m py_compile app/training/m20_strategy_candidate_v2_factory.py scripts/build_m20_strategy_candidates_v2.py` -> passed
+  - `python -m pylint --fail-under=10 app/training/m20_strategy_candidate_v2_factory.py tests/test_training_m20_strategy_candidate_v2_factory.py` -> `10.00/10`
+  - `python scripts/build_m20_strategy_candidates_v2.py --source-run-dir artifacts/training/m20/20260506T054337Z --research-feature-dir artifacts/training/m20/20260506T054337Z/research_labels/vol_scaled/research_feature_enrichment` -> completed
+- Real output directory:
+  - `artifacts/training/m20/20260506T054337Z/research_labels/vol_scaled/strategy_candidate_v2_factory`
+- Real result:
+  - Source feature mode: `research_feature_enrichment`
+  - Definitions processed: `8`
+  - Ready candidates generated: `8`
+  - Newly unblocked definitions: `regime_conditioned_momentum`, `trend_strength_filtered_momentum`
+  - Candidate rows written: `387036`
+  - Candidate decisions: `8` `V2_STRATEGY_CANDIDATE_ECONOMICS_NEGATIVE`
+  - Recommendation: `REFINE_OR_ADD_SAFE_FEATURES_FOR_V2_CANDIDATES`
+  - Next required action: `REFINE_OR_ADD_SAFE_FEATURES_FOR_V2_CANDIDATES`

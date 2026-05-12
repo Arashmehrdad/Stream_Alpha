@@ -1156,6 +1156,9 @@ M20 strategy candidate v2 factory:
 Command: python .\scripts\build_m20_strategy_candidates_v2.py --source-run-dir .\artifacts\training\m20\20260506T054337Z
 Writes `research_labels/vol_scaled/strategy_candidate_v2_factory/` from the redesign plan and safe training-frame features only. Current result: 8 definitions processed, 6 ready definitions generated 237,794 candidate rows, 2 definitions remain blocked by missing `regime_label` and `adx_14`, and all ready candidates are economics-negative under the current safe net-proxy artifact. Recommendation: `REFINE_OR_ADD_SAFE_FEATURES_FOR_V2_CANDIDATES`. No runtime, registry, promotion, training, scoring, prediction export, backtest, trading, or profit-claim behavior is changed.
 
+Enriched-source command: python .\scripts\build_m20_strategy_candidates_v2.py --source-run-dir .\artifacts\training\m20\20260506T054337Z --research-feature-dir .\artifacts\training\m20\20260506T054337Z\research_labels\vol_scaled\research_feature_enrichment
+When `--research-feature-dir` is provided, the factory reads `research_features.csv`, `research_feature_columns.json`, and `blocked_features.csv` from the enrichment artifact while preserving the default training-frame mode. Current enriched result: 8 definitions processed, `regime_conditioned_momentum` and `trend_strength_filtered_momentum` newly unblocked, 387,036 candidate rows, all 8 candidates economics-negative, recommendation `REFINE_OR_ADD_SAFE_FEATURES_FOR_V2_CANDIDATES`.
+
 <!-- M20_SAFE_FEATURE_AVAILABILITY -->
 M20 safe feature availability audit:
 Command: python .\scripts\audit_m20_safe_feature_availability.py --source-run-dir .\artifacts\training\m20\20260506T054337Z --regime-thresholds-path .\artifacts\regime\m8\20260320T165813Z\thresholds.json

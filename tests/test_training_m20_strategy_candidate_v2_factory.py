@@ -79,6 +79,25 @@ def _write_sources(base: Path) -> None:
     )
 
 
+def _write_research_feature_source(base: Path) -> Path:
+    rows = [_feature_row(index) for index in range(6)]
+    for index, row in enumerate(rows):
+        row["regime_label"] = "TREND_UP" if index in (0, 2, 4) else "RANGE"
+        row["adx_14"] = 25.0 if index in (0, 2, 4) else ""
+    feature_dir = base / "research_labels" / "vol_scaled" / "research_feature_enrichment"
+    _write_csv(feature_dir / "research_features.csv", rows)
+    feature_columns = [
+        column for column in rows[0]
+        if column not in ("symbol", "interval_begin", "fold_index", "row_id")
+    ]
+    (feature_dir / "research_feature_columns.json").write_text(
+        json.dumps({"feature_columns": feature_columns}),
+        encoding="utf-8",
+    )
+    (feature_dir / "blocked_features.csv").write_text("", encoding="utf-8")
+    return feature_dir
+
+
 def _feature_row(index: int) -> dict[str, object]:
     return {
         "symbol": "BTC/USD" if index < 3 else "ETH/USD",
@@ -125,6 +144,13 @@ def _definitions() -> list[dict[str, object]]:
             "regime_label",
             "BLOCKED_MISSING_FEATURES",
         ),
+        _definition(
+            "trend_strength_conditioned",
+            "trend_strength_filtered_momentum",
+            "adx_14|momentum_3|realized_vol_12",
+            "adx_14",
+            "BLOCKED_MISSING_FEATURES",
+        ),
     ]
 
 
@@ -168,6 +194,49 @@ def test_blocked_definitions_remain_blocked(tmp_path: Path) -> None:
 
     assert blocked[0]["candidate_name"] == "regime_conditioned_momentum"
     assert blocked[0]["missing_features"] == "regime_label"
+
+
+def test_research_feature_source_unblocks_previously_blocked_definitions(
+    tmp_path: Path,
+) -> None:
+    _write_sources(tmp_path)
+    research_feature_dir = _write_research_feature_source(tmp_path)
+
+    result = build_m20_strategy_candidates_v2(
+        source_run_dir=tmp_path,
+        research_feature_dir=research_feature_dir,
+    )
+    audit = _read_csv(Path(result["output_files"]["definition_audit_csv"]))
+    by_name = {row["candidate_name"]: row for row in audit}
+    candidates = _read_csv(Path(result["output_files"]["strategy_candidates_v2_csv"]))
+    names = {row["candidate_name"] for row in candidates}
+
+    assert result["source_feature_mode"] == "research_feature_enrichment"
+    assert by_name["regime_conditioned_momentum"]["definition_status"] == "READY_FOR_V2_FACTORY"
+    assert by_name["trend_strength_filtered_momentum"]["definition_status"] == (
+        "READY_FOR_V2_FACTORY"
+    )
+    assert "regime_conditioned_momentum" in names
+    assert "trend_strength_filtered_momentum" in names
+
+
+def test_research_feature_source_respects_blocked_feature_file(tmp_path: Path) -> None:
+    _write_sources(tmp_path)
+    research_feature_dir = _write_research_feature_source(tmp_path)
+    _write_csv(
+        research_feature_dir / "blocked_features.csv",
+        [{"feature_name": "adx_14", "reason": "test", "status": "BLOCKED"}],
+    )
+
+    result = build_m20_strategy_candidates_v2(
+        source_run_dir=tmp_path,
+        research_feature_dir=research_feature_dir,
+    )
+    blocked = _read_csv(Path(result["output_files"]["blocked_definitions_csv"]))
+    by_name = {row["candidate_name"]: row for row in blocked}
+
+    assert "trend_strength_filtered_momentum" in by_name
+    assert by_name["trend_strength_filtered_momentum"]["missing_features"] == "adx_14"
 
 
 def test_label_and_economic_joins_are_correct(tmp_path: Path) -> None:

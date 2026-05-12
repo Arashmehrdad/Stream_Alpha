@@ -17,6 +17,9 @@ DEFAULT_ECONOMIC_OUTCOME_NAME = "economic_outcome_artifacts"
 DEFAULT_TRAINING_FRAME_DIR = "training_frame"
 FEATURE_FILE = "m20_training_frame_features.csv"
 FEATURE_COLUMNS_FILE = "m20_training_frame_feature_columns.json"
+RESEARCH_FEATURE_FILE = "research_features.csv"
+RESEARCH_FEATURE_COLUMNS_FILE = "research_feature_columns.json"
+RESEARCH_BLOCKED_FEATURES_FILE = "blocked_features.csv"
 LABEL_FILE = "research_labels/vol_scaled/fee_exceedance_labels_vol_scaled.csv"
 TRIPLE_BARRIER_FILE = "research_labels/vol_scaled/triple_barrier_labels_vol_scaled.csv"
 ECONOMIC_OUTCOME_FILE = "economic_outcomes.csv"
@@ -40,6 +43,7 @@ def build_m20_strategy_candidates_v2(
     redesign_plan_dir: Path | None = None,
     economic_outcome_dir: Path | None = None,
     training_frame_dir: Path | None = None,
+    research_feature_dir: Path | None = None,
     label_source_run_dir: Path | None = None,
     output_name: str = DEFAULT_OUTPUT_NAME,
 ) -> dict[str, Any]:
@@ -53,6 +57,7 @@ def build_m20_strategy_candidates_v2(
         if training_frame_dir is not None
         else source_dir / DEFAULT_TRAINING_FRAME_DIR
     )
+    feature_source = _feature_source(frame_dir, research_feature_dir)
     plan_dir = (
         Path(redesign_plan_dir).resolve()
         if redesign_plan_dir is not None
@@ -67,7 +72,7 @@ def build_m20_strategy_candidates_v2(
     output_dir.mkdir(parents=True, exist_ok=True)
     output_files = _output_files(output_dir)
 
-    feature_path = frame_dir / FEATURE_FILE
+    feature_path = Path(feature_source["feature_path"])
     definition_path = plan_dir / DEFINITION_SPECS_FILE
     if not feature_path.exists():
         raise ValueError(f"Missing training frame features: {feature_path}")
@@ -75,8 +80,12 @@ def build_m20_strategy_candidates_v2(
         raise ValueError(f"Missing v2 candidate definitions: {definition_path}")
 
     feature_rows = _read_csv(feature_path)
-    feature_columns = _feature_columns(frame_dir / FEATURE_COLUMNS_FILE, feature_rows)
+    feature_columns = _feature_columns(
+        Path(feature_source["feature_columns_path"]),
+        feature_rows,
+    )
     definitions = _read_csv(definition_path)
+    unavailable_features = _blocked_research_features(feature_source["blocked_features_path"])
     contexts = _contexts(feature_rows)
     outcome_index = _outcome_index(outcome_dir / ECONOMIC_OUTCOME_FILE)
     label_index = _label_index(label_dir / LABEL_FILE)
@@ -85,7 +94,7 @@ def build_m20_strategy_candidates_v2(
     labels_available = bool(label_index)
     base_positive_rate = _base_positive_rate(feature_rows, label_index)
 
-    definition_audit = _definition_audit(definitions, feature_columns)
+    definition_audit = _definition_audit(definitions, feature_columns, unavailable_features)
     blocked_definitions = [
         row for row in definition_audit if row["definition_status"] == BLOCKED_STATUS
     ]
@@ -157,10 +166,14 @@ def build_m20_strategy_candidates_v2(
     manifest = {
         "source_run_dir": str(source_dir),
         "training_frame_dir": str(frame_dir),
+        "research_feature_dir": feature_source["research_feature_dir"],
+        "source_feature_mode": feature_source["source_feature_mode"],
         "redesign_plan_dir": str(plan_dir),
         "economic_outcome_dir": str(outcome_dir),
         "label_source_run_dir": str(label_dir),
         "feature_path": str(feature_path),
+        "feature_columns_path": feature_source["feature_columns_path"],
+        "blocked_features_path": feature_source["blocked_features_path"],
         "definition_path": str(definition_path),
         "feature_columns": list(feature_columns),
         "economics_available": economics_available,
@@ -172,6 +185,9 @@ def build_m20_strategy_candidates_v2(
     }
     report = {
         "summary": "Generic M20 v2 strategy candidate factory.",
+        "source_feature_mode": feature_source["source_feature_mode"],
+        "feature_path": str(feature_path),
+        "research_feature_dir": feature_source["research_feature_dir"],
         "candidate_count": len(candidate_metrics),
         "ready_definition_count": sum(
             1 for row in definition_audit if row["definition_status"] == READY_STATUS
@@ -227,9 +243,32 @@ def _contexts(rows: Sequence[Mapping[str, str]]) -> dict[tuple[str, str, str], d
     }
 
 
+def _feature_source(
+    frame_dir: Path,
+    research_feature_dir: Path | None,
+) -> dict[str, str]:
+    if research_feature_dir is None:
+        return {
+            "source_feature_mode": "training_frame",
+            "research_feature_dir": "",
+            "feature_path": str(frame_dir / FEATURE_FILE),
+            "feature_columns_path": str(frame_dir / FEATURE_COLUMNS_FILE),
+            "blocked_features_path": "",
+        }
+    feature_dir = Path(research_feature_dir).resolve()
+    return {
+        "source_feature_mode": "research_feature_enrichment",
+        "research_feature_dir": str(feature_dir),
+        "feature_path": str(feature_dir / RESEARCH_FEATURE_FILE),
+        "feature_columns_path": str(feature_dir / RESEARCH_FEATURE_COLUMNS_FILE),
+        "blocked_features_path": str(feature_dir / RESEARCH_BLOCKED_FEATURES_FILE),
+    }
+
+
 def _definition_audit(
     definitions: Sequence[Mapping[str, str]],
     feature_columns: Sequence[str],
+    unavailable_features: set[str],
 ) -> list[dict[str, Any]]:
     columns = set(feature_columns)
     output = []
@@ -237,10 +276,10 @@ def _definition_audit(
         required = _split_pipe(definition.get("required_features", ""))
         missing = [
             column for column in required
-            if column not in columns
+            if column not in columns or column in unavailable_features
         ]
         source_status = definition.get("definition_status", "")
-        status = READY_STATUS if not missing and source_status == READY_STATUS else BLOCKED_STATUS
+        status = READY_STATUS if not missing else BLOCKED_STATUS
         output.append(
             {
                 "redesign_family": definition.get("redesign_family", ""),
@@ -249,6 +288,7 @@ def _definition_audit(
                 "required_features": "|".join(required),
                 "missing_features": "|".join(missing),
                 "source_definition_status": source_status,
+                "rechecked_with_active_feature_source": True,
                 "definition_status": status,
             }
         )
@@ -265,6 +305,8 @@ def _predicate_for(
         "high_agreement_low_turnover_setup": _high_agreement_low_turnover_setup,
         "tail_risk_avoidance_context": _tail_risk_avoidance_context,
         "non_extreme_volatility_momentum": _non_extreme_volatility_momentum,
+        "regime_conditioned_momentum": _regime_conditioned_momentum,
+        "trend_strength_filtered_momentum": _trend_strength_filtered_momentum,
     }
     return predicates.get(str(definition["candidate_name"]), lambda _row, _context: False)
 
@@ -337,6 +379,28 @@ def _non_extreme_volatility_momentum(
         _to_float(row.get("momentum_3")) > 0.0
         and 0.004 <= _to_float(row.get("realized_vol_12")) <= 0.025
         and context["abs_close_zscore"] <= 1.5
+    )
+
+
+def _regime_conditioned_momentum(
+    row: Mapping[str, str],
+    _context: Mapping[str, float],
+) -> bool:
+    return (
+        row.get("regime_label") == "TREND_UP"
+        and _to_float(row.get("momentum_3")) > 0.0
+        and _to_float(row.get("realized_vol_12")) <= 0.04
+    )
+
+
+def _trend_strength_filtered_momentum(
+    row: Mapping[str, str],
+    _context: Mapping[str, float],
+) -> bool:
+    return (
+        _to_float(row.get("adx_14")) >= 20.0
+        and _to_float(row.get("momentum_3")) > 0.0
+        and _to_float(row.get("realized_vol_12")) <= 0.04
     )
 
 
@@ -611,6 +675,19 @@ def _feature_columns(path: Path, rows: Sequence[Mapping[str, str]]) -> list[str]
         column for column in rows[0]
         if column not in ("symbol", "interval_begin", "fold_index", "row_id")
     ]
+
+
+def _blocked_research_features(path_value: str) -> set[str]:
+    if not path_value:
+        return set()
+    path = Path(path_value)
+    if not path.exists():
+        return set()
+    return {
+        row.get("feature_name", "")
+        for row in _read_csv(path)
+        if row.get("feature_name", "")
+    }
 
 
 def _outcome_index(path: Path) -> dict[tuple[str, str, str], Mapping[str, str]]:
