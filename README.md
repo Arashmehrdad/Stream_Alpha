@@ -1201,3 +1201,8 @@ python .\scripts\evaluate_m20_decision_policies.py --source-run-dir .\artifacts\
 python .\scripts\write_m20_input_redesign_decision.py --source-run-dir .\artifacts\training\m20\20260506T054337Z --policy-eval-dir .\artifacts\training\m20\20260506T054337Z\research_labels\vol_scaled\m20_redesigned_policy_eval
 
 Writes `m20_input_failure_analysis/`, `m20_research_input_catalogue/`, `m20_input_redesign_plan/`, `m20_redesigned_research_inputs/`, `m20_redesigned_policy_eval/`, and `m20_input_redesign_decision/`. The blocked 6/12-candle labels are now safe-computable research outcomes from existing enriched OHLCV features: `fee_plus_slippage_exceedance_6` has 312,476 usable rows and `fee_plus_slippage_exceedance_12` has 312,458 usable rows. The generic policy rerun remains economics-negative; final decision is `M20_POLICY_ROUTE_PAUSED_NO_POSITIVE_PROXY`. No runtime, registry, promotion, training, scoring, backtest, trading, or profit claim behavior is changed.
+
+<!-- M20_FINAL_RESEARCH_SUMMARY -->
+M20 final research summary:
+Command: python .\scripts\write_m20_final_research_summary.py --source-run-dir .\artifacts\training\m20\20260506T054337Z
+Writes `research_labels/vol_scaled/m20_final_research_summary/` from existing M20 evidence only. Current terminal decision: `M20_POLICY_ROUTE_PAUSED_NO_POSITIVE_PROXY`; status `RESEARCH_ONLY_NEGATIVE_RESULT`; project route recommendation `KEEP_M20_PAUSED_AS_NEGATIVE_RESULT_AND_MOVE_TO_PLATFORM_MATURITY`. The negative result is intentional preserved evidence, not an implementation failure. No runtime, registry, promotion, training, scoring, backtest, trading, or profit claim behavior is changed.

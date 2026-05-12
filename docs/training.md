@@ -1155,3 +1155,13 @@ python .\scripts\write_m20_input_redesign_decision.py --source-run-dir .\artifac
 This path explains why the candidate/policy routes failed, catalogues available and missing research inputs, recovers safe 6/12-candle research labels from enriched OHLCV rows, and reruns the generic policy evaluator using those redesigned labels for diagnostics. Current result: `fee_plus_slippage_exceedance_6` and `fee_plus_slippage_exceedance_12` are available, but the policy rerun remains economics-negative. Final decision: `M20_POLICY_ROUTE_PAUSED_NO_POSITIVE_PROXY`.
 
 The recovered labels are research outcomes only. They are not runtime inputs, not training-frame mutations, not backtest evidence, not promotion evidence, and not profit claims.
+
+<!-- M20_FINAL_RESEARCH_SUMMARY -->
+## Final M20 Negative Research Result
+
+Command:
+python .\scripts\write_m20_final_research_summary.py --source-run-dir .\artifacts\training\m20\20260506T054337Z
+
+Writes `research_labels/vol_scaled/m20_final_research_summary/` as the terminal M20 negative-result artifact. It rolls up the specialist route, enriched/refined candidate routes, policy route, trading-aware label route, and input-redesign route. Current terminal decision: `M20_POLICY_ROUTE_PAUSED_NO_POSITIVE_PROXY`; status `RESEARCH_ONLY_NEGATIVE_RESULT`; recommendation `KEEP_M20_PAUSED_AS_NEGATIVE_RESULT_AND_MOVE_TO_PLATFORM_MATURITY`.
+
+This freezes the current M20 route as negative research evidence. Future work should move to platform maturity or data-upgrade planning, not more one-off M20 candidate, policy, threshold, label, or input tweaks. No runtime, registry, promotion, trading, backtest, or profit claim exists.

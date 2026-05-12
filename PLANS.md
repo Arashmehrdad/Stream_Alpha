@@ -6365,3 +6365,39 @@ against naive baselines.
   - Redesigned policy eval: `70` policies; best proxy candidate `neuralforecast_nhits:CANDIDATE_refined_hold_avoid_extreme_context`; still `POLICY_ECONOMICS_NEGATIVE` with mean net proxy `-0.0019366831`.
   - Final decision: `M20_POLICY_ROUTE_PAUSED_NO_POSITIVE_PROXY`.
   - Recommendation: `PAUSE_M20_POLICY_ROUTE_AND_REDESIGN_INPUTS`.
+
+<!-- M20_FINAL_RESEARCH_SUMMARY -->
+### M20 final negative-result consolidation
+
+- Scope:
+  - Add a terminal M20 final research summary artifact from existing evidence only.
+  - Roll up specialist, enriched v2 candidate, refined v2 candidate, policy, trading-aware label, and input-redesign routes.
+  - Record terminal decision `M20_POLICY_ROUTE_PAUSED_NO_POSITIVE_PROXY`.
+  - Record status `RESEARCH_ONLY_NEGATIVE_RESULT`.
+  - Record project route recommendation `KEEP_M20_PAUSED_AS_NEGATIVE_RESULT_AND_MOVE_TO_PLATFORM_MATURITY`.
+  - Include a planning-only data-upgrade plan for future market microstructure/order book, spread/liquidity, trade-flow imbalance, same-venue execution quality, stricter untouched segments, and lower-turnover/event-sampled labels.
+  - Preserve `RESEARCH_ONLY`, `NO_RUNTIME_EFFECT`, `NOT_BACKTEST`, `NOT_RUNTIME_READY`, `NOT_PROMOTABLE`, and `NO_PROFIT_CLAIM`.
+  - Do not change runtime inference, registry, promotion, paper/live execution, trading/backtest logic, label generation, model training, scoring, validation workflow, or profitability claims.
+- Changed files:
+  - `app/training/m20_final_research_summary.py`
+  - `scripts/write_m20_final_research_summary.py`
+  - `tests/test_training_m20_final_research_summary.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Validation:
+  - `python -m pytest tests/test_training_m20_final_research_summary.py -q` -> `4 passed`
+  - `python -m py_compile app/training/m20_final_research_summary.py scripts/write_m20_final_research_summary.py` -> passed
+  - `python -m pylint --fail-under=10 app/training/m20_final_research_summary.py tests/test_training_m20_final_research_summary.py` -> `10.00/10`
+  - `python scripts/write_m20_final_research_summary.py --source-run-dir artifacts/training/m20/20260506T054337Z` -> completed
+- Real output directory:
+  - `artifacts/training/m20/20260506T054337Z/research_labels/vol_scaled/m20_final_research_summary`
+- Real result:
+  - Final M20 decision: `M20_POLICY_ROUTE_PAUSED_NO_POSITIVE_PROXY`
+  - Status: `RESEARCH_ONLY_NEGATIVE_RESULT`
+  - Runtime effect: `NO_RUNTIME_EFFECT`
+  - Promotable: `false`
+  - Backtest claim: `false`
+  - Profit claim: `false`
+  - Next route required: `true`
+  - Project route recommendation: `KEEP_M20_PAUSED_AS_NEGATIVE_RESULT_AND_MOVE_TO_PLATFORM_MATURITY`
