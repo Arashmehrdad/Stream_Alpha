@@ -6401,3 +6401,31 @@ against naive baselines.
   - Profit claim: `false`
   - Next route required: `true`
   - Project route recommendation: `KEEP_M20_PAUSED_AS_NEGATIVE_RESULT_AND_MOVE_TO_PLATFORM_MATURITY`
+
+<!-- M9_REGIME_INTEGRATION_AUDIT -->
+### M9 platform maturity - audit-first regime integration
+
+- Scope:
+  - Add a canonical `RegimeContext` contract for M9 read surfaces and downstream gates.
+  - Add an artifact-backed M9 regime integration audit.
+  - Audit M8 threshold artifacts, M9 signal policy, runtime resolver, `/regime`, `/signal`, freshness, decision-trace, risk-schema, and M20-pause documentation surfaces.
+  - Classify M9 state before adding any further platform-maturity work.
+  - Preserve M20 as `M20_POLICY_ROUTE_PAUSED_NO_POSITIVE_PROXY`.
+  - Do not change runtime inference, registry, promotion, paper/live execution, trading/backtest logic, model training, scoring, validation workflow, or profitability claims.
+- Changed files:
+  - `app/regime/context.py`
+  - `app/regime/m9_audit.py`
+  - `app/regime/__init__.py`
+  - `scripts/audit_m9_regime_integration.py`
+  - `tests/test_regime_context.py`
+  - `tests/test_regime_m9_audit.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real output directory:
+  - `artifacts/platform_maturity/m9/regime_integration_audit`
+- Real result:
+  - M9 state: `M9_REGIME_INTEGRATION_CONSOLIDATED`
+  - Gap count: `0`
+  - Recommendation: `PROCEED_TO_M10_RISK_INTERFACE_AUDIT`
+  - Next required action: `AUDIT_M10_RISK_INTERFACE_WITH_REGIME_CONTEXT`

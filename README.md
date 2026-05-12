@@ -94,7 +94,9 @@ These boundaries are part of the accepted design and should be treated as stable
 
 ### M9 to M12: runtime decision maturity
 
-* **M9** adds regime-aware live signal logic on top of M4.
+* **M9** adds regime-aware live signal logic on top of M4. The audit-first
+  consolidation path now writes a deterministic regime integration audit before
+  any further platform-maturity work.
 * **M10** adds the authoritative pre-trade risk and sizing layer.
 * **M11** adds execution abstraction and explicit order lifecycle truth for `paper` and `shadow`.
 * **M12** adds guarded Alpaca live execution with explicit runtime arming, whitelisting, tiny notional limits, reconciliation truth, and fail-closed behavior.
@@ -111,7 +113,9 @@ These boundaries are part of the accepted design and should be treated as stable
 
 * **M18** adds usability and strategy evaluation truth, divergence reporting, and realistic promotion evidence.
 * **M19** now writes runtime-generated persisted drift/performance truth. It should be read as bounded adaptation evidence, not as proof of stronger adaptive profile or promotion activity than the real persisted state supports.
-* **M20** still exposes ensemble surfaces and persisted profile truth, and the active profile is now a current AutoGluon-only generalist roster. It must still be judged on real candidate breadth, role diversity, regime-slice value, and economics after costs. On those terms it remains active but weak.
+* **M20** is paused as an honest negative research result. The terminal decision
+  is `M20_POLICY_ROUTE_PAUSED_NO_POSITIVE_PROXY`; it has no runtime, registry,
+  promotion, trading, backtest, or profit claim authority.
 * **M21** now writes runtime-generated persisted drift-cap truth. Guarded workflow/read surfaces exist, but the repo does not invent active continual-learning profiles, experiments, or promotions beyond real persisted truth.
 
 ## Model stack after AutoGluon batch
@@ -1206,3 +1210,12 @@ Writes `m20_input_failure_analysis/`, `m20_research_input_catalogue/`, `m20_inpu
 M20 final research summary:
 Command: python .\scripts\write_m20_final_research_summary.py --source-run-dir .\artifacts\training\m20\20260506T054337Z
 Writes `research_labels/vol_scaled/m20_final_research_summary/` from existing M20 evidence only. Current terminal decision: `M20_POLICY_ROUTE_PAUSED_NO_POSITIVE_PROXY`; status `RESEARCH_ONLY_NEGATIVE_RESULT`; project route recommendation `KEEP_M20_PAUSED_AS_NEGATIVE_RESULT_AND_MOVE_TO_PLATFORM_MATURITY`. The negative result is intentional preserved evidence, not an implementation failure. No runtime, registry, promotion, training, scoring, backtest, trading, or profit claim behavior is changed.
+
+<!-- M9_REGIME_INTEGRATION_AUDIT -->
+M9 regime integration audit:
+Command: python .\scripts\audit_m9_regime_integration.py
+Writes `artifacts/platform_maturity/m9/regime_integration_audit/`.
+Current audit result: `M9_REGIME_INTEGRATION_CONSOLIDATED`; gap count `0`;
+recommendation `PROCEED_TO_M10_RISK_INTERFACE_AUDIT`. The audit adds a canonical
+`RegimeContext` contract and confirms existing M9 read surfaces without changing
+runtime, registry, promotion, trading, backtest, training, scoring, or M20 status.

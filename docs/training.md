@@ -1165,3 +1165,22 @@ python .\scripts\write_m20_final_research_summary.py --source-run-dir .\artifact
 Writes `research_labels/vol_scaled/m20_final_research_summary/` as the terminal M20 negative-result artifact. It rolls up the specialist route, enriched/refined candidate routes, policy route, trading-aware label route, and input-redesign route. Current terminal decision: `M20_POLICY_ROUTE_PAUSED_NO_POSITIVE_PROXY`; status `RESEARCH_ONLY_NEGATIVE_RESULT`; recommendation `KEEP_M20_PAUSED_AS_NEGATIVE_RESULT_AND_MOVE_TO_PLATFORM_MATURITY`.
 
 This freezes the current M20 route as negative research evidence. Future work should move to platform maturity or data-upgrade planning, not more one-off M20 candidate, policy, threshold, label, or input tweaks. No runtime, registry, promotion, trading, backtest, or profit claim exists.
+
+<!-- M9_REGIME_INTEGRATION_AUDIT -->
+## M9 Regime Integration Audit
+
+Command:
+python .\scripts\audit_m9_regime_integration.py
+
+Writes `artifacts/platform_maturity/m9/regime_integration_audit/` as the
+audit-first platform-maturity artifact. It records M8 threshold availability,
+the checked-in M9 signal policy, `/regime`, `/signal`, freshness, decision-trace,
+risk-schema, and M20-pause documentation surfaces.
+
+Current result: `M9_REGIME_INTEGRATION_CONSOLIDATED`; gap count `0`;
+recommendation `PROCEED_TO_M10_RISK_INTERFACE_AUDIT`; next required action
+`AUDIT_M10_RISK_INTERFACE_WITH_REGIME_CONTEXT`.
+
+The audit adds a canonical `RegimeContext` contract only. It does not reopen M20,
+does not change runtime behavior, and creates no promotion, backtest, trading, or
+profit claim.
