@@ -1219,3 +1219,15 @@ Current audit result: `M9_REGIME_INTEGRATION_CONSOLIDATED`; gap count `0`;
 recommendation `PROCEED_TO_M10_RISK_INTERFACE_AUDIT`. The audit adds a canonical
 `RegimeContext` contract and confirms existing M9 read surfaces without changing
 runtime, registry, promotion, trading, backtest, training, scoring, or M20 status.
+
+<!-- M10_RISK_INTERFACE_AUDIT -->
+M10 risk interface audit:
+Command: python .\scripts\audit_m10_risk_interface.py
+Writes `artifacts/platform_maturity/m10/risk_interface_audit/`.
+Current audit result: `M10_RISK_INTERFACE_CONSOLIDATED`; gap count `0`;
+recommendation `PROCEED_TO_M11_EXECUTION_INTERFACE_AUDIT`; next required action
+`AUDIT_M11_EXECUTION_INTERFACE_WITH_RISK_AUTHORITY`. The audit confirms the M10
+risk configuration contract, pure risk engine, RegimeContext/readiness boundary,
+risk persistence, decision-trace enrichment, runner authority, and downstream
+order-request surface without changing runtime, registry, promotion, trading,
+backtest, training, scoring, or M20 status.

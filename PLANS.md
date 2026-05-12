@@ -6429,3 +6429,27 @@ against naive baselines.
   - Gap count: `0`
   - Recommendation: `PROCEED_TO_M10_RISK_INTERFACE_AUDIT`
   - Next required action: `AUDIT_M10_RISK_INTERFACE_WITH_REGIME_CONTEXT`
+
+<!-- M10_RISK_INTERFACE_AUDIT -->
+### M10 platform maturity - audit-first risk interface
+
+- Scope:
+  - Add an artifact-backed M10 risk-interface audit.
+  - Audit the M10 risk configuration contract, pure risk engine, trade-allowed fail-closed behavior, regime position caps, service risk state, risk-decision contracts, persistence, decision-trace enrichment, runner authority, and downstream execution-request boundary.
+  - Confirm RegimeContext readiness from M9 without changing risk math or execution behavior.
+  - Preserve M20 as `M20_POLICY_ROUTE_PAUSED_NO_POSITIVE_PROXY`.
+  - Do not change runtime inference, registry, promotion, paper/live execution, trading/backtest logic, model training, scoring, validation workflow, or profitability claims.
+- Changed files:
+  - `app/trading/m10_risk_interface_audit.py`
+  - `scripts/audit_m10_risk_interface.py`
+  - `tests/test_trading_m10_risk_interface_audit.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real output directory:
+  - `artifacts/platform_maturity/m10/risk_interface_audit`
+- Real result:
+  - M10 state: `M10_RISK_INTERFACE_CONSOLIDATED`
+  - Gap count: `0`
+  - Recommendation: `PROCEED_TO_M11_EXECUTION_INTERFACE_AUDIT`
+  - Next required action: `AUDIT_M11_EXECUTION_INTERFACE_WITH_RISK_AUTHORITY`

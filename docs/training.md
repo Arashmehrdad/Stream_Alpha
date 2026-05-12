@@ -1184,3 +1184,22 @@ recommendation `PROCEED_TO_M10_RISK_INTERFACE_AUDIT`; next required action
 The audit adds a canonical `RegimeContext` contract only. It does not reopen M20,
 does not change runtime behavior, and creates no promotion, backtest, trading, or
 profit claim.
+
+<!-- M10_RISK_INTERFACE_AUDIT -->
+## M10 Risk Interface Audit
+
+Command:
+python .\scripts\audit_m10_risk_interface.py
+
+Writes `artifacts/platform_maturity/m10/risk_interface_audit/` as the
+audit-first M10 platform-maturity artifact. It records the risk configuration
+contract, pure risk-engine entrypoint, RegimeContext readiness, regime-aware
+trade gating, regime position caps, risk persistence, decision-trace enrichment,
+runner authority, and downstream execution-request boundary.
+
+Current result: `M10_RISK_INTERFACE_CONSOLIDATED`; gap count `0`;
+recommendation `PROCEED_TO_M11_EXECUTION_INTERFACE_AUDIT`; next required action
+`AUDIT_M11_EXECUTION_INTERFACE_WITH_RISK_AUTHORITY`.
+
+The audit does not reopen M20, does not change runtime behavior, and creates no
+promotion, backtest, trading, or profit claim.
