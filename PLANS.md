@@ -6893,3 +6893,32 @@ against naive baselines.
   - Blocked decisions: `3`
   - Recommendation: `ADD_SAMPLE_KRAKEN_BOOK_FIXTURE_NORMALIZERS`
   - Next required action: `BUILD_SAMPLE_BOOK_PAYLOAD_NORMALIZERS_CONTRACT_ONLY`
+
+<!-- BOOK_PAYLOAD_NORMALIZER_CONTRACT -->
+### Book payload normalizer contract
+
+- Scope:
+  - Add fixture-only research normalizers for static Kraken WebSocket v2 book
+    snapshot/update payloads.
+  - Record parser fields, normalized sample event diagnostics, validation
+    cases, leakage boundaries, and remaining blockers.
+  - Preserve M20 as `M20_POLICY_ROUTE_PAUSED_NO_POSITIVE_PROXY`.
+  - Do not subscribe to book data, run capture, persist rows, mutate
+    `raw_trades`, `raw_ohlc`, or `feature_ohlc`, or change runtime inference,
+    registry, promotion, paper/live execution, trading/backtest logic, model
+    training, scoring, validation workflow, or profitability claims.
+- Changed files:
+  - `app/training/market_microstructure_book_normalizers.py`
+  - `scripts/plan_book_payload_normalizers.py`
+  - `tests/test_training_market_microstructure_book_normalizers.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real output directory:
+  - `artifacts/research_data_upgrade/book_payload_normalizer_contract`
+- Real result:
+  - Normalizer status: `SAMPLE_BOOK_PAYLOAD_NORMALIZERS_DEFINED`
+  - Sample payloads: `2`
+  - Normalized events: `2`
+  - Recommendation: `DERIVE_RESEARCH_ONLY_MICROSTRUCTURE_FEATURES_FROM_CONTRACTS`
+  - Next required action: `BUILD_RESEARCH_ONLY_MICROSTRUCTURE_FEATURE_DERIVATION`

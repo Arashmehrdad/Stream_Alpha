@@ -1428,3 +1428,16 @@ it defines research raw order-book, replay, and microstructure-feature table
 contracts plus deterministic replay ordering. It does not create tables, run
 capture, mutate `raw_trades`, `raw_ohlc`, or `feature_ohlc`, or change runtime,
 registry, promotion, trading, backtest, training, scoring, or profit claims.
+
+<!-- BOOK_PAYLOAD_NORMALIZER_CONTRACT -->
+Book payload normalizer contract:
+Command: python .\scripts\plan_book_payload_normalizers.py
+Writes `artifacts/research_data_upgrade/book_payload_normalizer_contract/`.
+Current result: `SAMPLE_BOOK_PAYLOAD_NORMALIZERS_DEFINED`; sample payloads `2`;
+normalized events `2`; recommendation
+`DERIVE_RESEARCH_ONLY_MICROSTRUCTURE_FEATURES_FROM_CONTRACTS`; next required
+action `BUILD_RESEARCH_ONLY_MICROSTRUCTURE_FEATURE_DERIVATION`. This is
+fixture-only: it normalizes static Kraken WebSocket v2 book sample payloads and
+records parser/leakage contracts. It does not subscribe to book data, run
+capture, persist rows, mutate existing ingestion contracts, or change runtime,
+registry, promotion, trading, backtest, training, scoring, or profit claims.

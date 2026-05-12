@@ -1320,6 +1320,26 @@ future DU3-DU6 batches. It does not execute DDL, create tables, run capture,
 mutate `raw_trades`, `raw_ohlc`, or `feature_ohlc`, or change runtime,
 registry, promotion, trading, backtest, training, scoring, or profit claims.
 
+<!-- BOOK_PAYLOAD_NORMALIZER_CONTRACT -->
+## Book Payload Normalizer Contract
+
+Command:
+python .\scripts\plan_book_payload_normalizers.py
+
+Writes `artifacts/research_data_upgrade/book_payload_normalizer_contract/` as a
+fixture-only DU3 contract.
+
+Current result: `SAMPLE_BOOK_PAYLOAD_NORMALIZERS_DEFINED`; sample payloads `2`;
+normalized events `2`; recommendation
+`DERIVE_RESEARCH_ONLY_MICROSTRUCTURE_FEATURES_FROM_CONTRACTS`; next required
+action `BUILD_RESEARCH_ONLY_MICROSTRUCTURE_FEATURE_DERIVATION`.
+
+The contract normalizes static Kraken WebSocket v2 book snapshot/update sample
+payloads and records parser fields, validation cases, leakage boundaries, and
+remaining blockers. It does not subscribe to book data, run capture, persist
+rows, mutate `raw_trades`, `raw_ohlc`, or `feature_ohlc`, or change runtime,
+registry, promotion, trading, backtest, training, scoring, or profit claims.
+
 <!-- M13_RELIABILITY_RECOVERY_AUDIT -->
 ## M13 Reliability And Recovery Audit
 
