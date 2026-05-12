@@ -6477,3 +6477,32 @@ against naive baselines.
   - Gap count: `0`
   - Recommendation: `PROCEED_TO_M12_GUARDED_LIVE_AUDIT`
   - Next required action: `AUDIT_M12_GUARDED_LIVE_CONTROLS`
+
+<!-- M12_GUARDED_LIVE_AUDIT -->
+### M12 platform maturity - audit-first guarded live controls
+
+- Scope:
+  - Add an artifact-backed M12 guarded-live audit.
+  - Audit live startup checks, explicit runtime arming and confirmation,
+    manual-disable and failure hard-stop controls, broker reconciliation,
+    canonical health gating, live submit gates, live safety persistence, runner
+    gate refreshes, and operator status artifacts.
+  - Confirm M12 guarded-live boundaries without changing live behavior.
+  - Preserve M20 as `M20_POLICY_ROUTE_PAUSED_NO_POSITIVE_PROXY`.
+  - Do not change runtime inference, registry, promotion, paper/live execution,
+    trading/backtest logic, model training, scoring, validation workflow, or
+    profitability claims.
+- Changed files:
+  - `app/trading/m12_guarded_live_audit.py`
+  - `scripts/audit_m12_guarded_live.py`
+  - `tests/test_trading_m12_guarded_live_audit.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real output directory:
+  - `artifacts/platform_maturity/m12/guarded_live_audit`
+- Real result:
+  - M12 state: `M12_GUARDED_LIVE_CONTROLS_CONSOLIDATED`
+  - Gap count: `0`
+  - Recommendation: `PROCEED_TO_M13_RELIABILITY_RECOVERY_AUDIT`
+  - Next required action: `AUDIT_M13_RELIABILITY_AND_RECOVERY_CONTROLS`

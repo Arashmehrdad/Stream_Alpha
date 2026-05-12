@@ -1243,3 +1243,16 @@ requests, idempotency keys, paper/shadow/live adapters, lifecycle persistence,
 M10-to-M11 risk authority boundaries, and guarded-live submit gates without
 changing runtime, registry, promotion, execution, trading, backtest, training,
 scoring, or M20 status.
+
+<!-- M12_GUARDED_LIVE_AUDIT -->
+M12 guarded-live audit:
+Command: python .\scripts\audit_m12_guarded_live.py
+Writes `artifacts/platform_maturity/m12/guarded_live_audit/`.
+Current audit result: `M12_GUARDED_LIVE_CONTROLS_CONSOLIDATED`; gap count `0`;
+recommendation `PROCEED_TO_M13_RELIABILITY_RECOVERY_AUDIT`; next required action
+`AUDIT_M13_RELIABILITY_AND_RECOVERY_CONTROLS`. The audit confirms live startup
+checks, explicit runtime arming and confirmation, manual-disable and hard-stop
+gates, broker reconciliation, canonical health gating, guarded submit blocks,
+live safety persistence, and operator status artifacts without changing runtime,
+registry, promotion, execution, trading, backtest, training, scoring, or M20
+status.

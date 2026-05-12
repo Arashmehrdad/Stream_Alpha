@@ -1222,3 +1222,22 @@ recommendation `PROCEED_TO_M12_GUARDED_LIVE_AUDIT`; next required action
 
 The audit does not reopen M20, does not change runtime behavior, and creates no
 promotion, backtest, trading, execution, or profit claim.
+
+<!-- M12_GUARDED_LIVE_AUDIT -->
+## M12 Guarded Live Audit
+
+Command:
+python .\scripts\audit_m12_guarded_live.py
+
+Writes `artifacts/platform_maturity/m12/guarded_live_audit/` as the audit-first
+M12 platform-maturity artifact. It records live startup checks, runtime arming
+and confirmation, manual-disable and hard-stop gates, broker reconciliation,
+canonical health gating, guarded submit blocks, live safety persistence, and
+operator status artifacts.
+
+Current result: `M12_GUARDED_LIVE_CONTROLS_CONSOLIDATED`; gap count `0`;
+recommendation `PROCEED_TO_M13_RELIABILITY_RECOVERY_AUDIT`; next required action
+`AUDIT_M13_RELIABILITY_AND_RECOVERY_CONTROLS`.
+
+The audit does not reopen M20, does not change runtime behavior, and creates no
+promotion, backtest, trading, execution, live-readiness, or profit claim.
