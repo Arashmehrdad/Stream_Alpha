@@ -6223,3 +6223,40 @@ against naive baselines.
   - Candidate decisions: `8` `V2_STRATEGY_CANDIDATE_ECONOMICS_NEGATIVE`
   - Recommendation: `REFINE_OR_ADD_SAFE_FEATURES_FOR_V2_CANDIDATES`
   - Next required action: `REFINE_OR_ADD_SAFE_FEATURES_FOR_V2_CANDIDATES`
+
+<!-- M20_V2_REFINEMENT_RECOVERY -->
+### M20 generic pipeline Batches L-O - v2 refinement recovery and reframe
+
+- Scope:
+  - Add a generic enriched v2 refinement planner that explains negative economics and broad/high-turnover coverage.
+  - Add refined v2 candidate definitions as data-driven predicate specs instead of one-off hardcoded candidates.
+  - Extend the v2 factory to evaluate generic predicate specs while preserving default name-based behavior.
+  - Run refined v2 generation with the research feature enrichment artifact.
+  - Write an M20 reframe artifact and policy candidate schema after refined candidates remain economics-negative.
+  - Preserve `RESEARCH_ONLY`, `NO_RUNTIME_EFFECT`, `NOT_BACKTEST`, `NOT_RUNTIME_READY`, `NOT_PROMOTABLE`, and `NO_PROFIT_CLAIM`.
+  - Do not change runtime inference, registry, promotion, paper/live execution, trading/backtest logic, model training, scoring, prediction exports, label generation, validation workflow, or profitability claims.
+- Changed files:
+  - `app/training/m20_v2_refinement_plan.py`
+  - `scripts/plan_m20_v2_refinement.py`
+  - `tests/test_training_m20_v2_refinement_plan.py`
+  - `app/training/m20_strategy_candidate_v2_refined_definitions.py`
+  - `scripts/build_m20_strategy_candidate_v2_refined_definitions.py`
+  - `tests/test_training_m20_strategy_candidate_v2_refined_definitions.py`
+  - `app/training/m20_reframe.py`
+  - `scripts/write_m20_reframe.py`
+  - `tests/test_training_m20_reframe.py`
+  - existing Batch K v2 factory/script/tests/docs
+- Real output directories:
+  - `artifacts/training/m20/20260506T054337Z/research_labels/vol_scaled/v2_refinement_plan`
+  - `artifacts/training/m20/20260506T054337Z/research_labels/vol_scaled/strategy_candidate_v2_refined_definitions`
+  - `artifacts/training/m20/20260506T054337Z/research_labels/vol_scaled/strategy_candidate_v2_refined_factory`
+  - `artifacts/training/m20/20260506T054337Z/research_labels/vol_scaled/m20_reframe`
+- Real result:
+  - Refined definitions: `4`
+  - Refined candidate rows: `118116`
+  - Refined candidate decisions: `4` `V2_STRATEGY_CANDIDATE_ECONOMICS_NEGATIVE`
+  - Best refined mean net proxy: `-0.0019366831`
+  - Worst refined mean net proxy: `-0.0020875570`
+  - M20 reframe decision: `REFRAME_M20_AS_CONTEXT_AWARE_DECISION_SELECTION`
+  - Recommendation: `DESIGN_RESEARCH_ONLY_DECISION_POLICY_EVALUATOR`
+  - Next required action: `DESIGN_RESEARCH_ONLY_DECISION_POLICY_EVALUATOR`

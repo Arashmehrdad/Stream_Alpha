@@ -239,6 +239,52 @@ def test_research_feature_source_respects_blocked_feature_file(tmp_path: Path) -
     assert by_name["trend_strength_filtered_momentum"]["missing_features"] == "adx_14"
 
 
+def test_predicate_spec_definitions_are_deterministic(tmp_path: Path) -> None:
+    _write_sources(tmp_path)
+    research_feature_dir = _write_research_feature_source(tmp_path)
+    spec = {
+        "all": [
+            {"field": "regime_label", "eq": "TREND_UP"},
+            {"field": "adx_14", "gte": 20.0},
+            {"field": "momentum_3", "gt": 0.0},
+        ]
+    }
+    _write_csv(
+        tmp_path
+        / "research_labels"
+        / "vol_scaled"
+        / "refined_definitions"
+        / "candidate_definition_specs.csv",
+        [
+            {
+                "redesign_family": "refined",
+                "candidate_name": "spec_candidate",
+                "candidate_version": "v2_refined",
+                "required_features": "regime_label|adx_14|momentum_3",
+                "predicate_spec_json": json.dumps(spec, sort_keys=True),
+                "missing_features": "",
+                "definition_status": "READY_FOR_V2_FACTORY",
+            }
+        ],
+    )
+
+    first = build_m20_strategy_candidates_v2(
+        source_run_dir=tmp_path,
+        redesign_plan_dir=tmp_path / "research_labels" / "vol_scaled" / "refined_definitions",
+        research_feature_dir=research_feature_dir,
+        output_name="first",
+    )
+    second = build_m20_strategy_candidates_v2(
+        source_run_dir=tmp_path,
+        redesign_plan_dir=tmp_path / "research_labels" / "vol_scaled" / "refined_definitions",
+        research_feature_dir=research_feature_dir,
+        output_name="second",
+    )
+
+    assert first["candidate_metrics"] == second["candidate_metrics"]
+    assert first["candidate_event_rows"] == 3
+
+
 def test_label_and_economic_joins_are_correct(tmp_path: Path) -> None:
     _write_sources(tmp_path)
 

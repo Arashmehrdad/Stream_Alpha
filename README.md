@@ -1168,3 +1168,12 @@ Writes `research_labels/vol_scaled/safe_feature_availability/` from existing M20
 M20 research feature enrichment:
 Command: python .\scripts\build_m20_research_feature_enrichment.py --source-run-dir .\artifacts\training\m20\20260506T054337Z --regime-thresholds-path .\artifacts\regime\m8\20260320T165813Z\thresholds.json
 Writes `research_labels/vol_scaled/research_feature_enrichment/` without mutating `training_frame/`. Current result: 312,494 enriched research rows, added `regime_label` from fixed M8 thresholds and causal per-symbol `adx_14`, blocked features 0, recommendation `RE_RUN_V2_STRATEGY_CANDIDATE_FACTORY_WITH_RESEARCH_FEATURES`. No runtime, registry, promotion, training, scoring, backtest, trading, or profit-claim behavior is changed.
+
+<!-- M20_V2_REFINEMENT_RECOVERY -->
+M20 v2 refinement recovery:
+Commands:
+python .\scripts\plan_m20_v2_refinement.py --source-run-dir .\artifacts\training\m20\20260506T054337Z
+python .\scripts\build_m20_strategy_candidate_v2_refined_definitions.py --source-run-dir .\artifacts\training\m20\20260506T054337Z
+python .\scripts\build_m20_strategy_candidates_v2.py --source-run-dir .\artifacts\training\m20\20260506T054337Z --research-feature-dir .\artifacts\training\m20\20260506T054337Z\research_labels\vol_scaled\research_feature_enrichment --redesign-plan-dir .\artifacts\training\m20\20260506T054337Z\research_labels\vol_scaled\strategy_candidate_v2_refined_definitions --output-name strategy_candidate_v2_refined_factory
+python .\scripts\write_m20_reframe.py --source-run-dir .\artifacts\training\m20\20260506T054337Z
+Writes `v2_refinement_plan/`, `strategy_candidate_v2_refined_definitions/`, `strategy_candidate_v2_refined_factory/`, and `m20_reframe/`. Current refined result: 4 refined definitions, 118,116 candidate rows, all 4 candidates economics-negative. M20 is reframed as research-only context-aware decision selection; next action `DESIGN_RESEARCH_ONLY_DECISION_POLICY_EVALUATOR`. No runtime, registry, promotion, training, scoring, backtest, trading, or profit claim behavior is changed.

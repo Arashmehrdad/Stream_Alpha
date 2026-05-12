@@ -286,6 +286,7 @@ def _definition_audit(
                 "candidate_name": definition.get("candidate_name", ""),
                 "candidate_version": definition.get("candidate_version", "v2_design"),
                 "required_features": "|".join(required),
+                "predicate_spec_json": definition.get("predicate_spec_json", ""),
                 "missing_features": "|".join(missing),
                 "source_definition_status": source_status,
                 "rechecked_with_active_feature_source": True,
@@ -298,6 +299,10 @@ def _definition_audit(
 def _predicate_for(
     definition: Mapping[str, Any],
 ) -> Callable[[Mapping[str, str], Mapping[str, float]], bool]:
+    spec = str(definition.get("predicate_spec_json", "")).strip()
+    if spec:
+        payload = json.loads(spec)
+        return lambda row, context: _evaluate_predicate_spec(payload, row, context)
     predicates = {
         "momentum_volume_confirmed": _momentum_volume_confirmed,
         "macd_volatility_adjusted_direction": _macd_volatility_adjusted_direction,
@@ -309,6 +314,48 @@ def _predicate_for(
         "trend_strength_filtered_momentum": _trend_strength_filtered_momentum,
     }
     return predicates.get(str(definition["candidate_name"]), lambda _row, _context: False)
+
+
+def _evaluate_predicate_spec(
+    spec: Mapping[str, Any],
+    row: Mapping[str, str],
+    context: Mapping[str, float],
+) -> bool:
+    # pylint: disable=too-many-return-statements
+    if "all" in spec:
+        return all(_evaluate_predicate_spec(item, row, context) for item in spec["all"])
+    if "any" in spec:
+        return any(_evaluate_predicate_spec(item, row, context) for item in spec["any"])
+    field = str(spec.get("field", ""))
+    value = _spec_value(field, row, context)
+    if "eq" in spec:
+        return str(row.get(field, "")) == str(spec["eq"])
+    if "gt" in spec:
+        return value > float(spec["gt"])
+    if "gte" in spec:
+        return value >= float(spec["gte"])
+    if "lt" in spec:
+        return value < float(spec["lt"])
+    if "lte" in spec:
+        return value <= float(spec["lte"])
+    if "between" in spec:
+        lower, upper = spec["between"]
+        return float(lower) <= value <= float(upper)
+    if "abs_lte" in spec:
+        return abs(value) <= float(spec["abs_lte"])
+    if "abs_gte" in spec:
+        return abs(value) >= float(spec["abs_gte"])
+    return False
+
+
+def _spec_value(
+    field: str,
+    row: Mapping[str, str],
+    context: Mapping[str, float],
+) -> float:
+    if field.startswith("context."):
+        return float(context.get(field.removeprefix("context."), 0.0))
+    return _to_float(row.get(field))
 
 
 def _momentum_volume_confirmed(

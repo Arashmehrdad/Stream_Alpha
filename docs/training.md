@@ -1114,3 +1114,14 @@ Writes `research_labels/vol_scaled/safe_feature_availability/` from existing fea
 Command: python .\scripts\build_m20_research_feature_enrichment.py --source-run-dir .\artifacts\training\m20\20260506T054337Z --regime-thresholds-path .\artifacts\regime\m8\20260320T165813Z\thresholds.json
 
 Writes `research_labels/vol_scaled/research_feature_enrichment/` as a separate research-only frame. The builder keeps original `training_frame/` files unchanged, adds `regime_label` using fixed M8 threshold provenance, computes causal per-symbol `adx_14` from OHLC history with warmup rows blank, and records lineage/leakage audits. Current result: 312,494 rows, features added `regime_label` and `adx_14`, blocked features 0, recommendation `RE_RUN_V2_STRATEGY_CANDIDATE_FACTORY_WITH_RESEARCH_FEATURES`.
+
+<!-- M20_V2_REFINEMENT_RECOVERY -->
+## Research-Only M20 V2 Refinement Recovery
+
+Commands:
+python .\scripts\plan_m20_v2_refinement.py --source-run-dir .\artifacts\training\m20\20260506T054337Z
+python .\scripts\build_m20_strategy_candidate_v2_refined_definitions.py --source-run-dir .\artifacts\training\m20\20260506T054337Z
+python .\scripts\build_m20_strategy_candidates_v2.py --source-run-dir .\artifacts\training\m20\20260506T054337Z --research-feature-dir .\artifacts\training\m20\20260506T054337Z\research_labels\vol_scaled\research_feature_enrichment --redesign-plan-dir .\artifacts\training\m20\20260506T054337Z\research_labels\vol_scaled\strategy_candidate_v2_refined_definitions --output-name strategy_candidate_v2_refined_factory
+python .\scripts\write_m20_reframe.py --source-run-dir .\artifacts\training\m20\20260506T054337Z
+
+Writes a generic v2 refinement plan, predicate-spec refined definitions, refined candidate factory outputs, and a static M20 reframe artifact. Current result: 4 refined definitions, 118,116 candidate rows, all 4 candidates `V2_STRATEGY_CANDIDATE_ECONOMICS_NEGATIVE`; M20 remains `RESEARCH_ONLY`, `NO_RUNTIME_EFFECT`, `NOT_BACKTEST`, `NOT_RUNTIME_READY`, `NOT_PROMOTABLE`, and `NO_PROFIT_CLAIM`. The reframe records M20 as context-aware decision selection and recommends `DESIGN_RESEARCH_ONLY_DECISION_POLICY_EVALUATOR`.
