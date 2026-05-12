@@ -1436,6 +1436,21 @@ This DU8 batch validates the isolated research capture service parameters and
 subscription payload only. It does not connect to Kraken, write database rows,
 publish topics, or change runtime ingestion/trading behavior.
 
+<!-- MICROSTRUCTURE_CAPTURE_SMOKE -->
+## Microstructure Capture Smoke Dry Run
+
+Command:
+python .\scripts\run_microstructure_capture_smoke.py
+
+Writes `artifacts/research_data_upgrade/microstructure_capture_smoke/`.
+Current result: `BOUNDED_CAPTURE_SMOKE_DRY_RUN_READY`; smoke executed `False`;
+recommendation `BUILD_MICROSTRUCTURE_REPLAY_AND_COVERAGE_FROM_FIXTURES`; next
+required action `IMPLEMENT_MICROSTRUCTURE_REPLAY_GAP_ENGINE`.
+
+This DU9 batch adds the bounded smoke harness in dry-run mode only. It does not
+connect to Kraken, capture data, write database rows, or change runtime
+ingestion/trading behavior.
+
 <!-- M13_RELIABILITY_RECOVERY_AUDIT -->
 ## M13 Reliability And Recovery Audit
 

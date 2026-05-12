@@ -1500,3 +1500,12 @@ Current result: `DRY_RUN_CAPTURE_SERVICE_PLAN_DEFINED`; network capture
 executed `False`; recommendation `ADD_BOUNDED_CAPTURE_SMOKE_HARNESS_DRY_RUN`;
 next required action `IMPLEMENT_BOUNDED_CAPTURE_SMOKE_HARNESS_DRY_RUN`. This
 does not connect to Kraken, write database rows, or alter runtime ingestion.
+
+<!-- MICROSTRUCTURE_CAPTURE_SMOKE -->
+Microstructure capture smoke dry run:
+Command: python .\scripts\run_microstructure_capture_smoke.py
+Writes `artifacts/research_data_upgrade/microstructure_capture_smoke/`.
+Current result: `BOUNDED_CAPTURE_SMOKE_DRY_RUN_READY`; smoke executed `False`;
+recommendation `BUILD_MICROSTRUCTURE_REPLAY_AND_COVERAGE_FROM_FIXTURES`; next
+required action `IMPLEMENT_MICROSTRUCTURE_REPLAY_GAP_ENGINE`. This does not run
+network capture.

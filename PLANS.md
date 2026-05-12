@@ -7063,3 +7063,26 @@ against naive baselines.
   - Network capture executed: `False`
   - Recommendation: `ADD_BOUNDED_CAPTURE_SMOKE_HARNESS_DRY_RUN`
   - Next required action: `IMPLEMENT_BOUNDED_CAPTURE_SMOKE_HARNESS_DRY_RUN`
+
+<!-- MICROSTRUCTURE_CAPTURE_SMOKE -->
+### Microstructure capture smoke dry run
+
+- Scope:
+  - Add DU9 bounded capture smoke harness in dry-run mode only.
+  - Preserve explicit `--execute` blocker.
+  - Do not connect to Kraken, capture data, write database rows, or change
+    runtime ingestion/trading behavior.
+- Changed files:
+  - `app/training/microstructure_capture_smoke.py`
+  - `scripts/run_microstructure_capture_smoke.py`
+  - `tests/test_training_microstructure_capture_smoke.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real output directory:
+  - `artifacts/research_data_upgrade/microstructure_capture_smoke`
+- Real result:
+  - Smoke status: `BOUNDED_CAPTURE_SMOKE_DRY_RUN_READY`
+  - Smoke executed: `False`
+  - Recommendation: `BUILD_MICROSTRUCTURE_REPLAY_AND_COVERAGE_FROM_FIXTURES`
+  - Next required action: `IMPLEMENT_MICROSTRUCTURE_REPLAY_GAP_ENGINE`
