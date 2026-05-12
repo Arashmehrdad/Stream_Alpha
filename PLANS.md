@@ -6954,3 +6954,33 @@ against naive baselines.
   - Feature contracts: `6`
   - Recommendation: `ADD_COVERAGE_GAP_AND_REPLAY_DETERMINISM_REPORTS`
   - Next required action: `BUILD_MICROSTRUCTURE_COVERAGE_GAP_REPLAY_AUDIT`
+
+<!-- MICROSTRUCTURE_REPLAY_AUDIT -->
+### Microstructure coverage gap replay audit
+
+- Scope:
+  - Add an audit-only DU5 artifact over the existing schema, parser, and
+    feature-derivation research artifacts.
+  - Report coverage/gap/replay determinism readiness without inventing metrics
+    before stored replay rows exist.
+  - Preserve M20 as `M20_POLICY_ROUTE_PAUSED_NO_POSITIVE_PROXY`.
+  - Do not capture, persist, or replay live data, execute DDL, create tables,
+    mutate `raw_trades`, `raw_ohlc`, or `feature_ohlc`, or change runtime
+    inference, registry, promotion, paper/live execution, trading/backtest
+    logic, model training, scoring, validation workflow, or profitability
+    claims.
+- Changed files:
+  - `app/training/market_microstructure_replay_audit.py`
+  - `scripts/audit_microstructure_replay.py`
+  - `tests/test_training_market_microstructure_replay_audit.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real output directory:
+  - `artifacts/research_data_upgrade/microstructure_replay_audit`
+- Real result:
+  - Audit status: `MICROSTRUCTURE_REPLAY_AUDIT_COMPLETE_DATA_BLOCKED`
+  - Stored replay rows available: `False`
+  - Coverage/gap metrics: `BLOCKED_NO_STORED_MICROSTRUCTURE_REPLAY_ROWS`
+  - Recommendation: `PLAN_OPTIONAL_ISOLATED_MICROSTRUCTURE_CAPTURE_SERVICE`
+  - Next required action: `DESIGN_ISOLATED_RESEARCH_MICROSTRUCTURE_CAPTURE_PLAN`

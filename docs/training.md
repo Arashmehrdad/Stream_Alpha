@@ -1361,6 +1361,28 @@ streams, create tables, run capture, persist rows, mutate `raw_trades`,
 `raw_ohlc`, or `feature_ohlc`, or change runtime, registry, promotion, trading,
 backtest, training, scoring, or profit claims.
 
+<!-- MICROSTRUCTURE_REPLAY_AUDIT -->
+## Microstructure Coverage Gap Replay Audit
+
+Command:
+python .\scripts\audit_microstructure_replay.py
+
+Writes `artifacts/research_data_upgrade/microstructure_replay_audit/` as an
+audit-only DU5 artifact.
+
+Current result: `MICROSTRUCTURE_REPLAY_AUDIT_COMPLETE_DATA_BLOCKED`; stored
+replay rows available `False`; coverage/gap metrics
+`BLOCKED_NO_STORED_MICROSTRUCTURE_REPLAY_ROWS`; recommendation
+`PLAN_OPTIONAL_ISOLATED_MICROSTRUCTURE_CAPTURE_SERVICE`; next required action
+`DESIGN_ISOLATED_RESEARCH_MICROSTRUCTURE_CAPTURE_PLAN`.
+
+The audit verifies the schema, parser, and feature-derivation artifacts and
+records that real coverage, gap, replay determinism, and checksum metrics are
+blocked until isolated research replay rows exist. It does not capture, persist,
+or replay live data, create tables, mutate `raw_trades`, `raw_ohlc`, or
+`feature_ohlc`, or change runtime, registry, promotion, trading, backtest,
+training, scoring, or profit claims.
+
 <!-- M13_RELIABILITY_RECOVERY_AUDIT -->
 ## M13 Reliability And Recovery Audit
 

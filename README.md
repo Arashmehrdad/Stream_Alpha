@@ -1454,3 +1454,16 @@ derives spread, relative spread, depth liquidity, and book imbalance samples
 from normalized static book fixtures. It does not read live streams, create
 tables, run capture, mutate existing ingestion contracts, or change runtime,
 registry, promotion, trading, backtest, training, scoring, or profit claims.
+
+<!-- MICROSTRUCTURE_REPLAY_AUDIT -->
+Microstructure coverage/gap/replay audit:
+Command: python .\scripts\audit_microstructure_replay.py
+Writes `artifacts/research_data_upgrade/microstructure_replay_audit/`.
+Current result: `MICROSTRUCTURE_REPLAY_AUDIT_COMPLETE_DATA_BLOCKED`; stored
+replay rows available `False`; coverage/gap metrics
+`BLOCKED_NO_STORED_MICROSTRUCTURE_REPLAY_ROWS`; recommendation
+`PLAN_OPTIONAL_ISOLATED_MICROSTRUCTURE_CAPTURE_SERVICE`; next required action
+`DESIGN_ISOLATED_RESEARCH_MICROSTRUCTURE_CAPTURE_PLAN`. This is audit-only: it
+does not capture, persist, replay live data, create tables, mutate existing
+ingestion contracts, or change runtime, registry, promotion, trading, backtest,
+training, scoring, or profit claims.
