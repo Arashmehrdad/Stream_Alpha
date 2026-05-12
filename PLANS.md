@@ -6922,3 +6922,35 @@ against naive baselines.
   - Normalized events: `2`
   - Recommendation: `DERIVE_RESEARCH_ONLY_MICROSTRUCTURE_FEATURES_FROM_CONTRACTS`
   - Next required action: `BUILD_RESEARCH_ONLY_MICROSTRUCTURE_FEATURE_DERIVATION`
+
+<!-- MICROSTRUCTURE_FEATURE_DERIVATION -->
+### Microstructure feature derivation
+
+- Scope:
+  - Add fixture-only research feature derivation from normalized static Kraken
+    book fixtures.
+  - Derive sample top-of-book spread, relative spread, bid/ask/total depth
+    liquidity, and order-book imbalance.
+  - Record feature contracts, derivation rules, leakage boundaries, and
+    blockers for stored replay coverage and trade-flow imbalance.
+  - Preserve M20 as `M20_POLICY_ROUTE_PAUSED_NO_POSITIVE_PROXY`.
+  - Do not read live streams, execute DDL, create tables, run capture, persist
+    rows, mutate `raw_trades`, `raw_ohlc`, or `feature_ohlc`, or change runtime
+    inference, registry, promotion, paper/live execution, trading/backtest
+    logic, model training, scoring, validation workflow, or profitability
+    claims.
+- Changed files:
+  - `app/training/market_microstructure_feature_derivation.py`
+  - `scripts/plan_microstructure_feature_derivation.py`
+  - `tests/test_training_market_microstructure_feature_derivation.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real output directory:
+  - `artifacts/research_data_upgrade/microstructure_feature_derivation`
+- Real result:
+  - Feature derivation status: `RESEARCH_ONLY_FEATURE_DERIVATION_DEFINED`
+  - Derived feature rows: `2`
+  - Feature contracts: `6`
+  - Recommendation: `ADD_COVERAGE_GAP_AND_REPLAY_DETERMINISM_REPORTS`
+  - Next required action: `BUILD_MICROSTRUCTURE_COVERAGE_GAP_REPLAY_AUDIT`

@@ -1340,6 +1340,27 @@ remaining blockers. It does not subscribe to book data, run capture, persist
 rows, mutate `raw_trades`, `raw_ohlc`, or `feature_ohlc`, or change runtime,
 registry, promotion, trading, backtest, training, scoring, or profit claims.
 
+<!-- MICROSTRUCTURE_FEATURE_DERIVATION -->
+## Microstructure Feature Derivation
+
+Command:
+python .\scripts\plan_microstructure_feature_derivation.py
+
+Writes `artifacts/research_data_upgrade/microstructure_feature_derivation/` as
+a fixture-only DU4 artifact.
+
+Current result: `RESEARCH_ONLY_FEATURE_DERIVATION_DEFINED`; derived feature
+rows `2`; feature contracts `6`; recommendation
+`ADD_COVERAGE_GAP_AND_REPLAY_DETERMINISM_REPORTS`; next required action
+`BUILD_MICROSTRUCTURE_COVERAGE_GAP_REPLAY_AUDIT`.
+
+The artifact derives sample top-of-book spread, relative spread, bid/ask/total
+depth liquidity, and order-book imbalance from normalized static book fixtures.
+It records derivation rules and leakage boundaries. It does not read live
+streams, create tables, run capture, persist rows, mutate `raw_trades`,
+`raw_ohlc`, or `feature_ohlc`, or change runtime, registry, promotion, trading,
+backtest, training, scoring, or profit claims.
+
 <!-- M13_RELIABILITY_RECOVERY_AUDIT -->
 ## M13 Reliability And Recovery Audit
 
