@@ -6984,3 +6984,34 @@ against naive baselines.
   - Coverage/gap metrics: `BLOCKED_NO_STORED_MICROSTRUCTURE_REPLAY_ROWS`
   - Recommendation: `PLAN_OPTIONAL_ISOLATED_MICROSTRUCTURE_CAPTURE_SERVICE`
   - Next required action: `DESIGN_ISOLATED_RESEARCH_MICROSTRUCTURE_CAPTURE_PLAN`
+
+<!-- MICROSTRUCTURE_CAPTURE_PLAN -->
+### Isolated research microstructure capture plan
+
+- Scope:
+  - Add a planning-only DU6 artifact for an optional isolated research
+    microstructure capture service.
+  - Define the service contract, isolation boundaries, future research storage
+    plan, operator runbook, safety gates, blocked decisions, and DU7-DU10
+    follow-up batches.
+  - Preserve M20 as `M20_POLICY_ROUTE_PAUSED_NO_POSITIVE_PROXY`.
+  - Do not implement capture, subscribe to book data, execute DDL, create
+    tables, persist rows, mutate `raw_trades`, `raw_ohlc`, or `feature_ohlc`,
+    or change runtime inference, registry, promotion, paper/live execution,
+    trading/backtest logic, model training, scoring, validation workflow, or
+    profitability claims.
+- Changed files:
+  - `app/training/market_microstructure_capture_plan.py`
+  - `scripts/plan_microstructure_capture.py`
+  - `tests/test_training_market_microstructure_capture_plan.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real output directory:
+  - `artifacts/research_data_upgrade/microstructure_capture_plan`
+- Real result:
+  - Capture plan status: `ISOLATED_RESEARCH_CAPTURE_PLAN_DEFINED`
+  - Capture implemented: `False`
+  - Runtime wiring changed: `False`
+  - Recommendation: `REQUIRE_APPROVAL_BEFORE_RESEARCH_CAPTURE_IMPLEMENTATION`
+  - Next required action: `APPROVE_OR_PAUSE_ISOLATED_MICROSTRUCTURE_CAPTURE`

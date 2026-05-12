@@ -1467,3 +1467,17 @@ replay rows available `False`; coverage/gap metrics
 does not capture, persist, replay live data, create tables, mutate existing
 ingestion contracts, or change runtime, registry, promotion, trading, backtest,
 training, scoring, or profit claims.
+
+<!-- MICROSTRUCTURE_CAPTURE_PLAN -->
+Isolated research microstructure capture plan:
+Command: python .\scripts\plan_microstructure_capture.py
+Writes `artifacts/research_data_upgrade/microstructure_capture_plan/`.
+Current result: `ISOLATED_RESEARCH_CAPTURE_PLAN_DEFINED`; capture implemented
+`False`; runtime wiring changed `False`; recommendation
+`REQUIRE_APPROVAL_BEFORE_RESEARCH_CAPTURE_IMPLEMENTATION`; next required action
+`APPROVE_OR_PAUSE_ISOLATED_MICROSTRUCTURE_CAPTURE`. This is planning-only: it
+defines an optional isolated research capture service boundary, storage plan,
+operator runbook, safety gates, and DU7-DU10 follow-up batches. It does not
+implement capture, create tables, mutate existing ingestion contracts, or
+change runtime, registry, promotion, trading, backtest, training, scoring, or
+profit claims.

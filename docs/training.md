@@ -1383,6 +1383,27 @@ or replay live data, create tables, mutate `raw_trades`, `raw_ohlc`, or
 `feature_ohlc`, or change runtime, registry, promotion, trading, backtest,
 training, scoring, or profit claims.
 
+<!-- MICROSTRUCTURE_CAPTURE_PLAN -->
+## Isolated Research Microstructure Capture Plan
+
+Command:
+python .\scripts\plan_microstructure_capture.py
+
+Writes `artifacts/research_data_upgrade/microstructure_capture_plan/` as a
+planning-only DU6 artifact.
+
+Current result: `ISOLATED_RESEARCH_CAPTURE_PLAN_DEFINED`; capture implemented
+`False`; runtime wiring changed `False`; recommendation
+`REQUIRE_APPROVAL_BEFORE_RESEARCH_CAPTURE_IMPLEMENTATION`; next required action
+`APPROVE_OR_PAUSE_ISOLATED_MICROSTRUCTURE_CAPTURE`.
+
+The plan defines a possible isolated research capture service boundary, future
+research-only storage targets, operator runbook, safety gates, and DU7-DU10
+follow-up batches. It does not implement capture, create tables, subscribe to
+book data, mutate `raw_trades`, `raw_ohlc`, or `feature_ohlc`, or change
+runtime, registry, promotion, trading, backtest, training, scoring, or profit
+claims. Any implementation requires separate explicit approval.
+
 <!-- M13_RELIABILITY_RECOVERY_AUDIT -->
 ## M13 Reliability And Recovery Audit
 
