@@ -1189,3 +1189,15 @@ python .\scripts\evaluate_m20_decision_policies.py --source-run-dir .\artifacts\
 python .\scripts\plan_m20_shadow_observer.py --source-run-dir .\artifacts\training\m20\20260506T054337Z --policy-eval-dir .\artifacts\training\m20\20260506T054337Z\research_labels\vol_scaled\trading_aware_policy_eval
 
 Writes `policy_input_availability_audit/`, `decision_policy_eval/`, `policy_validation_audit/`, `trading_aware_labels/`, `trading_aware_policy_eval/`, `trading_aware_policy_validation_audit/`, and `shadow_adaptation_observer_plan/`. Current result: policy inputs are available, 70 generic decision policies were evaluated, trading-aware labels wrote 312,485 rows, label-aware policy evaluation still found no adequate positive proxy policy, and the shadow observer plan recommends `PAUSE_M20_POLICY_ROUTE_AND_REDESIGN_INPUTS`. All artifacts remain `RESEARCH_ONLY`, `NO_RUNTIME_EFFECT`, `NOT_BACKTEST`, `NOT_RUNTIME_READY`, `NOT_PROMOTABLE`, and `NO_PROFIT_CLAIM`.
+
+<!-- M20_INPUT_REDESIGN_RECOVERY -->
+M20 input-redesign recovery:
+Commands:
+python .\scripts\analyze_m20_input_failures.py --source-run-dir .\artifacts\training\m20\20260506T054337Z
+python .\scripts\build_m20_research_input_catalogue.py --source-run-dir .\artifacts\training\m20\20260506T054337Z --prediction-run-dir .\artifacts\training\m20\20260507T135017Z
+python .\scripts\plan_m20_input_redesign.py --source-run-dir .\artifacts\training\m20\20260506T054337Z
+python .\scripts\build_m20_redesigned_research_inputs.py --source-run-dir .\artifacts\training\m20\20260506T054337Z
+python .\scripts\evaluate_m20_decision_policies.py --source-run-dir .\artifacts\training\m20\20260506T054337Z --prediction-run-dir .\artifacts\training\m20\20260507T135017Z --research-input-dir .\artifacts\training\m20\20260506T054337Z\research_labels\vol_scaled\m20_redesigned_research_inputs --label-column fee_plus_slippage_exceedance_6 --output-name m20_redesigned_policy_eval
+python .\scripts\write_m20_input_redesign_decision.py --source-run-dir .\artifacts\training\m20\20260506T054337Z --policy-eval-dir .\artifacts\training\m20\20260506T054337Z\research_labels\vol_scaled\m20_redesigned_policy_eval
+
+Writes `m20_input_failure_analysis/`, `m20_research_input_catalogue/`, `m20_input_redesign_plan/`, `m20_redesigned_research_inputs/`, `m20_redesigned_policy_eval/`, and `m20_input_redesign_decision/`. The blocked 6/12-candle labels are now safe-computable research outcomes from existing enriched OHLCV features: `fee_plus_slippage_exceedance_6` has 312,476 usable rows and `fee_plus_slippage_exceedance_12` has 312,458 usable rows. The generic policy rerun remains economics-negative; final decision is `M20_POLICY_ROUTE_PAUSED_NO_POSITIVE_PROXY`. No runtime, registry, promotion, training, scoring, backtest, trading, or profit claim behavior is changed.

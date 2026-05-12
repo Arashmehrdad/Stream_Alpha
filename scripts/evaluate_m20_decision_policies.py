@@ -27,6 +27,8 @@ def main() -> None:
     parser.add_argument("--candidate-dir")
     parser.add_argument("--economic-outcome-dir")
     parser.add_argument("--trading-aware-label-dir")
+    parser.add_argument("--research-input-dir")
+    parser.add_argument("--label-column", default="fee_plus_slippage_exceedance_label")
     parser.add_argument("--output-name", default=DEFAULT_OUTPUT_NAME)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
@@ -40,6 +42,8 @@ def main() -> None:
         trading_aware_label_dir=(
             Path(args.trading_aware_label_dir) if args.trading_aware_label_dir else None
         ),
+        research_input_dir=Path(args.research_input_dir) if args.research_input_dir else None,
+        label_column=args.label_column,
         output_name=args.output_name,
     )
     if args.json:

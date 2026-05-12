@@ -1140,3 +1140,18 @@ python .\scripts\plan_m20_shadow_observer.py --source-run-dir .\artifacts\traini
 The recovery path first audits policy-input availability, then evaluates bounded generic TAKE/HOLD policies from existing OOF predictions, refined candidate events, and safe economic outcomes. It adds validation/search-breadth audit artifacts, builds research-only trading-aware labels for calibration diagnostics, reruns the same evaluator with those labels, and writes a shadow-observer plan artifact. Current result: 70 generic policies evaluated before and after trading-aware labels; no adequate positive proxy policy; shadow observer recommendation `PAUSE_M20_POLICY_ROUTE_AND_REDESIGN_INPUTS`.
 
 These tools do not train, score, change runtime behavior, write registry or promotion state, change trading/backtest logic, or make profit claims. Policy selection blocks future/net/economic outcome columns as inputs; those columns are outcome diagnostics only.
+
+<!-- M20_INPUT_REDESIGN_RECOVERY -->
+## Research-Only M20 Input Redesign Recovery
+
+Commands:
+python .\scripts\analyze_m20_input_failures.py --source-run-dir .\artifacts\training\m20\20260506T054337Z
+python .\scripts\build_m20_research_input_catalogue.py --source-run-dir .\artifacts\training\m20\20260506T054337Z --prediction-run-dir .\artifacts\training\m20\20260507T135017Z
+python .\scripts\plan_m20_input_redesign.py --source-run-dir .\artifacts\training\m20\20260506T054337Z
+python .\scripts\build_m20_redesigned_research_inputs.py --source-run-dir .\artifacts\training\m20\20260506T054337Z
+python .\scripts\evaluate_m20_decision_policies.py --source-run-dir .\artifacts\training\m20\20260506T054337Z --prediction-run-dir .\artifacts\training\m20\20260507T135017Z --research-input-dir .\artifacts\training\m20\20260506T054337Z\research_labels\vol_scaled\m20_redesigned_research_inputs --label-column fee_plus_slippage_exceedance_6 --output-name m20_redesigned_policy_eval
+python .\scripts\write_m20_input_redesign_decision.py --source-run-dir .\artifacts\training\m20\20260506T054337Z --policy-eval-dir .\artifacts\training\m20\20260506T054337Z\research_labels\vol_scaled\m20_redesigned_policy_eval
+
+This path explains why the candidate/policy routes failed, catalogues available and missing research inputs, recovers safe 6/12-candle research labels from enriched OHLCV rows, and reruns the generic policy evaluator using those redesigned labels for diagnostics. Current result: `fee_plus_slippage_exceedance_6` and `fee_plus_slippage_exceedance_12` are available, but the policy rerun remains economics-negative. Final decision: `M20_POLICY_ROUTE_PAUSED_NO_POSITIVE_PROXY`.
+
+The recovered labels are research outcomes only. They are not runtime inputs, not training-frame mutations, not backtest evidence, not promotion evidence, and not profit claims.

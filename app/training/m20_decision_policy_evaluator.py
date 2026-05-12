@@ -29,6 +29,7 @@ DEFAULT_OUTPUT_NAME = "decision_policy_eval"
 DEFAULT_CANDIDATE_DIR_NAME = "strategy_candidate_v2_refined_factory"
 DEFAULT_ECONOMIC_DIR_NAME = "economic_outcome_artifacts"
 DEFAULT_LABEL_DIR_NAME = "trading_aware_labels"
+DEFAULT_RESEARCH_INPUT_FILE = "multi_horizon_labels.csv"
 THRESHOLDS = (0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90)
 INTERSECTION_THRESHOLDS = (0.60, 0.70)
 
@@ -41,6 +42,8 @@ def evaluate_m20_decision_policies(
     candidate_dir: Path | None = None,
     economic_outcome_dir: Path | None = None,
     trading_aware_label_dir: Path | None = None,
+    research_input_dir: Path | None = None,
+    label_column: str = "fee_plus_slippage_exceedance_label",
 ) -> dict[str, Any]:
     """Evaluate generic TAKE/HOLD policies from existing offline artifacts."""
     # pylint: disable=too-many-arguments,too-many-locals,too-many-statements
@@ -55,18 +58,27 @@ def evaluate_m20_decision_policies(
         candidate_dir,
         economic_outcome_dir,
         trading_aware_label_dir,
+        research_input_dir,
     )
     oof_rows = read_csv_rows(paths["oof_predictions"])
     outcome_rows = read_csv_rows(paths["economic_outcomes"])
     candidate_rows = read_csv_rows(paths["strategy_candidates"])
     label_rows = read_csv_rows(paths["trading_aware_labels"])
+    research_input_rows = read_csv_rows(paths["research_inputs"])
     if not oof_rows:
         raise ValueError(f"Missing OOF predictions: {paths['oof_predictions']}")
     if not outcome_rows:
         raise ValueError(f"Missing economic outcomes: {paths['economic_outcomes']}")
     outcome_index = keyed_rows(outcome_rows, KEY_WITH_FOLD)
     label_index = keyed_rows(label_rows, KEY_WITH_FOLD)
-    enriched_rows = _enrich_oof_rows(oof_rows, outcome_index, label_index)
+    research_input_index = keyed_rows(research_input_rows, KEY_WITH_FOLD)
+    enriched_rows = _enrich_oof_rows(
+        oof_rows,
+        outcome_index,
+        label_index,
+        research_input_index,
+        label_column,
+    )
     candidate_keys = _candidate_keys(candidate_rows)
     policies = _policy_specs(enriched_rows, candidate_keys)
     rows_by_model = _rows_by_model(enriched_rows)
@@ -87,6 +99,7 @@ def evaluate_m20_decision_policies(
         "source_run_dir": str(source_dir),
         "prediction_run_dir": str(prediction_dir),
         "input_paths": {name: str(path) for name, path in paths.items()},
+        "diagnostic_label_column": label_column,
         "policy_count": len(metrics),
         "search_breadth": search_breadth,
         "honesty_flags": list(HONESTY_FLAGS),
@@ -142,7 +155,9 @@ def _input_paths(
     candidate_dir: Path | None,
     economic_outcome_dir: Path | None,
     trading_aware_label_dir: Path | None,
+    research_input_dir: Path | None,
 ) -> dict[str, Path]:
+    # pylint: disable=too-many-arguments,too-many-positional-arguments
     candidates = (
         Path(candidate_dir).resolve()
         if candidate_dir
@@ -158,11 +173,17 @@ def _input_paths(
         if trading_aware_label_dir
         else research_dir / DEFAULT_LABEL_DIR_NAME
     )
+    research_inputs = Path(research_input_dir).resolve() if research_input_dir else None
     return {
         "oof_predictions": prediction_dir / "oof_predictions.csv",
         "economic_outcomes": outcomes / "economic_outcomes.csv",
         "strategy_candidates": candidates / "strategy_candidates_v2.csv",
         "trading_aware_labels": labels / "trading_aware_labels.csv",
+        "research_inputs": (
+            research_inputs / DEFAULT_RESEARCH_INPUT_FILE
+            if research_inputs
+            else Path("__missing_optional_research_inputs__.csv")
+        ),
     }
 
 
@@ -170,6 +191,8 @@ def _enrich_oof_rows(
     oof_rows: Sequence[Mapping[str, str]],
     outcome_index: Mapping[tuple[str, ...], Mapping[str, Any]],
     label_index: Mapping[tuple[str, ...], Mapping[str, Any]],
+    research_input_index: Mapping[tuple[str, ...], Mapping[str, Any]],
+    label_column: str,
 ) -> list[dict[str, Any]]:
     output = []
     for row in oof_rows:
@@ -178,6 +201,7 @@ def _enrich_oof_rows(
         if outcome is None:
             continue
         label = label_index.get(key, {})
+        research_input = research_input_index.get(key, {})
         output.append(
             {
                 **row,
@@ -186,6 +210,7 @@ def _enrich_oof_rows(
                 "fee_exceedance_label": outcome.get("fee_exceedance_label", ""),
                 "triple_barrier_label": outcome.get("triple_barrier_label", ""),
                 "trading_aware_label": label.get("fee_plus_slippage_exceedance_label", ""),
+                "redesigned_label": research_input.get(label_column, ""),
             }
         )
     return output
@@ -417,7 +442,7 @@ def _baseline_comparison(
 
 def _calibration_metrics(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     output = []
-    for label_column in ("y_true", "trading_aware_label"):
+    for label_column in ("y_true", "trading_aware_label", "redesigned_label"):
         usable = [
             row for row in rows
             if present(row.get("prob_up")) and present(row.get(label_column))

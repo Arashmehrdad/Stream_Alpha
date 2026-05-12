@@ -6319,3 +6319,49 @@ against naive baselines.
   - Label-aware policy eval: `70` policies, same best proxy candidate, no adequate positive proxy policy, recommendation `DESIGN_TRADING_AWARE_RESEARCH_LABELS`.
   - Shadow observer plan: plausible policy count `0`, recommendation `PAUSE_M20_POLICY_ROUTE_AND_REDESIGN_INPUTS`.
   - Current blockers: `NO_POLICY_READY_FOR_SHADOW_OBSERVATION`, `NOT_BACKTEST`, `NOT_RUNTIME_READY`, `NOT_PROMOTABLE`, `NO_PROFIT_CLAIM`.
+
+<!-- M20_INPUT_REDESIGN_RECOVERY -->
+### M20 generic pipeline Batches V-AA - input redesign recovery
+
+- Scope:
+  - Add a reusable input failure analyzer over current candidate, policy, label, validation, and shadow artifacts.
+  - Add a research input catalogue and blocked-label audit for available/missing features, labels, outcomes, candidates, OOF probabilities, leakage risk, and safe computability.
+  - Add a safe input redesign plan for multi-horizon labels, fee/slippage exceedance labels, volatility-scaled triple-barrier labels, event masks, and meta-label inputs.
+  - Add redesigned research-only inputs from enriched OHLCV features without mutating `training_frame/`.
+  - Extend the generic decision-policy evaluator with optional `--research-input-dir` and `--label-column` diagnostic label support.
+  - Add a final input-redesign decision artifact.
+  - Preserve `RESEARCH_ONLY`, `NO_RUNTIME_EFFECT`, `NOT_BACKTEST`, `NOT_RUNTIME_READY`, `NOT_PROMOTABLE`, and `NO_PROFIT_CLAIM`.
+  - Do not change runtime inference, registry, promotion, paper/live execution, trading/backtest logic, model training, scoring, prediction exports, validation workflow, or profitability claims.
+- Changed files:
+  - `app/training/m20_input_failure_analysis.py`
+  - `app/training/m20_research_input_catalogue.py`
+  - `app/training/m20_input_redesign_plan.py`
+  - `app/training/m20_redesigned_research_inputs.py`
+  - `app/training/m20_input_redesign_decision.py`
+  - `app/training/m20_decision_policy_evaluator.py`
+  - `scripts/analyze_m20_input_failures.py`
+  - `scripts/build_m20_research_input_catalogue.py`
+  - `scripts/plan_m20_input_redesign.py`
+  - `scripts/build_m20_redesigned_research_inputs.py`
+  - `scripts/write_m20_input_redesign_decision.py`
+  - `scripts/evaluate_m20_decision_policies.py`
+  - `tests/test_training_m20_input_redesign_recovery.py`
+  - `tests/test_training_m20_decision_policy_evaluator.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real output directories:
+  - `artifacts/training/m20/20260506T054337Z/research_labels/vol_scaled/m20_input_failure_analysis`
+  - `artifacts/training/m20/20260506T054337Z/research_labels/vol_scaled/m20_research_input_catalogue`
+  - `artifacts/training/m20/20260506T054337Z/research_labels/vol_scaled/m20_input_redesign_plan`
+  - `artifacts/training/m20/20260506T054337Z/research_labels/vol_scaled/m20_redesigned_research_inputs`
+  - `artifacts/training/m20/20260506T054337Z/research_labels/vol_scaled/m20_redesigned_policy_eval`
+  - `artifacts/training/m20/20260506T054337Z/research_labels/vol_scaled/m20_input_redesign_decision`
+- Real result:
+  - Failure analysis recommendation: `BUILD_RESEARCH_INPUT_CATALOGUE_AND_REDESIGN_PLAN`.
+  - Research input catalogue: `forward_return_6_candles` and `forward_return_12_candles` marked `SAFE_COMPUTABLE_RESEARCH_LABEL`.
+  - Redesign plan: `5` ready specs, recommendation `BUILD_M20_REDESIGNED_RESEARCH_INPUTS`.
+  - Redesigned inputs: `312494` rows; `fee_plus_slippage_exceedance_6` usable rows `312476`, positive rate `0.2740466468`; `fee_plus_slippage_exceedance_12` usable rows `312458`, positive rate `0.3307964590`.
+  - Redesigned policy eval: `70` policies; best proxy candidate `neuralforecast_nhits:CANDIDATE_refined_hold_avoid_extreme_context`; still `POLICY_ECONOMICS_NEGATIVE` with mean net proxy `-0.0019366831`.
+  - Final decision: `M20_POLICY_ROUTE_PAUSED_NO_POSITIVE_PROXY`.
+  - Recommendation: `PAUSE_M20_POLICY_ROUTE_AND_REDESIGN_INPUTS`.
