@@ -1231,3 +1231,15 @@ risk configuration contract, pure risk engine, RegimeContext/readiness boundary,
 risk persistence, decision-trace enrichment, runner authority, and downstream
 order-request surface without changing runtime, registry, promotion, trading,
 backtest, training, scoring, or M20 status.
+
+<!-- M11_EXECUTION_INTERFACE_AUDIT -->
+M11 execution interface audit:
+Command: python .\scripts\audit_m11_execution_interface.py
+Writes `artifacts/platform_maturity/m11/execution_interface_audit/`.
+Current audit result: `M11_EXECUTION_INTERFACE_CONSOLIDATED`; gap count `0`;
+recommendation `PROCEED_TO_M12_GUARDED_LIVE_AUDIT`; next required action
+`AUDIT_M12_GUARDED_LIVE_CONTROLS`. The audit confirms deterministic order
+requests, idempotency keys, paper/shadow/live adapters, lifecycle persistence,
+M10-to-M11 risk authority boundaries, and guarded-live submit gates without
+changing runtime, registry, promotion, execution, trading, backtest, training,
+scoring, or M20 status.

@@ -1203,3 +1203,22 @@ recommendation `PROCEED_TO_M11_EXECUTION_INTERFACE_AUDIT`; next required action
 
 The audit does not reopen M20, does not change runtime behavior, and creates no
 promotion, backtest, trading, or profit claim.
+
+<!-- M11_EXECUTION_INTERFACE_AUDIT -->
+## M11 Execution Interface Audit
+
+Command:
+python .\scripts\audit_m11_execution_interface.py
+
+Writes `artifacts/platform_maturity/m11/execution_interface_audit/` as the
+audit-first M11 platform-maturity artifact. It records deterministic order
+request contracts, idempotency keys, paper/shadow/live adapters, order lifecycle
+truth, persistence surfaces, M10-to-M11 risk authority boundaries, and guarded
+live submit gates.
+
+Current result: `M11_EXECUTION_INTERFACE_CONSOLIDATED`; gap count `0`;
+recommendation `PROCEED_TO_M12_GUARDED_LIVE_AUDIT`; next required action
+`AUDIT_M12_GUARDED_LIVE_CONTROLS`.
+
+The audit does not reopen M20, does not change runtime behavior, and creates no
+promotion, backtest, trading, execution, or profit claim.

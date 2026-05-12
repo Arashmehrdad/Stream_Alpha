@@ -6453,3 +6453,27 @@ against naive baselines.
   - Gap count: `0`
   - Recommendation: `PROCEED_TO_M11_EXECUTION_INTERFACE_AUDIT`
   - Next required action: `AUDIT_M11_EXECUTION_INTERFACE_WITH_RISK_AUTHORITY`
+
+<!-- M11_EXECUTION_INTERFACE_AUDIT -->
+### M11 platform maturity - audit-first execution interface
+
+- Scope:
+  - Add an artifact-backed M11 execution-interface audit.
+  - Audit deterministic order requests, idempotency keys, paper/shadow/live adapters, order lifecycle truth, order persistence, M10-to-M11 risk authority boundaries, and guarded-live submit gates.
+  - Confirm M11 execution boundaries without changing execution behavior.
+  - Preserve M20 as `M20_POLICY_ROUTE_PAUSED_NO_POSITIVE_PROXY`.
+  - Do not change runtime inference, registry, promotion, paper/live execution, trading/backtest logic, model training, scoring, validation workflow, or profitability claims.
+- Changed files:
+  - `app/trading/m11_execution_interface_audit.py`
+  - `scripts/audit_m11_execution_interface.py`
+  - `tests/test_trading_m11_execution_interface_audit.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real output directory:
+  - `artifacts/platform_maturity/m11/execution_interface_audit`
+- Real result:
+  - M11 state: `M11_EXECUTION_INTERFACE_CONSOLIDATED`
+  - Gap count: `0`
+  - Recommendation: `PROCEED_TO_M12_GUARDED_LIVE_AUDIT`
+  - Next required action: `AUDIT_M12_GUARDED_LIVE_CONTROLS`
