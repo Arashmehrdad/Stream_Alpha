@@ -1402,3 +1402,16 @@ recommendation `PLAN_DATA_UPGRADE_IMPLEMENTATION_BATCHES`, next required action
 it covers order book/depth, spread/liquidity, trade-flow imbalance,
 same-venue execution quality, untouched evaluation segments, lower-turnover
 event labels, storage/replay, leakage boundaries, and explicit non-claims.
+
+<!-- MARKET_MICROSTRUCTURE_INGESTION_PLAN -->
+Market microstructure research ingestion plan:
+Command: python .\scripts\plan_market_microstructure_ingestion.py
+Writes `artifacts/research_data_upgrade/market_microstructure_ingestion_plan/`.
+Current result: proposed source `kraken_public_websocket_v2`, `3` blocked
+planning decisions, recommendation
+`IMPLEMENT_RESEARCH_ONLY_MICROSTRUCTURE_SCHEMA_CONTRACTS`, next required action
+`BUILD_RESEARCH_ONLY_MICROSTRUCTURE_SCHEMA_AND_REPLAY_CONTRACTS`. This is
+planning-only: it defines order book/depth, spread/liquidity, trade-flow
+imbalance, deterministic replay, storage contracts, leakage boundaries, and
+future DU2-DU6 batches. It does not implement capture, ingestion, runtime,
+registry, promotion, trading, backtest, training, scoring, or profit claims.

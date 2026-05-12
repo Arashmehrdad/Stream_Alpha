@@ -1278,6 +1278,27 @@ event labels, storage/replay, and leakage-safe boundaries. It does not implement
 ingestion, training, scoring, runtime behavior, promotion, trading, backtest, or
 profit claims.
 
+<!-- MARKET_MICROSTRUCTURE_INGESTION_PLAN -->
+## Market Microstructure Research Ingestion Plan
+
+Command:
+python .\scripts\plan_market_microstructure_ingestion.py
+
+Writes `artifacts/research_data_upgrade/market_microstructure_ingestion_plan/`
+as a planning-only contract for the next data-upgrade route.
+
+Current result: proposed source `kraken_public_websocket_v2`; blocked planning
+decisions `3`; recommendation
+`IMPLEMENT_RESEARCH_ONLY_MICROSTRUCTURE_SCHEMA_CONTRACTS`; next required action
+`BUILD_RESEARCH_ONLY_MICROSTRUCTURE_SCHEMA_AND_REPLAY_CONTRACTS`.
+
+The plan defines research-only order book/depth, top-of-book spread,
+liquidity-depth, trade-flow imbalance, deterministic replay, storage contracts,
+feature derivation, leakage boundaries, and DU2-DU6 future batches. It does not
+implement capture, ingestion, runtime behavior, registry behavior, promotion,
+trading, backtest, training, scoring, or profit claims. M20 remains paused as
+`M20_POLICY_ROUTE_PAUSED_NO_POSITIVE_PROXY`.
+
 <!-- M13_RELIABILITY_RECOVERY_AUDIT -->
 ## M13 Reliability And Recovery Audit
 

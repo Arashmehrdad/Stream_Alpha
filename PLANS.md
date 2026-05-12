@@ -6834,3 +6834,31 @@ against naive baselines.
   - Blocked routes requiring data-source decisions: `6`
   - Recommendation: `PLAN_DATA_UPGRADE_IMPLEMENTATION_BATCHES`
   - Next required action: `DESIGN_MARKET_MICROSTRUCTURE_RESEARCH_INGESTION_PLAN`
+
+<!-- MARKET_MICROSTRUCTURE_INGESTION_PLAN -->
+### Market microstructure research ingestion plan
+
+- Scope:
+  - Add a planning-only market microstructure ingestion artifact.
+  - Define Kraken public WebSocket v2 as the first research source decision.
+  - Propose research-only contracts for order book/depth snapshots, top-of-book
+    spread, depth liquidity, trade-flow imbalance, storage, replay, and feature
+    derivation.
+  - Preserve M20 as `M20_POLICY_ROUTE_PAUSED_NO_POSITIVE_PROXY`.
+  - Do not implement capture, ingestion, runtime inference, registry,
+    promotion, paper/live execution, trading/backtest logic, model training,
+    scoring, validation workflow, or profitability claims.
+- Changed files:
+  - `app/training/market_microstructure_ingestion_plan.py`
+  - `scripts/plan_market_microstructure_ingestion.py`
+  - `tests/test_training_market_microstructure_ingestion_plan.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real output directory:
+  - `artifacts/research_data_upgrade/market_microstructure_ingestion_plan`
+- Real result:
+  - Proposed source: `kraken_public_websocket_v2`
+  - Blocked planning decisions: `3`
+  - Recommendation: `IMPLEMENT_RESEARCH_ONLY_MICROSTRUCTURE_SCHEMA_CONTRACTS`
+  - Next required action: `BUILD_RESEARCH_ONLY_MICROSTRUCTURE_SCHEMA_AND_REPLAY_CONTRACTS`
