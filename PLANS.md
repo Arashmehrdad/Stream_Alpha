@@ -7015,3 +7015,28 @@ against naive baselines.
   - Runtime wiring changed: `False`
   - Recommendation: `REQUIRE_APPROVAL_BEFORE_RESEARCH_CAPTURE_IMPLEMENTATION`
   - Next required action: `APPROVE_OR_PAUSE_ISOLATED_MICROSTRUCTURE_CAPTURE`
+
+<!-- MICROSTRUCTURE_STORAGE_CONTRACTS -->
+### Microstructure storage contracts
+
+- Scope:
+  - Add DU7 dry-run storage contracts for research microstructure tables.
+  - Emit DDL text for `research_raw_order_book`, `research_order_book_replay`,
+    `research_microstructure_features`, and `research_capture_health`.
+  - Block DDL execution in this batch.
+  - Do not mutate `raw_trades`, `raw_ohlc`, `feature_ohlc`, runtime ingestion,
+    registry, promotion, trading/backtest logic, training, scoring, or claims.
+- Changed files:
+  - `app/training/microstructure_storage_contracts.py`
+  - `scripts/prepare_microstructure_research_schema.py`
+  - `tests/test_training_microstructure_storage_contracts.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real output directory:
+  - `artifacts/research_data_upgrade/microstructure_storage_contracts`
+- Real result:
+  - Storage contract status: `RESEARCH_STORAGE_CONTRACTS_DEFINED_DRY_RUN`
+  - DDL apply executed: `False`
+  - Recommendation: `BUILD_ISOLATED_RESEARCH_CAPTURE_SERVICE_DRY_RUN`
+  - Next required action: `IMPLEMENT_DRY_RUN_MICROSTRUCTURE_CAPTURE_SERVICE`

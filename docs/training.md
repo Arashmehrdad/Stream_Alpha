@@ -1404,6 +1404,22 @@ book data, mutate `raw_trades`, `raw_ohlc`, or `feature_ohlc`, or change
 runtime, registry, promotion, trading, backtest, training, scoring, or profit
 claims. Any implementation requires separate explicit approval.
 
+<!-- MICROSTRUCTURE_STORAGE_CONTRACTS -->
+## Microstructure Storage Contracts
+
+Command:
+python .\scripts\prepare_microstructure_research_schema.py
+
+Writes `artifacts/research_data_upgrade/microstructure_storage_contracts/`.
+Current result: `RESEARCH_STORAGE_CONTRACTS_DEFINED_DRY_RUN`; DDL apply
+executed `False`; recommendation `BUILD_ISOLATED_RESEARCH_CAPTURE_SERVICE_DRY_RUN`;
+next required action `IMPLEMENT_DRY_RUN_MICROSTRUCTURE_CAPTURE_SERVICE`.
+
+This DU7 batch emits research-only DDL text and table contracts for future
+microstructure storage. It does not execute DDL, create tables, mutate
+`raw_trades`, `raw_ohlc`, or `feature_ohlc`, or change runtime, registry,
+promotion, trading, backtest, training, scoring, or profit claims.
+
 <!-- M13_RELIABILITY_RECOVERY_AUDIT -->
 ## M13 Reliability And Recovery Audit
 

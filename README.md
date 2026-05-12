@@ -1481,3 +1481,13 @@ operator runbook, safety gates, and DU7-DU10 follow-up batches. It does not
 implement capture, create tables, mutate existing ingestion contracts, or
 change runtime, registry, promotion, trading, backtest, training, scoring, or
 profit claims.
+
+<!-- MICROSTRUCTURE_STORAGE_CONTRACTS -->
+Microstructure storage contracts:
+Command: python .\scripts\prepare_microstructure_research_schema.py
+Writes `artifacts/research_data_upgrade/microstructure_storage_contracts/`.
+Current result: `RESEARCH_STORAGE_CONTRACTS_DEFINED_DRY_RUN`; DDL apply
+executed `False`; recommendation `BUILD_ISOLATED_RESEARCH_CAPTURE_SERVICE_DRY_RUN`;
+next required action `IMPLEMENT_DRY_RUN_MICROSTRUCTURE_CAPTURE_SERVICE`. This
+is dry-run only and does not create tables or mutate existing ingestion/runtime
+contracts.
