@@ -1242,6 +1242,42 @@ recommendation `PROCEED_TO_M13_RELIABILITY_RECOVERY_AUDIT`; next required action
 The audit does not reopen M20, does not change runtime behavior, and creates no
 promotion, backtest, trading, execution, live-readiness, or profit claim.
 
+<!-- M22_PLATFORM_MATURITY_CLOSEOUT -->
+## M22 Platform Maturity Closeout
+
+Command:
+python .\scripts\write_m22_platform_maturity_closeout.py
+
+Writes `artifacts/platform_maturity/m22/platform_maturity_closeout/` as the
+canonical M9-M21 evidence-index and closeout artifact.
+
+Current result: `SECOND_FOUNDATION_PLATFORM_MATURITY_AUDITS_COMPLETE`; gap
+count `0`; recommendation `PLAN_DATA_UPGRADE_BEFORE_REOPENING_ALPHA_RESEARCH`;
+next required action `DESIGN_RESEARCH_DATA_UPGRADE_FEASIBILITY_PLAN`.
+
+The closeout preserves `M20_POLICY_ROUTE_PAUSED_NO_POSITIVE_PROXY`. It does not
+change runtime behavior and creates no promotion, backtest, trading, execution,
+live-readiness, or profit claim.
+
+<!-- RESEARCH_DATA_UPGRADE_FEASIBILITY_PLAN -->
+## Research Data-Upgrade Feasibility Plan
+
+Command:
+python .\scripts\plan_research_data_upgrade.py
+
+Writes `artifacts/research_data_upgrade/feasibility_plan/` as a planning-only
+route before reopening alpha research.
+
+Current result: `7` required data families and `6` data-source decision
+blockers. Recommendation `PLAN_DATA_UPGRADE_IMPLEMENTATION_BATCHES`; next
+required action `DESIGN_MARKET_MICROSTRUCTURE_RESEARCH_INGESTION_PLAN`.
+
+The plan covers order book/depth, spread/liquidity, trade-flow imbalance,
+same-venue execution quality, untouched evaluation segments, lower-turnover
+event labels, storage/replay, and leakage-safe boundaries. It does not implement
+ingestion, training, scoring, runtime behavior, promotion, trading, backtest, or
+profit claims.
+
 <!-- M13_RELIABILITY_RECOVERY_AUDIT -->
 ## M13 Reliability And Recovery Audit
 

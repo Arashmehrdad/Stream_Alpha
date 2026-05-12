@@ -6779,3 +6779,58 @@ against naive baselines.
   - `python -m py_compile app/continual_learning/m21_continual_learning_audit.py scripts/audit_m21_continual_learning.py` -> passed
   - `python -m pylint --fail-under=10 app/continual_learning/m21_continual_learning_audit.py tests/test_continual_learning_m21_audit.py` -> `10.00/10`
   - `python scripts/audit_m21_continual_learning.py` -> consolidated, gap count `0`
+
+<!-- M22_PLATFORM_MATURITY_CLOSEOUT -->
+### M22 platform maturity - closeout and evidence index
+
+- Scope:
+  - Add a canonical M9-M21 platform-maturity closeout artifact.
+  - Read existing audit reports and recommendations from M9 through M21.
+  - Record milestone status, remaining limitations, explicit non-claims, and
+    next actions.
+  - Preserve M20 as `M20_POLICY_ROUTE_PAUSED_NO_POSITIVE_PROXY`.
+  - Do not change runtime inference, registry, promotion, paper/live execution,
+    trading/backtest logic, model training, scoring, validation workflow, or
+    profitability claims.
+- Changed files:
+  - `app/runtime/m22_platform_maturity_closeout.py`
+  - `scripts/write_m22_platform_maturity_closeout.py`
+  - `tests/test_runtime_m22_platform_maturity_closeout.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real output directory:
+  - `artifacts/platform_maturity/m22/platform_maturity_closeout`
+- Real result:
+  - Platform state: `SECOND_FOUNDATION_PLATFORM_MATURITY_AUDITS_COMPLETE`
+  - Gap count: `0`
+  - Recommendation: `PLAN_DATA_UPGRADE_BEFORE_REOPENING_ALPHA_RESEARCH`
+  - Next required action: `DESIGN_RESEARCH_DATA_UPGRADE_FEASIBILITY_PLAN`
+
+<!-- RESEARCH_DATA_UPGRADE_FEASIBILITY_PLAN -->
+### Research data-upgrade feasibility plan
+
+- Scope:
+  - Add a planning-only research data-upgrade feasibility artifact.
+  - Cover order book/depth, spread/liquidity, trade-flow imbalance,
+    same-venue execution quality, untouched evaluation segments,
+    lower-turnover event labels, storage/replay requirements, and leakage-safe
+    feature/label boundaries.
+  - Preserve M20 as `M20_POLICY_ROUTE_PAUSED_NO_POSITIVE_PROXY`.
+  - Do not implement ingestion, runtime inference, registry, promotion,
+    paper/live execution, trading/backtest logic, model training, scoring,
+    validation workflow, or profitability claims.
+- Changed files:
+  - `app/training/research_data_upgrade_plan.py`
+  - `scripts/plan_research_data_upgrade.py`
+  - `tests/test_training_research_data_upgrade_plan.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real output directory:
+  - `artifacts/research_data_upgrade/feasibility_plan`
+- Real result:
+  - Required data families: `7`
+  - Blocked routes requiring data-source decisions: `6`
+  - Recommendation: `PLAN_DATA_UPGRADE_IMPLEMENTATION_BATCHES`
+  - Next required action: `DESIGN_MARKET_MICROSTRUCTURE_RESEARCH_INGESTION_PLAN`

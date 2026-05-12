@@ -1379,3 +1379,26 @@ repository persistence, inference endpoints, decision-trace context, dashboard
 visibility, and M20 paused/non-authoritative status without changing runtime,
 registry, promotion, execution, trading, backtest, training, scoring, or
 profit-claim behavior.
+
+<!-- M22_PLATFORM_MATURITY_CLOSEOUT -->
+M22 platform maturity closeout:
+Command: python .\scripts\write_m22_platform_maturity_closeout.py
+Writes `artifacts/platform_maturity/m22/platform_maturity_closeout/`.
+Current result: `SECOND_FOUNDATION_PLATFORM_MATURITY_AUDITS_COMPLETE`; gap count
+`0`; recommendation `PLAN_DATA_UPGRADE_BEFORE_REOPENING_ALPHA_RESEARCH`; next
+required action `DESIGN_RESEARCH_DATA_UPGRADE_FEASIBILITY_PLAN`. This is a
+closeout/evidence-index artifact only. It preserves
+`M20_POLICY_ROUTE_PAUSED_NO_POSITIVE_PROXY` and creates no runtime, registry,
+promotion, execution, trading, backtest, training, scoring, or profit-claim
+behavior.
+
+<!-- RESEARCH_DATA_UPGRADE_FEASIBILITY_PLAN -->
+Research data-upgrade feasibility plan:
+Command: python .\scripts\plan_research_data_upgrade.py
+Writes `artifacts/research_data_upgrade/feasibility_plan/`.
+Current result: `7` required data families, `6` data-source decision blockers,
+recommendation `PLAN_DATA_UPGRADE_IMPLEMENTATION_BATCHES`, next required action
+`DESIGN_MARKET_MICROSTRUCTURE_RESEARCH_INGESTION_PLAN`. This is planning-only:
+it covers order book/depth, spread/liquidity, trade-flow imbalance,
+same-venue execution quality, untouched evaluation segments, lower-turnover
+event labels, storage/replay, leakage boundaries, and explicit non-claims.
