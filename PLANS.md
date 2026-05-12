@@ -6862,3 +6862,34 @@ against naive baselines.
   - Blocked planning decisions: `3`
   - Recommendation: `IMPLEMENT_RESEARCH_ONLY_MICROSTRUCTURE_SCHEMA_CONTRACTS`
   - Next required action: `BUILD_RESEARCH_ONLY_MICROSTRUCTURE_SCHEMA_AND_REPLAY_CONTRACTS`
+
+<!-- MICROSTRUCTURE_SCHEMA_CONTRACTS -->
+### Microstructure schema and replay contracts
+
+- Scope:
+  - Add a contract-only DU2 artifact for research microstructure storage and
+    replay.
+  - Define additive table contracts for `research_raw_order_book`,
+    `research_order_book_replay`, and `research_microstructure_features`.
+  - Define deterministic replay ordering, gap marking, DDL text, feature
+    contracts, leakage boundaries, and DU3-DU6 follow-up batches.
+  - Preserve M20 as `M20_POLICY_ROUTE_PAUSED_NO_POSITIVE_PROXY`.
+  - Do not execute DDL, create tables, run capture, mutate `raw_trades`,
+    `raw_ohlc`, or `feature_ohlc`, or change runtime inference, registry,
+    promotion, paper/live execution, trading/backtest logic, model training,
+    scoring, validation workflow, or profitability claims.
+- Changed files:
+  - `app/training/market_microstructure_schema_contracts.py`
+  - `scripts/plan_microstructure_schema_contracts.py`
+  - `tests/test_training_market_microstructure_schema_contracts.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real output directory:
+  - `artifacts/research_data_upgrade/microstructure_schema_contracts`
+- Real result:
+  - Contract status: `RESEARCH_ONLY_SCHEMA_AND_REPLAY_CONTRACTS_DEFINED`
+  - Table contracts: `3`
+  - Blocked decisions: `3`
+  - Recommendation: `ADD_SAMPLE_KRAKEN_BOOK_FIXTURE_NORMALIZERS`
+  - Next required action: `BUILD_SAMPLE_BOOK_PAYLOAD_NORMALIZERS_CONTRACT_ONLY`

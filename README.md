@@ -1415,3 +1415,16 @@ planning-only: it defines order book/depth, spread/liquidity, trade-flow
 imbalance, deterministic replay, storage contracts, leakage boundaries, and
 future DU2-DU6 batches. It does not implement capture, ingestion, runtime,
 registry, promotion, trading, backtest, training, scoring, or profit claims.
+
+<!-- MICROSTRUCTURE_SCHEMA_CONTRACTS -->
+Microstructure schema and replay contracts:
+Command: python .\scripts\plan_microstructure_schema_contracts.py
+Writes `artifacts/research_data_upgrade/microstructure_schema_contracts/`.
+Current result: `RESEARCH_ONLY_SCHEMA_AND_REPLAY_CONTRACTS_DEFINED`; table
+contracts `3`; blocked decisions `3`; recommendation
+`ADD_SAMPLE_KRAKEN_BOOK_FIXTURE_NORMALIZERS`; next required action
+`BUILD_SAMPLE_BOOK_PAYLOAD_NORMALIZERS_CONTRACT_ONLY`. This is contract-only:
+it defines research raw order-book, replay, and microstructure-feature table
+contracts plus deterministic replay ordering. It does not create tables, run
+capture, mutate `raw_trades`, `raw_ohlc`, or `feature_ohlc`, or change runtime,
+registry, promotion, trading, backtest, training, scoring, or profit claims.

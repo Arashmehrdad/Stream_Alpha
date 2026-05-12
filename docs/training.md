@@ -1299,6 +1299,27 @@ implement capture, ingestion, runtime behavior, registry behavior, promotion,
 trading, backtest, training, scoring, or profit claims. M20 remains paused as
 `M20_POLICY_ROUTE_PAUSED_NO_POSITIVE_PROXY`.
 
+<!-- MICROSTRUCTURE_SCHEMA_CONTRACTS -->
+## Microstructure Schema And Replay Contracts
+
+Command:
+python .\scripts\plan_microstructure_schema_contracts.py
+
+Writes `artifacts/research_data_upgrade/microstructure_schema_contracts/` as a
+contract-only DU2 artifact.
+
+Current result: `RESEARCH_ONLY_SCHEMA_AND_REPLAY_CONTRACTS_DEFINED`; table
+contracts `3`; blocked decisions `3`; recommendation
+`ADD_SAMPLE_KRAKEN_BOOK_FIXTURE_NORMALIZERS`; next required action
+`BUILD_SAMPLE_BOOK_PAYLOAD_NORMALIZERS_CONTRACT_ONLY`.
+
+The contract defines additive research table shapes for raw order-book events,
+deterministic order-book replay rows, and causal microstructure features. It
+also records DDL text, replay ordering/gap behavior, leakage boundaries, and
+future DU3-DU6 batches. It does not execute DDL, create tables, run capture,
+mutate `raw_trades`, `raw_ohlc`, or `feature_ohlc`, or change runtime,
+registry, promotion, trading, backtest, training, scoring, or profit claims.
+
 <!-- M13_RELIABILITY_RECOVERY_AUDIT -->
 ## M13 Reliability And Recovery Audit
 
