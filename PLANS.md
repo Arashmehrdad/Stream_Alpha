@@ -7086,3 +7086,26 @@ against naive baselines.
   - Smoke executed: `False`
   - Recommendation: `BUILD_MICROSTRUCTURE_REPLAY_AND_COVERAGE_FROM_FIXTURES`
   - Next required action: `IMPLEMENT_MICROSTRUCTURE_REPLAY_GAP_ENGINE`
+
+<!-- MICROSTRUCTURE_REPLAY_ENGINE -->
+### Microstructure replay engine
+
+- Scope:
+  - Add DU10 fixture-backed deterministic order-book replay.
+  - Emit replay rows, gap summary, and determinism audit artifacts.
+  - Do not replay live data, write tables, or change runtime ingestion.
+- Changed files:
+  - `app/training/microstructure_replay.py`
+  - `scripts/replay_microstructure_order_book.py`
+  - `tests/test_training_microstructure_replay.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real output directory:
+  - `artifacts/research_data_upgrade/microstructure_replay`
+- Real result:
+  - Replay status: `FIXTURE_REPLAY_DETERMINISTIC`
+  - Replay rows: `2`
+  - Gap count: `0`
+  - Recommendation: `BUILD_MICROSTRUCTURE_FEATURE_ROWS_FROM_REPLAY`
+  - Next required action: `IMPLEMENT_MICROSTRUCTURE_FEATURE_BUILDER`

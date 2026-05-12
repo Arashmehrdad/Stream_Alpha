@@ -1451,6 +1451,21 @@ This DU9 batch adds the bounded smoke harness in dry-run mode only. It does not
 connect to Kraken, capture data, write database rows, or change runtime
 ingestion/trading behavior.
 
+<!-- MICROSTRUCTURE_REPLAY_ENGINE -->
+## Microstructure Replay Engine
+
+Command:
+python .\scripts\replay_microstructure_order_book.py
+
+Writes `artifacts/research_data_upgrade/microstructure_replay/`. Current
+result: `FIXTURE_REPLAY_DETERMINISTIC`; replay rows `2`; gap count `0`;
+recommendation `BUILD_MICROSTRUCTURE_FEATURE_ROWS_FROM_REPLAY`; next required
+action `IMPLEMENT_MICROSTRUCTURE_FEATURE_BUILDER`.
+
+This DU10 batch replays normalized fixture book events deterministically and
+emits gap/determinism artifacts. It does not replay live data, write tables, or
+change runtime ingestion/trading behavior.
+
 <!-- M13_RELIABILITY_RECOVERY_AUDIT -->
 ## M13 Reliability And Recovery Audit
 

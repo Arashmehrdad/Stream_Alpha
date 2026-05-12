@@ -1509,3 +1509,12 @@ Current result: `BOUNDED_CAPTURE_SMOKE_DRY_RUN_READY`; smoke executed `False`;
 recommendation `BUILD_MICROSTRUCTURE_REPLAY_AND_COVERAGE_FROM_FIXTURES`; next
 required action `IMPLEMENT_MICROSTRUCTURE_REPLAY_GAP_ENGINE`. This does not run
 network capture.
+
+<!-- MICROSTRUCTURE_REPLAY_ENGINE -->
+Microstructure replay engine:
+Command: python .\scripts\replay_microstructure_order_book.py
+Writes `artifacts/research_data_upgrade/microstructure_replay/`.
+Current result: `FIXTURE_REPLAY_DETERMINISTIC`; replay rows `2`; gap count `0`;
+recommendation `BUILD_MICROSTRUCTURE_FEATURE_ROWS_FROM_REPLAY`; next required
+action `IMPLEMENT_MICROSTRUCTURE_FEATURE_BUILDER`. This is fixture-backed and
+does not replay live data or write tables.
