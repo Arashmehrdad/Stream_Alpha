@@ -1518,3 +1518,11 @@ Current result: `FIXTURE_REPLAY_DETERMINISTIC`; replay rows `2`; gap count `0`;
 recommendation `BUILD_MICROSTRUCTURE_FEATURE_ROWS_FROM_REPLAY`; next required
 action `IMPLEMENT_MICROSTRUCTURE_FEATURE_BUILDER`. This is fixture-backed and
 does not replay live data or write tables.
+
+<!-- MICROSTRUCTURE_FEATURE_BUILDER -->
+Microstructure feature builder:
+Command: python .\scripts\build_microstructure_features.py
+Writes `artifacts/research_data_upgrade/microstructure_features/`.
+Current result: `MICROSTRUCTURE_FEATURE_ROWS_BUILT_FROM_FIXTURES`; feature rows
+`2`; recommendation `AUDIT_MICROSTRUCTURE_FEATURE_READINESS_FOR_ALPHA_RESEARCH`;
+next required action `RUN_MICROSTRUCTURE_RESEARCH_READINESS_AUDIT`.

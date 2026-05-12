@@ -1466,6 +1466,20 @@ This DU10 batch replays normalized fixture book events deterministically and
 emits gap/determinism artifacts. It does not replay live data, write tables, or
 change runtime ingestion/trading behavior.
 
+<!-- MICROSTRUCTURE_FEATURE_BUILDER -->
+## Microstructure Feature Builder
+
+Command:
+python .\scripts\build_microstructure_features.py
+
+Writes `artifacts/research_data_upgrade/microstructure_features/`. Current
+result: `MICROSTRUCTURE_FEATURE_ROWS_BUILT_FROM_FIXTURES`; feature rows `2`;
+recommendation `AUDIT_MICROSTRUCTURE_FEATURE_READINESS_FOR_ALPHA_RESEARCH`;
+next required action `RUN_MICROSTRUCTURE_RESEARCH_READINESS_AUDIT`.
+
+This DU11 batch builds fixture-backed top-of-book feature rows from replay
+output. It does not write tables or change runtime ingestion/trading behavior.
+
 <!-- M13_RELIABILITY_RECOVERY_AUDIT -->
 ## M13 Reliability And Recovery Audit
 

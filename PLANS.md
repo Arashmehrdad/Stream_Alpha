@@ -7109,3 +7109,25 @@ against naive baselines.
   - Gap count: `0`
   - Recommendation: `BUILD_MICROSTRUCTURE_FEATURE_ROWS_FROM_REPLAY`
   - Next required action: `IMPLEMENT_MICROSTRUCTURE_FEATURE_BUILDER`
+
+<!-- MICROSTRUCTURE_FEATURE_BUILDER -->
+### Microstructure feature builder
+
+- Scope:
+  - Add DU11 fixture-backed feature builder from replay rows.
+  - Build mid price, top-of-book spread, and relative spread feature rows.
+  - Do not write tables or change runtime ingestion/trading behavior.
+- Changed files:
+  - `app/training/microstructure_feature_builder.py`
+  - `scripts/build_microstructure_features.py`
+  - `tests/test_training_microstructure_feature_builder.py`
+  - `README.md`
+  - `docs/training.md`
+  - `PLANS.md`
+- Real output directory:
+  - `artifacts/research_data_upgrade/microstructure_features`
+- Real result:
+  - Feature build status: `MICROSTRUCTURE_FEATURE_ROWS_BUILT_FROM_FIXTURES`
+  - Feature rows: `2`
+  - Recommendation: `AUDIT_MICROSTRUCTURE_FEATURE_READINESS_FOR_ALPHA_RESEARCH`
+  - Next required action: `RUN_MICROSTRUCTURE_RESEARCH_READINESS_AUDIT`
